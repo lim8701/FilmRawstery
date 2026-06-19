@@ -22,9 +22,13 @@ ApplicationWindow {
     property bool infoOverlay: true
     Shortcut { sequence: "I"; onActivated: win.infoOverlay = !win.infoOverlay }
 
-    // 날짜 스탬프(필름 데이트백) 표시 여부 (D 키로 토글)
-    property bool dateStamp: true
+    // 날짜 스탬프(필름 데이트백) 표시 여부 (D 키로 토글). 기본 off.
+    property bool dateStamp: false
     Shortcut { sequence: "D"; onActivated: win.dateStamp = !win.dateStamp }
+
+    // 좌측 File Explorer 패널 표시 여부 (B 키로 토글)
+    property bool showExplorer: true
+    Shortcut { sequence: "B"; onActivated: win.showExplorer = !win.showExplorer }
 
     // Export 해상도 프리셋(긴 변 px, 0=원본). resCombo 모델 순서와 일치.
     readonly property var exportEdges: [0, 4096, 3840, 2560, 2048, 1920, 1280]
@@ -121,11 +125,16 @@ ApplicationWindow {
         function onImageChanged() { win.refreshHistogram() }
     }
 
-    FileDialog {
-        id: fileDialog
-        title: "RAF 파일 열기"
-        nameFilters: ["Fuji RAW (*.raf *.RAF)", "All files (*)"]
-        onAccepted: controller.load(selectedFile)
+    FolderDialog {
+        id: folderDialog
+        title: "폴더 선택"
+        onAccepted: controller.setFolder(selectedFolder)   // QUrl -> Python .toLocalFile()
+    }
+
+    // 폴더가 바뀌면 좌측 리스트 선택 하이라이트 초기화(잔상 방지).
+    Connections {
+        target: controller
+        function onFolderChanged() { fileListView.currentIndex = -1 }
     }
 
     FileDialog {
@@ -163,6 +172,181 @@ ApplicationWindow {
     RowLayout {
         anchors.fill: parent
         spacing: 0
+
+        // ---------- 좌측: File Explorer ----------
+        Rectangle {
+            visible: win.showExplorer      // B 키 / 토글 버튼으로 show/hide
+            Layout.preferredWidth: 260
+            Layout.fillHeight: true
+            color: "#2b2b2b"
+
+            ColumnLayout {
+                anchors.fill: parent
+                anchors.margins: 8
+                spacing: 6
+
+                // 헤더: 상위 폴더 / 폴더 선택
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Button {
+                        text: "⬆"
+                        Layout.preferredWidth: 30
+                        ToolTip.visible: hovered
+                        ToolTip.text: "상위 폴더"
+                        onClicked: controller.goUp()
+                    }
+                    Button {
+                        text: "폴더…"
+                        Layout.fillWidth: true
+                        onClicked: folderDialog.open()
+                    }
+                }
+
+                // 현재 폴더 경로
+                Label {
+                    Layout.fillWidth: true
+                    text: controller.currentFolder || "폴더를 선택하세요"
+                    color: "#9a9a9a"
+                    font.pixelSize: 11
+                    elide: Text.ElideMiddle
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                // 파일/폴더 리스트 (ListView = 화면에 보이는 항목만 썸네일 요청 → 지연 로딩)
+                ListView {
+                    id: fileListView
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    clip: true
+                    spacing: 2
+                    cacheBuffer: 400
+                    model: controller.fileList
+                    currentIndex: -1
+                    boundsBehavior: Flickable.StopAtBounds
+
+                    B.ScrollBar.vertical: B.ScrollBar {
+                        id: fileVbar
+                        width: 10
+                        policy: B.ScrollBar.AsNeeded
+                        contentItem: Rectangle {
+                            implicitWidth: 6
+                            radius: 3
+                            color: fileVbar.pressed ? "#cfcfcf" : "#9a9a9a"
+                        }
+                        background: Rectangle { radius: 3; color: "#3a3a3a" }
+                    }
+
+                    delegate: Item {
+                        id: row
+                        required property var modelData
+                        required property int index
+                        width: ListView.view ? ListView.view.width : 0
+                        height: modelData.isDir ? 28 : 64
+                        readonly property bool isLoaded:
+                            !modelData.isDir && modelData.path === controller.imagePath
+
+                        Rectangle {
+                            anchors.fill: parent
+                            anchors.rightMargin: 12      // 스크롤바 영역 비움
+                            radius: 4
+                            color: row.isLoaded ? "#2d4a6b"
+                                 : (fileListView.currentIndex === row.index ? "#3a3f4b"
+                                                                            : "transparent")
+                            border.color: row.isLoaded ? "#8ab4f8" : "transparent"
+                            border.width: row.isLoaded ? 1 : 0
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.margins: 4
+                                spacing: 8
+
+                                // 썸네일(파일) 또는 폴더 아이콘
+                                Item {
+                                    Layout.preferredWidth: modelData.isDir ? 20 : 84
+                                    Layout.preferredHeight: modelData.isDir ? 20 : 56
+                                    Layout.alignment: Qt.AlignVCenter
+
+                                    Text {
+                                        visible: modelData.isDir
+                                        anchors.centerIn: parent
+                                        text: "📁"
+                                        font.pixelSize: 16
+                                    }
+                                    Rectangle {     // 로딩중/실패 placeholder
+                                        visible: !modelData.isDir && thumbImg.status !== Image.Ready
+                                        anchors.fill: parent
+                                        color: "#1e1e1e"
+                                        radius: 2
+                                    }
+                                    Image {
+                                        id: thumbImg
+                                        visible: !modelData.isDir
+                                        anchors.fill: parent
+                                        fillMode: Image.PreserveAspectFit
+                                        asynchronous: true
+                                        cache: true
+                                        sourceSize.width: 96    // → requestImage requested_size
+                                        source: modelData.isDir ? ""
+                                                : "image://thumb/" + encodeURIComponent(modelData.path)
+                                    }
+                                }
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: modelData.name
+                                    color: "#e6e6e6"
+                                    font.pixelSize: 12
+                                    elide: Text.ElideMiddle
+                                    maximumLineCount: 2
+                                    wrapMode: Text.WrapAnywhere
+                                    verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                        }
+
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: fileListView.currentIndex = row.index   // 선택만
+                            onDoubleClicked: {
+                                if (row.modelData.isDir)
+                                    controller.setFolderPath(row.modelData.path)
+                                else
+                                    controller.loadPath(row.modelData.path)    // 로컬경로 디코딩 로드
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ---------- 탐색기 show/hide 핸들 (세로로 꽉 찬 얇은 바) ----------
+        // 패널이 숨겨져도 항상 보여 다시 열 수 있게 한다.
+        Rectangle {
+            Layout.preferredWidth: 12
+            Layout.fillHeight: true
+            color: handleArea.containsMouse ? "#3a3f4b" : "#222"
+
+            Text {
+                anchors.centerIn: parent
+                text: win.showExplorer ? "‹" : "›"
+                color: "#cfcfcf"
+                font.pixelSize: 16
+            }
+
+            MouseArea {
+                id: handleArea
+                anchors.fill: parent
+                hoverEnabled: true
+                cursorShape: Qt.PointingHandCursor
+                onClicked: win.showExplorer = !win.showExplorer
+            }
+
+            ToolTip.visible: handleArea.containsMouse
+            ToolTip.delay: 1500        // 호버 즉시 말고 1.5초 뒤 표시
+            ToolTip.text: (win.showExplorer ? "탐색기 숨기기" : "탐색기 보이기") + " (B)"
+        }
 
         // ---------- 이미지 영역 ----------
         Rectangle {
@@ -362,7 +546,7 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         color: "#888"
                         font.pixelSize: 16
-                        text: "오른쪽 'Open RAF…' 버튼으로 파일을 여세요"
+                        text: "왼쪽 탐색기에서 RAF 파일을 더블클릭해 여세요"
                     }
 
                     // 촬영정보 플로팅 패널 (I 키 토글) — 좌측 뷰 왼쪽 끝에 고정
@@ -468,9 +652,10 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     spacing: 6
                     Button {
-                        text: "Open RAF…"
+                        text: "Export…"
                         Layout.fillWidth: true
-                        onClicked: fileDialog.open()
+                        enabled: controller.imagePath !== ""
+                        onClicked: saveDialog.open()
                     }
                     Button {
                         id: resetBtn
@@ -504,12 +689,6 @@ ApplicationWindow {
                             curveEditor.reset()
                         }
                     }
-                }
-                Button {
-                    text: "Export…"
-                    Layout.fillWidth: true
-                    enabled: controller.imagePath !== ""
-                    onClicked: saveDialog.open()
                 }
 
                 RowLayout {

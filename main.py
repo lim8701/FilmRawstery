@@ -8,20 +8,22 @@
   python main.py [선택: 열어둘 RAF 경로]
 """
 
+import io
 import shutil
 import subprocess
 import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, Signal, Slot, QUrl
-from PySide6.QtGui import QGuiApplication, QImage
+from PySide6.QtCore import (Property, QBuffer, QObject, QSize, Qt,
+                            Signal, Slot, QUrl)
+from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QTransform
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider
 
 import date_stamp
 import make_luts
-from exif_info import read_shooting_info
+from exif_info import read_shooting_info, _read_embedded_jpeg
 from lut import atlas_qimage, load_cube
 from raw_loader import load_proxy
 
@@ -149,6 +151,98 @@ class StampProvider(QQuickImageProvider):
         return self._img
 
 
+class ThumbProvider(QQuickImageProvider):
+    """RAF 임베드 JPEG -> 썸네일을 'image://thumb/<percent-encoded-path>' 로 제공.
+
+    ForceAsynchronousImageLoading 으로 requestImage 가 항상 Qt 워커 스레드에서
+    호출되므로 GUI 가 안 멈춘다(폴더에 파일이 많아도). QML 쪽은 ListView 로
+    화면에 보이는 delegate 만 요청 -> 지연 로딩. 디코딩 결과는 경로별 캐시.
+    """
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image,
+                         QQuickImageProvider.Flag.ForceAsynchronousImageLoading)
+        self._cache = {}                 # abs_path -> QImage
+        self._lock = threading.Lock()
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
+        raw = image_id.split("?", 1)[0]              # 쿼리스트링 제거(혹시 모를 대비)
+        path = QUrl.fromPercentEncoding(raw.encode("utf-8"))  # encodeURIComponent 역변환
+        with self._lock:
+            cached = self._cache.get(path)
+        if cached is not None and not cached.isNull():
+            return cached
+        img = self._make_thumb(path, requested_size)
+        with self._lock:
+            self._cache[path] = img
+        return img
+
+    @staticmethod
+    def _make_thumb(path, requested_size) -> QImage:
+        edge = (requested_size.width()
+                if (requested_size is not None and requested_size.width() > 0) else 96)
+        # 1차: RAF 내장 JPEG 안의 EXIF 썸네일(~160px, 수 KB) — 초경량/고속.
+        #      EXIF/썸네일은 JPEG 선두라 앞부분 512KB 만 읽으면 충분.
+        try:
+            jpeg = _read_embedded_jpeg(path)
+            if jpeg:
+                import exifread
+                tags = exifread.process_file(io.BytesIO(jpeg), details=False)
+                thumb = tags.get("JPEGThumbnail")
+                if thumb:
+                    im = QImage()
+                    if im.loadFromData(thumb):
+                        ori = tags.get("Image Orientation")
+                        im = ThumbProvider._apply_orientation(
+                            im, ori.values[0] if ori and ori.values else 1)
+                        return im.scaledToWidth(
+                            edge, Qt.TransformationMode.SmoothTransformation)
+        except Exception:
+            pass
+        # 2차(폴백): EXIF 썸네일이 없으면 풀 프리뷰를 축소 디코딩(13MP 풀디코딩 회피).
+        try:
+            jpeg = _read_embedded_jpeg(path, max_bytes=64 * 1024 * 1024)
+            if not jpeg:
+                return QImage()                      # null -> QML status=Error -> placeholder
+            buf = QBuffer()
+            buf.setData(jpeg)                        # 내부 QByteArray 로 복사(수명 안전)
+            buf.open(QBuffer.OpenModeFlag.ReadOnly)
+            reader = QImageReader(buf, b"jpeg")
+            reader.setAutoTransform(True)            # EXIF 방향 반영
+            full = reader.size()
+            if full.isValid() and full.width() > 0:
+                h = max(1, round(edge * full.height() / full.width()))
+                reader.setScaledSize(QSize(edge, h))
+            img = reader.read()
+            buf.close()
+            return img if not img.isNull() else QImage()
+        except Exception:
+            return QImage()
+
+    @staticmethod
+    def _apply_orientation(img: QImage, ori: int) -> QImage:
+        """EXIF Orientation(1~8)을 썸네일에 반영. IFD1 썸네일은 회전 안 된 채
+        저장되므로 메인 이미지 방향값을 그대로 적용한다(세로 사진 바로 세움)."""
+        if ori in (1, None):
+            return img
+        t = QTransform()
+        if ori == 2:                       # 좌우 반전
+            return img.transformed(t.scale(-1, 1))
+        if ori == 3:                       # 180°
+            return img.transformed(t.rotate(180))
+        if ori == 4:                       # 상하 반전
+            return img.transformed(t.scale(1, -1))
+        if ori == 5:                       # 좌우 반전 + 90°CW
+            return img.transformed(t.rotate(90).scale(-1, 1))
+        if ori == 6:                       # 90°CW
+            return img.transformed(t.rotate(90))
+        if ori == 7:                       # 좌우 반전 + 270°CW
+            return img.transformed(t.rotate(270).scale(-1, 1))
+        if ori == 8:                       # 270°CW(=90°CCW)
+            return img.transformed(t.rotate(270))
+        return img
+
+
 class Controller(QObject):
     imageChanged = Signal()
     asShotKelvinChanged = Signal()
@@ -161,6 +255,7 @@ class Controller(QObject):
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
     lensChanged = Signal()       # 렌즈 보정 on/off 변경 알림
     busyChanged = Signal()       # 디코딩(렌즈 보정 포함) 진행 중 표시
+    folderChanged = Signal()     # 좌측 file explorer 현재 폴더/파일목록 갱신 알림
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
@@ -194,6 +289,8 @@ class Controller(QObject):
         self._lens = True           # X100V 렌즈 프로파일 보정 on/off
         self._busy = False          # 디코딩 진행 중(스피너)
         self._render_seq = 0        # 비동기 렌더 순번(오래된 결과 폐기용)
+        self._folder = ""           # 좌측 file explorer 현재 폴더
+        self._files = []            # [{"name","path","isDir"}, ...] 현재 폴더 항목
         self._renderReady.connect(self._on_render_ready)
 
     @Slot("QVariantList")
@@ -338,8 +435,16 @@ class Controller(QObject):
     histogram = Property("QVariantList", _get_histogram, notify=histogramChanged)
 
     @Slot(QUrl)
-    def load(self, file_url: QUrl) -> None:
+    def load(self, file_url: QUrl) -> None:  # noqa: N802 (QML 슬롯, FileDialog QUrl)
         path = file_url.toLocalFile() if file_url.isLocalFile() else file_url.toString()
+        self._load(path)
+
+    @Slot(str)
+    def loadPath(self, path: str) -> None:  # noqa: N802 (QML 슬롯, explorer 로컬 경로)
+        if path:
+            self._load(path)
+
+    def _load(self, path: str) -> None:
         self._path = path
         self._kelvin = None     # 새 파일은 as-shot 색온도로 시작
         self._tint = 0.0
@@ -349,8 +454,57 @@ class Controller(QObject):
                          if f["label"] == "Date"), "")
         self._stamp_text = date_stamp.stamp_text_from_date(date_val)
         self.exifChanged.emit()
+        # 좌측 file explorer 를 이 파일의 폴더로 동기화(다른 폴더 파일을 열어도 따라옴).
+        parent = str(Path(path).parent)
+        if parent != self._folder:
+            self._scan_folder(parent)
         self._render()
         self.stampReset.emit()   # 입력필드를 새 파일의 EXIF 날짜로 동기화
+
+    # ---------- 좌측 File Explorer (폴더/파일 모델) ----------
+    def _scan_folder(self, folder: str) -> None:
+        """폴더를 스캔해 하위폴더 + RAF 파일 목록(이름순)을 fileList 로 갱신."""
+        p = Path(folder)
+        try:
+            entries = list(p.iterdir())
+        except Exception:
+            entries = []
+        dirs = sorted((e for e in entries if e.is_dir()), key=lambda e: e.name.lower())
+        rafs = sorted((e for e in entries
+                       if e.is_file() and e.suffix.lower() == ".raf"),
+                      key=lambda e: e.name.lower())
+        items = [{"name": d.name, "path": str(d), "isDir": True} for d in dirs]
+        items += [{"name": f.name, "path": str(f), "isDir": False} for f in rafs]
+        self._folder = str(p)
+        self._files = items
+        self.folderChanged.emit()
+
+    @Slot(QUrl)
+    def setFolder(self, url: QUrl) -> None:  # noqa: N802 (QML 슬롯, FolderDialog)
+        folder = url.toLocalFile() if url.isLocalFile() else url.toString()
+        if folder:
+            self._scan_folder(folder)
+
+    @Slot(str)
+    def setFolderPath(self, folder: str) -> None:  # noqa: N802 (QML 슬롯, 폴더 더블클릭)
+        if folder:
+            self._scan_folder(folder)
+
+    @Slot()
+    def goUp(self) -> None:  # noqa: N802 (QML 슬롯, 상위 폴더)
+        if self._folder:
+            parent = Path(self._folder).parent
+            if str(parent) != self._folder:   # 루트면 변화 없음
+                self._scan_folder(str(parent))
+
+    def _get_folder(self) -> str:
+        return self._folder
+
+    def _get_files(self) -> list:
+        return self._files
+
+    currentFolder = Property(str, _get_folder, notify=folderChanged)
+    fileList = Property("QVariantList", _get_files, notify=folderChanged)
 
     @Slot(float, float)
     def setWb(self, kelvin: float, tint: float) -> None:  # noqa: N802 (QML 슬롯)
@@ -525,6 +679,9 @@ def main() -> int:
     stamp_provider = StampProvider()
     engine.addImageProvider("stamp", stamp_provider)
 
+    thumb_provider = ThumbProvider()
+    engine.addImageProvider("thumb", thumb_provider)
+
     controller = Controller(provider, curve_provider, stamp_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
@@ -539,9 +696,10 @@ def main() -> int:
     # 명령줄 인자가 있으면 그 경로, 없으면 기본 샘플을 자동 로드
     start_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_RAF
     if Path(start_path).is_file():
-        controller.load(QUrl.fromLocalFile(start_path))
+        controller.load(QUrl.fromLocalFile(start_path))   # load() 가 부모폴더도 scan
     else:
         print(f"[init] 시작 파일 없음: {start_path}")
+        controller.setFolderPath(str(Path(start_path).parent))  # 폴더라도 열어둠
 
     return app.exec()
 
