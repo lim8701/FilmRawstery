@@ -1,0 +1,72 @@
+"""표준 .cube 3D LUT 로더 + 셰이더용 2D 아틀라스 변환.
+
+3D LUT 를 셰이더에서 쓰려면 sampler3D 가 필요한데, Qt Quick ShaderEffect 는
+2D 텍스처(Image)만 property 로 받는다. 그래서 3D LUT 를 가로로 N 개 타일을
+이어 붙인 2D 아틀라스(폭 N*N, 높이 N)로 펴서 넘기고, 셰이더에서 수동으로
+트라이리니어 보간한다.
+
+아틀라스 좌표 규약 (셰이더와 반드시 일치):
+    blue = b 슬라이스를 b 번째 타일에 배치
+    픽셀 (x = b*N + r,  y = g) 위치에 LUT[r, g, b] 값
+"""
+
+import numpy as np
+from PySide6.QtGui import QImage
+
+
+def load_cube(path: str):
+    """Adobe .cube 파일을 (N, N, N, 3) float32 배열과 크기 N 으로 반환.
+
+    데이터 순서는 red 가 가장 빠르게 변함: index = r + g*N + b*N*N
+    """
+    size = None
+    rows = []
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            s = line.strip()
+            if not s or s.startswith("#"):
+                continue
+            key = s.split()[0].upper()
+            if key == "LUT_3D_SIZE":
+                size = int(s.split()[1])
+            elif key in ("TITLE", "DOMAIN_MIN", "DOMAIN_MAX", "LUT_1D_SIZE"):
+                continue
+            else:
+                parts = s.split()
+                if len(parts) == 3:
+                    try:
+                        rows.append([float(parts[0]), float(parts[1]), float(parts[2])])
+                    except ValueError:
+                        continue
+    if size is None:
+        raise ValueError(f"LUT_3D_SIZE 없음: {path}")
+
+    data = np.asarray(rows, dtype=np.float32)
+    if data.shape[0] != size ** 3:
+        raise ValueError(
+            f"데이터 개수 불일치: {data.shape[0]} != {size**3} ({path})"
+        )
+
+    idx = np.arange(size ** 3)
+    r = idx % size
+    g = (idx // size) % size
+    b = idx // (size * size)
+    lut = np.zeros((size, size, size, 3), dtype=np.float32)
+    lut[r, g, b, :] = data
+    return lut, size
+
+
+def atlas_qimage(lut: np.ndarray, size: int) -> QImage:
+    """(N,N,N,3) LUT 를 폭 N*N, 높이 N 의 RGB888 아틀라스 QImage 로 변환."""
+    n = size
+    atlas = np.zeros((n, n * n, 3), dtype=np.uint8)
+    vals = np.clip(lut, 0.0, 1.0)
+    vals = np.rint(vals * 255.0).astype(np.uint8)
+    for b in range(n):
+        # lut[r, g, b] -> atlas[y=g, x=b*n + r]  (r,g 축 transpose)
+        tile = vals[:, :, b, :]                 # [r, g, 3]
+        atlas[:, b * n:(b + 1) * n, :] = np.transpose(tile, (1, 0, 2))
+
+    atlas = np.ascontiguousarray(atlas)
+    h, w, _ = atlas.shape
+    return QImage(atlas.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
