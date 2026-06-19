@@ -15,6 +15,7 @@ import rawpy
 from PySide6.QtGui import QImage
 from scipy.ndimage import gaussian_filter, zoom
 
+import date_stamp
 from wb import compute_user_wb
 
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
@@ -108,6 +109,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     lut_strength = float(p.get("lutStrength", 1.0))
     grain_amt = float(p.get("grainAmt", 0))
     grain_size = float(p.get("grainSize", 0.5))
+    stamp_text = str(p.get("stampText", "") or "")
+    do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
 
     # --- 전역/공간 단계 (전체 배열) ---
     c = rgb16.astype(np.float32) / 65535.0
@@ -157,11 +160,19 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         blk = np.clip((blk - 0.5) * con + 0.5, 0.0, 1.0)
         for ch in range(3):
             blk[..., ch] = np.interp(blk[..., ch], xs, cl)
-        if grain2d is not None:                                     # 톤커브 뒤·비네팅 앞
-            blk = blk + grain2d[y:y + strip, :, None] * grain_amt * 0.12
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+    # 날짜 스탬프(필름 데이트백) — 비네팅 뒤 우하단 코너 가산(렌즈 비네팅 영향 없음)
+    if do_stamp:
+        date_stamp.stamp_export(out, stamp_text)   # uint8 코너만 in-place
+
+    # 필름 그레인 — 맨 끝: 장면과 스탬프 모두에 입혀짐(에멀전 입자, 셰이더와 동일 순서)
+    if grain2d is not None:
+        f = out.astype(np.float32) / 255.0
+        f += grain2d[..., None] * grain_amt * 0.12
+        out = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
 
     return out
 

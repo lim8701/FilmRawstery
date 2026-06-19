@@ -19,6 +19,7 @@ from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider
 
+import date_stamp
 import make_luts
 from exif_info import read_shooting_info
 from lut import atlas_qimage, load_cube
@@ -133,6 +134,21 @@ class CurveProvider(QQuickImageProvider):
         return self._img
 
 
+class StampProvider(QQuickImageProvider):
+    """날짜 스탬프 오버레이(프록시 크기 RGBA)를 'image://stamp/...' 로 제공."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._img = QImage(1, 1, QImage.Format.Format_ARGB32)
+        self._img.fill(0)            # 시작 시에도 유효한 투명 텍스처
+
+    def set_image(self, img: QImage) -> None:
+        self._img = img
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802
+        return self._img
+
+
 class Controller(QObject):
     imageChanged = Signal()
     asShotKelvinChanged = Signal()
@@ -140,11 +156,15 @@ class Controller(QObject):
     curveChanged = Signal()     # 톤 커브 LUT 갱신 알림
     exportStatusChanged = Signal()
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
+    stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
+    stampReset = Signal()       # 새 파일 로드 -> 입력필드를 EXIF 기본값으로 되돌림
 
-    def __init__(self, provider: RawProvider, curve_provider: "CurveProvider"):
+    def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
+                 stamp_provider: "StampProvider" = None):
         super().__init__()
         self._provider = provider
         self._curve_provider = curve_provider
+        self._stamp_provider = stamp_provider
         self._url = ""
         self._path = ""
         self._kelvin = None     # None = as-shot 사용
@@ -159,6 +179,11 @@ class Controller(QObject):
         self._exporting = False
         self._exif_fields = []      # [{"label","value"}, ...] 패널용
         self._exif_summary = ""     # 오버레이용 2줄 요약
+        self._stamp_text = ""       # 날짜 스탬프 텍스트 ('YY MM DD)
+        self._stamp_url = "image://stamp/s?v=0"
+        self._stamp_counter = 0
+        self._proxy_w = 0           # 마지막 프록시 크기(스탬프 레이어 재렌더용)
+        self._proxy_h = 0
 
     @Slot("QVariantList")
     def setCurve(self, lut) -> None:  # noqa: N802 (QML 슬롯)
@@ -220,6 +245,15 @@ class Controller(QObject):
     shootingInfo = Property("QVariantList", _get_exif, notify=exifChanged)
     shootingSummary = Property(str, _get_exif_summary, notify=exifChanged)
 
+    def _get_stamp_url(self) -> str:
+        return self._stamp_url
+
+    def _get_stamp_text(self) -> str:
+        return self._stamp_text
+
+    stampUrl = Property(str, _get_stamp_url, notify=stampChanged)
+    stampText = Property(str, _get_stamp_text, notify=stampChanged)
+
     @Slot(QUrl)
     def load(self, file_url: QUrl) -> None:
         path = file_url.toLocalFile() if file_url.isLocalFile() else file_url.toString()
@@ -228,8 +262,12 @@ class Controller(QObject):
         self._tint = 0.0
         # 촬영정보는 경로에만 의존 -> 로드 시 1회 읽음(WB 변경 재디코딩과 무관)
         self._exif_fields, self._exif_summary = read_shooting_info(path)
+        date_val = next((f["value"] for f in self._exif_fields
+                         if f["label"] == "Date"), "")
+        self._stamp_text = date_stamp.stamp_text_from_date(date_val)
         self.exifChanged.emit()
         self._render()
+        self.stampReset.emit()   # 입력필드를 새 파일의 EXIF 날짜로 동기화
 
     @Slot(float, float)
     def setWb(self, kelvin: float, tint: float) -> None:  # noqa: N802 (QML 슬롯)
@@ -240,6 +278,27 @@ class Controller(QObject):
         self._tint = tint
         if self._path:
             self._render()
+
+    @Slot(str)
+    def setStampText(self, text: str) -> None:  # noqa: N802 (QML 슬롯)
+        """사용자가 입력한 날짜 스탬프 텍스트 반영(재디코딩 없이 레이어만 재렌더)."""
+        self._stamp_text = text or ""
+        self._update_stamp_layer()
+
+    def _update_stamp_layer(self) -> None:
+        """현재 _stamp_text + 프록시 크기로 스탬프 프리뷰 레이어를 갱신."""
+        if self._stamp_provider is None:
+            return
+        if self._stamp_text and self._proxy_w and self._proxy_h:
+            layer = date_stamp.preview_layer_qimage(
+                self._stamp_text, self._proxy_w, self._proxy_h)
+        else:
+            layer = QImage(1, 1, QImage.Format.Format_ARGB32)
+            layer.fill(0)            # 투명 1x1 — 셰이더 sampler 항상 유효하게 유지
+        self._stamp_provider.set_image(layer)
+        self._stamp_counter += 1
+        self._stamp_url = f"image://stamp/s?v={self._stamp_counter}"
+        self.stampChanged.emit()
 
     def _render(self) -> None:
         try:
@@ -261,6 +320,8 @@ class Controller(QObject):
         self._url = f"image://raw/photo?v={self._counter}"
         self.imageChanged.emit()
         self.wbBaked.emit()              # baked kelvin/tint/matrix 갱신 알림
+        self._proxy_w, self._proxy_h = img.width(), img.height()
+        self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "
               f"kelvin={self._kelvin} tint={self._tint:.2f} as_shot={as_shot}")
 
@@ -305,6 +366,7 @@ def main() -> int:
     ensure_luts()
 
     app = QGuiApplication(sys.argv)
+    date_stamp.font_family()   # 번들 DSEG7 폰트 1회 등록(메인 스레드)
     engine = QQmlApplicationEngine()
 
     provider = RawProvider()
@@ -317,7 +379,10 @@ def main() -> int:
     curve_provider = CurveProvider()
     engine.addImageProvider("curve", curve_provider)
 
-    controller = Controller(provider, curve_provider)
+    stamp_provider = StampProvider()
+    engine.addImageProvider("stamp", stamp_provider)
+
+    controller = Controller(provider, curve_provider, stamp_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)

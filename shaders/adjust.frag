@@ -28,6 +28,8 @@ layout(std140, binding = 0) uniform buf {
     float grainAmt;     // 필름 그레인 강도 0..1 (0=미적용)
     float grainSize;    // 입자 크기 0..1 (0=미세, 1=굵음)
     float grainAspect;  // 프록시 가로/세로비 W/H (정사각 입자용)
+    float stampOn;      // 날짜 스탬프 표시 1/0
+    float stampStrength;// 날짜 스탬프 가산 강도
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본 이미지
@@ -35,6 +37,7 @@ layout(binding = 2) uniform sampler2D lut;       // 3D LUT 아틀라스 (N*N x N
 layout(binding = 3) uniform sampler2D curve;     // 톤 커브 1D LUT (256x1)
 layout(binding = 4) uniform sampler2D texBlur;   // src 가우시안 블러(작은 반경)
 layout(binding = 5) uniform sampler2D claBlur;   // src 가우시안 블러(큰 반경)
+layout(binding = 6) uniform sampler2D stampTex;  // 날짜 스탬프 오버레이(프록시 RGBA)
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -149,18 +152,30 @@ void main() {
     rgb.g = texture(curve, vec2(rgb.g, 0.5)).r;
     rgb.b = texture(curve, vec2(rgb.b, 0.5)).r;
 
-    // 9.5) 필름 그레인 (흑백 휘도 노이즈, 톤커브 뒤·비네팅 앞)
+    // 10) 비네팅 (방사형)
+    if (ubuf.vignette != 0.0) {
+        float r = length(uv - 0.5) / 0.7071;
+        rgb *= 1.0 + ubuf.vignette * 0.8 * smoothstep(0.35, 1.0, r);
+    }
+
+    // 11) 날짜 스탬프 (필름 데이트백) — 하이브리드 합성:
+    //     코어(또렷한 숫자)=source-over로 배경무관 일관, 헤일로=screen 가산으로 빛 번짐.
+    //     비네팅 뒤(LED는 렌즈를 거치지 않아 비네팅 영향 없음).
+    if (ubuf.stampOn > 0.5) {
+        vec4 st = texture(stampTex, uv);
+        float a = clamp(st.a * ubuf.stampStrength, 0.0, 1.0);
+        float coreA = smoothstep(0.45, 0.85, a) * 0.70;   // 코어 불투명도 상한(배경 비침)
+        rgb = mix(rgb, st.rgb, coreA);                    // 코어 source-over (일관)
+        vec3 glow = st.rgb * (a * (1.0 - coreA));         // 헤일로 광량
+        rgb = 1.0 - (1.0 - rgb) * (1.0 - glow);           // screen 가산 (빛 번짐)
+    }
+
+    // 12) 필름 그레인 (에멀전 입자) — 맨 끝: 장면과 날짜 스탬프 모두에 입혀짐.
     if (ubuf.grainAmt > 0.0) {
         float gridN = mix(1500.0, 500.0, ubuf.grainSize);
         vec2 gco = uv * vec2(gridN, gridN / ubuf.grainAspect);
         float n = valueNoise(gco) - 0.5;
         rgb += n * ubuf.grainAmt * 0.12;
-    }
-
-    // 10) 비네팅 (방사형, 맨 끝)
-    if (ubuf.vignette != 0.0) {
-        float r = length(uv - 0.5) / 0.7071;
-        rgb *= 1.0 + ubuf.vignette * 0.8 * smoothstep(0.35, 1.0, r);
     }
 
     rgb = clamp(rgb, 0.0, 1.0);

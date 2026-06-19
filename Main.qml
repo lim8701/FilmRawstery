@@ -21,6 +21,10 @@ ApplicationWindow {
     property bool infoOverlay: true
     Shortcut { sequence: "I"; onActivated: win.infoOverlay = !win.infoOverlay }
 
+    // 날짜 스탬프(필름 데이트백) 표시 여부 (D 키로 토글)
+    property bool dateStamp: true
+    Shortcut { sequence: "D"; onActivated: win.dateStamp = !win.dateStamp }
+
     // 콤보 인덱스 -> luts/<key>.cube 파일명. 0(identity)=필름시뮬 미적용.
     readonly property var simKeys: [
         "identity", "provia", "velvia", "astia",
@@ -119,7 +123,9 @@ ApplicationWindow {
             "lutEnabled": simCombo.currentIndex !== 0,
             "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value,
-            "curve": curveEditor.lut256()
+            "curve": curveEditor.lut256(),
+            "dateStamp": win.dateStamp,
+            "stampText": stampField.text
         })
     }
 
@@ -157,6 +163,15 @@ ApplicationWindow {
                 cache: false
                 smooth: true
                 source: controller.curveUrl
+            }
+
+            // 날짜 스탬프 오버레이 텍스처(프록시 RGBA). 셰이더가 가산 합성.
+            Image {
+                id: stampImage
+                visible: false
+                cache: false
+                smooth: true
+                source: controller.stampUrl
             }
 
             ColumnLayout {
@@ -265,6 +280,9 @@ ApplicationWindow {
                         property variant curve: curveImage
                         property variant texBlur: texBlurTex
                         property variant claBlur: claBlurTex
+                        property variant stampTex: stampImage
+                        property real stampOn: (win.dateStamp && controller.stampText !== "") ? 1.0 : 0.0
+                        property real stampStrength: 0.92
                         property real exposure: expSlider.value
                         property real contrast: conSlider.value
                         property real highlights: hiSlider.value
@@ -304,6 +322,7 @@ ApplicationWindow {
                         smooth: true
                         live: true
                     }
+
 
                     Text {
                         visible: srcImage.status !== Image.Ready
@@ -724,6 +743,54 @@ ApplicationWindow {
                         if (pressed) _pendingReset = win.isDblPress(grainSizeSlider)
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Date Stamp"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    CheckBox {
+                        id: stampCheck
+                        enabled: controller.imagePath !== ""
+                        checked: win.dateStamp
+                        onToggled: win.dateStamp = checked
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "필름 날짜 각인  — D"
+                        color: stampCheck.enabled ? "white" : "#777"
+                        font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+                // 날짜 직접 입력(기본값=EXIF). 변경 시 디바운스 후 프리뷰 재렌더.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Label { text: "날짜"; color: "white"; font.pixelSize: 12 }
+                    TextField {
+                        id: stampField
+                        Layout.fillWidth: true
+                        enabled: win.dateStamp && controller.imagePath !== ""
+                        placeholderText: "'YY MM DD  (예: '24 05 12)"
+                        onTextEdited: stampDebounce.restart()
+                    }
+                }
+                Timer {
+                    id: stampDebounce
+                    interval: 200
+                    onTriggered: controller.setStampText(stampField.text)
+                }
+                Connections {
+                    target: controller
+                    // 새 파일 로드 시 입력필드를 EXIF 날짜로 동기화(사용자 편집은 안 건드림)
+                    function onStampReset() { stampField.text = controller.stampText }
                 }
 
                 Button {
