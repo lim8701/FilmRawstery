@@ -85,6 +85,23 @@ def _apply_lut3d(c, lut, n):
     return c0 * (1 - fb) + c1 * fb
 
 
+def _downscale_to_edge(rgb16, out_edge):
+    """rgb16 (uint16) 을 긴 변 = out_edge 로 비율 유지 다운스케일(안티에일리어싱).
+    out_edge<=0 이거나 이미 작으면 원본 반환."""
+    h, w = rgb16.shape[:2]
+    m = max(h, w)
+    if out_edge <= 0 or m <= out_edge:
+        return rgb16
+    f = out_edge / float(m)
+    x = rgb16.astype(np.float32)
+    sigma = 0.5 * (1.0 / f - 1.0)                 # 축소비에 맞춘 안티에일리어싱
+    if sigma > 0.4:
+        x = gaussian_filter(x, (sigma, sigma, 0.0))
+    nh, nw = max(1, int(round(h * f))), max(1, int(round(w * f)))
+    x = zoom(x, (nh / h, nw / w, 1.0), order=1)
+    return np.clip(x + 0.5, 0.0, 65535.0).astype(np.uint16)
+
+
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
                 proxy_edge=2560, strip=256):
     """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) uint8 RGB 로 반환."""
@@ -94,6 +111,10 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         ref = ref / ref[1]
         user_wb = compute_user_wb(cam, ref, kelvin, tint)
         rgb16 = raw.postprocess(user_wb=user_wb, output_bps=16, no_auto_bright=True)
+
+    # 출력 해상도 지정(긴 변): 처리 전 다운스케일 -> 빠르고, 효과 sigma 가 해상도에
+    # 비례해 룩 동일 유지(그레인/스탬프도 이미지 상대 크기라 일관).
+    rgb16 = _downscale_to_edge(rgb16, int(p.get("outEdge", 0) or 0))
 
     h, w, _ = rgb16.shape
     scale = max(h, w) / float(proxy_edge)     # 프록시 텍셀 반경 -> 풀해상도 px

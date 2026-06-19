@@ -158,6 +158,7 @@ class Controller(QObject):
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
     stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
     stampReset = Signal()       # 새 파일 로드 -> 입력필드를 EXIF 기본값으로 되돌림
+    histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None):
@@ -184,6 +185,9 @@ class Controller(QObject):
         self._stamp_counter = 0
         self._proxy_w = 0           # 마지막 프록시 크기(스탬프 레이어 재렌더용)
         self._proxy_h = 0
+        self._histogram = []        # 256-bin 휘도 히스토그램(0..1 정규화)
+        self._proxy_small = None    # 히스토그램 재계산용 축소 프록시(float32 0..1)
+        self._lut_cache = {}        # simKey -> (lut_arr, n)
 
     @Slot("QVariantList")
     def setCurve(self, lut) -> None:  # noqa: N802 (QML 슬롯)
@@ -254,6 +258,72 @@ class Controller(QObject):
     stampUrl = Property(str, _get_stamp_url, notify=stampChanged)
     stampText = Property(str, _get_stamp_text, notify=stampChanged)
 
+    def _compute_histogram(self, img: QImage) -> None:
+        """프록시 QImage → 히스토그램용 축소본 캐시 + 기준(입력) 히스토그램."""
+        import numpy as np
+        im = img.convertToFormat(QImage.Format.Format_RGB888)
+        w, h = im.width(), im.height()
+        if w == 0 or h == 0:
+            self._proxy_small = None
+            self._histogram = []
+        else:
+            arr = (np.frombuffer(im.constBits(), np.uint8)
+                   .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3))
+            step = max(1, max(h, w) // 384)          # 히스토그램은 축소본으로 충분(빠름)
+            self._proxy_small = arr[::step, ::step].astype(np.float32) / 255.0
+            self._histogram = self._hist_of(self._proxy_small)
+        self.histogramChanged.emit()
+
+    @staticmethod
+    def _hist_of(c) -> list:
+        import numpy as np
+        lum = c[..., 0] * 0.299 + c[..., 1] * 0.587 + c[..., 2] * 0.114
+        hist = np.histogram(lum, bins=256, range=(0.0, 1.0))[0].astype(np.float32)
+        m = float(hist.max())
+        return (hist / m).tolist() if m > 0 else []
+
+    def _get_lut(self, key):
+        if key not in self._lut_cache:
+            try:
+                self._lut_cache[key] = load_cube(str(LUTS_DIR / f"{key}.cube"))
+            except Exception:
+                self._lut_cache[key] = (None, 0)
+        return self._lut_cache[key]
+
+    @Slot("QVariantMap")
+    def updateHistogram(self, params) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 조절값(exposure/contrast/hi·sh·wh·bl/필름시뮬/커브)을 축소 프록시에
+        numpy 로 적용해 '조절 반영' 히스토그램을 재계산. (공간/그레인 단계는 생략)"""
+        if self._proxy_small is None:
+            return
+        import numpy as np
+        import pipeline
+        c = self._proxy_small.copy()
+        c = np.clip(c * (2.0 ** float(params.get("exposure", 0.0))), 0.0, 1.0)
+        c = np.clip(pipeline._tone_zones(
+            c, float(params.get("highlights", 0)), float(params.get("shadows", 0)),
+            float(params.get("whites", 0)), float(params.get("blacks", 0))), 0.0, 1.0)
+        if params.get("lutEnabled", False):
+            arr, n = self._get_lut(params.get("simKey", "identity"))
+            if arr is not None:
+                looked = pipeline._apply_lut3d(c, arr, n)
+                st = float(params.get("lutStrength", 1.0))
+                c = c * (1.0 - st) + looked * st
+        c = np.clip((c - 0.5) * float(params.get("contrast", 1.0)) + 0.5, 0.0, 1.0)
+        curve = params.get("curve", None)
+        if curve and len(curve) >= 2:
+            xs = np.linspace(0.0, 1.0, len(curve))
+            cl = np.asarray(curve, dtype=np.float32)
+            for ch in range(3):
+                c[..., ch] = np.interp(c[..., ch], xs, cl)
+        self._histogram = self._hist_of(c)
+        self.histogramChanged.emit()
+
+    def _get_histogram(self) -> list:
+        return self._histogram
+
+    histogram = Property("QVariantList", _get_histogram, notify=histogramChanged)
+
     @Slot(QUrl)
     def load(self, file_url: QUrl) -> None:
         path = file_url.toLocalFile() if file_url.isLocalFile() else file_url.toString()
@@ -322,6 +392,7 @@ class Controller(QObject):
         self.wbBaked.emit()              # baked kelvin/tint/matrix 갱신 알림
         self._proxy_w, self._proxy_h = img.width(), img.height()
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
+        self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "
               f"kelvin={self._kelvin} tint={self._tint:.2f} as_shot={as_shot}")
 

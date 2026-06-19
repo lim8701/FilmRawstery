@@ -10,6 +10,8 @@ Item {
     property var points: [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}]   // 정규화, x 오름차순
     readonly property real hitR: 0.045    // 포인트 적중 반경(정규화)
     signal edited()                        // 커브 변경 알림
+    property var histogram: []             // 배경 히스토그램(256-bin, 0..1) — 주인이 바인딩
+    onHistogramChanged: view.requestPaint()
 
     function clamp01(v) { return Math.max(0, Math.min(1, v)) }
 
@@ -80,11 +82,25 @@ Item {
         onPaint: {
             var ctx = getContext('2d'), W = width, H = height
             ctx.clearRect(0, 0, W, H)
+            // 배경 히스토그램 (sqrt 스케일로 낮은 빈도도 보이게)
+            var hist = root.histogram
+            if (hist && hist.length === 256) {
+                ctx.fillStyle = "rgba(200,200,200,0.28)"
+                ctx.beginPath(); ctx.moveTo(0, H)
+                for (var hx = 0; hx < 256; hx++)
+                    ctx.lineTo(hx/255*W, H - Math.sqrt(hist[hx]) * H * 0.92)
+                ctx.lineTo(W, H); ctx.closePath(); ctx.fill()
+            }
+            // 그리드 (1/4 간격 = 4개 톤 구역 경계)
             ctx.strokeStyle = "#3a3a3a"; ctx.lineWidth = 1
             for (var g = 1; g < 4; g++) {
                 ctx.beginPath(); ctx.moveTo(W*g/4, 0); ctx.lineTo(W*g/4, H); ctx.stroke()
                 ctx.beginPath(); ctx.moveTo(0, H*g/4); ctx.lineTo(W, H*g/4); ctx.stroke()
             }
+            // 라이트룸식 톤 구역 라벨
+            ctx.fillStyle = "#8a8a8a"; ctx.font = "9px sans-serif"; ctx.textAlign = "center"
+            var zlabels = ["Shadows", "Darks", "Lights", "Highlights"]
+            for (var z = 0; z < 4; z++) ctx.fillText(zlabels[z], W*(z+0.5)/4, H - 4)
             ctx.strokeStyle = "#e8e8e8"; ctx.lineWidth = 2; ctx.beginPath()
             for (var px = 0; px <= W; px += 2) {
                 var py = (1 - root.evalAt(px / W)) * H

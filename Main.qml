@@ -25,6 +25,9 @@ ApplicationWindow {
     property bool dateStamp: true
     Shortcut { sequence: "D"; onActivated: win.dateStamp = !win.dateStamp }
 
+    // Export 해상도 프리셋(긴 변 px, 0=원본). resCombo 모델 순서와 일치.
+    readonly property var exportEdges: [0, 4096, 3840, 2560, 2048, 1920, 1280]
+
     // 콤보 인덱스 -> luts/<key>.cube 파일명. 0(identity)=필름시뮬 미적용.
     readonly property var simKeys: [
         "identity", "provia", "velvia", "astia",
@@ -85,6 +88,25 @@ ApplicationWindow {
         onTriggered: controller.setWb(tempSlider.value, tintSlider.value)
     }
 
+    // 톤커브 배경 히스토그램 재계산(디바운스). 슬라이더 릴리즈/콤보 변경 시 호출.
+    Timer {
+        id: histTimer
+        interval: 120
+        onTriggered: controller.updateHistogram(win.curParams())
+    }
+    function curParams() {
+        return {
+            "exposure": expSlider.value, "contrast": conSlider.value,
+            "highlights": hiSlider.value, "shadows": shSlider.value,
+            "whites": whSlider.value, "blacks": blSlider.value,
+            "lutEnabled": simCombo.currentIndex !== 0,
+            "simKey": win.simKeys[simCombo.currentIndex],
+            "lutStrength": simStrengthSlider.value,
+            "curve": curveEditor.lut256()
+        }
+    }
+    function refreshHistogram() { histTimer.restart() }
+
     // 새 파일 로드 시 추정된 as-shot 색온도로 Temp 슬라이더 초기화.
     Connections {
         target: controller
@@ -92,6 +114,8 @@ ApplicationWindow {
             tempSlider.value = controller.asShotKelvin
             tintSlider.value = 0.0
         }
+        // 로드/WB 커밋(재디코딩)으로 프록시가 갱신되면 조절 반영 히스토그램 재계산.
+        function onImageChanged() { win.refreshHistogram() }
     }
 
     FileDialog {
@@ -105,8 +129,8 @@ ApplicationWindow {
         id: saveDialog
         title: "내보내기 (풀해상도)"
         fileMode: FileDialog.SaveFile
-        nameFilters: ["JPEG (*.jpg)", "PNG (*.png)", "TIFF (*.tif)"]
-        defaultSuffix: "jpg"
+        nameFilters: ["PNG (*.png)", "JPEG (*.jpg)", "TIFF (*.tif)"]
+        defaultSuffix: "png"
         onAccepted: controller.exportImage(selectedFile, {
             "exposure": expSlider.value,
             "contrast": conSlider.value,
@@ -125,7 +149,8 @@ ApplicationWindow {
             "lutStrength": simStrengthSlider.value,
             "curve": curveEditor.lut256(),
             "dateStamp": win.dateStamp,
-            "stampText": stampField.text
+            "stampText": stampField.text,
+            "outEdge": win.exportEdges[resCombo.currentIndex]
         })
     }
 
@@ -393,17 +418,63 @@ ApplicationWindow {
                     width: panelScroll.availableWidth
                     spacing: 12
 
-                Button {
-                    text: "Open RAF…"
+                RowLayout {
                     Layout.fillWidth: true
-                    onClicked: fileDialog.open()
+                    spacing: 6
+                    Button {
+                        text: "Open RAF…"
+                        Layout.fillWidth: true
+                        onClicked: fileDialog.open()
+                    }
+                    Button {
+                        id: resetBtn
+                        text: "↺"                       // Reset 아이콘(조절 초기화)
+                        Layout.preferredWidth: 26
+                        Layout.preferredHeight: 26       // 작은 정사각
+                        Layout.alignment: Qt.AlignVCenter
+                        padding: 0
+                        font.pixelSize: 14
+                        ToolTip.visible: hovered
+                        ToolTip.text: "Reset (조절 초기화)"
+                        onClicked: {
+                            expSlider.value = 0.0
+                            conSlider.value = 1.0
+                            hiSlider.value = 0.0
+                            shSlider.value = 0.0
+                            whSlider.value = 0.0
+                            blSlider.value = 0.0
+                            texSlider.value = 0.0
+                            claritySlider.value = 0.0
+                            dehazeSlider.value = 0.0
+                            vignetteSlider.value = 0.0
+                            grainSlider.value = 0.0
+                            grainSizeSlider.value = 0.5
+                            tempSlider.value = controller.asShotKelvin
+                            tintSlider.value = 0.0
+                            simCombo.currentIndex = 0
+                            simStrengthSlider.value = 1.0
+                            curveEditor.reset()
+                        }
+                    }
                 }
-
                 Button {
-                    text: "Export (full-res)…"
+                    text: "Export…"
                     Layout.fillWidth: true
                     enabled: controller.imagePath !== ""
                     onClicked: saveDialog.open()
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Label { text: "해상도"; color: "white"; font.pixelSize: 12 }
+                    ComboBox {
+                        id: resCombo
+                        Layout.fillWidth: true
+                        currentIndex: 0     // 원본
+                        model: ["원본 (Full)", "4096", "3840 (4K)",
+                                "2560", "2048", "1920 (FHD)", "1280"]
+                    }
                 }
 
                 Label {
@@ -427,6 +498,7 @@ ApplicationWindow {
                     id: simCombo
                     Layout.fillWidth: true
                     currentIndex: 0
+                    onActivated: win.refreshHistogram()
                     // 인덱스 순서가 셰이더 film_sim() 분기와 일치해야 함
                     // 순서가 위 simKeys 와 정확히 일치해야 함
                     model: [
@@ -460,7 +532,7 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(simStrengthSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        else { if (_pendingReset) { value = defaultValue; _pendingReset = false } win.refreshHistogram() }
                     }
                 }
 
@@ -485,7 +557,7 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(expSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        else { if (_pendingReset) { value = defaultValue; _pendingReset = false } win.refreshHistogram() }
                     }
                 }
 
@@ -502,7 +574,7 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(conSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        else { if (_pendingReset) { value = defaultValue; _pendingReset = false } win.refreshHistogram() }
                     }
                 }
 
@@ -519,7 +591,7 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(hiSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        else { if (_pendingReset) { value = defaultValue; _pendingReset = false } win.refreshHistogram() }
                     }
                 }
 
@@ -536,7 +608,7 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(shSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        else { if (_pendingReset) { value = defaultValue; _pendingReset = false } win.refreshHistogram() }
                     }
                 }
 
@@ -553,7 +625,7 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(whSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        else { if (_pendingReset) { value = defaultValue; _pendingReset = false } win.refreshHistogram() }
                     }
                 }
 
@@ -570,7 +642,7 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(blSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                        else { if (_pendingReset) { value = defaultValue; _pendingReset = false } win.refreshHistogram() }
                     }
                 }
 
@@ -585,7 +657,8 @@ ApplicationWindow {
                     id: curveEditor
                     Layout.fillWidth: true
                     Layout.preferredHeight: 240     // 고정 높이(너비에서 분리: 레이아웃 루프 방지)
-                    onEdited: controller.setCurve(lut256())
+                    histogram: controller.histogram
+                    onEdited: { controller.setCurve(lut256()); win.refreshHistogram() }
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
@@ -791,30 +864,6 @@ ApplicationWindow {
                     target: controller
                     // 새 파일 로드 시 입력필드를 EXIF 날짜로 동기화(사용자 편집은 안 건드림)
                     function onStampReset() { stampField.text = controller.stampText }
-                }
-
-                Button {
-                    text: "Reset"
-                    Layout.fillWidth: true
-                    onClicked: {
-                        expSlider.value = 0.0
-                        conSlider.value = 1.0
-                        hiSlider.value = 0.0
-                        shSlider.value = 0.0
-                        whSlider.value = 0.0
-                        blSlider.value = 0.0
-                        texSlider.value = 0.0
-                        claritySlider.value = 0.0
-                        dehazeSlider.value = 0.0
-                        vignetteSlider.value = 0.0
-                        grainSlider.value = 0.0
-                        grainSizeSlider.value = 0.5
-                        tempSlider.value = controller.asShotKelvin
-                        tintSlider.value = 0.0
-                        simCombo.currentIndex = 0
-                        simStrengthSlider.value = 1.0
-                        curveEditor.reset()
-                    }
                 }
                 }
             }
