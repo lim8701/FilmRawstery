@@ -1,7 +1,7 @@
 """RAW 에디터 최소 동작 스켈레톤.
 
-  RAF 디코딩(rawpy) -> 프록시 QImage -> QML ShaderEffect(GPU) 로 exposure/contrast
-  실시간 반영. 프래그먼트 셰이더는 시작 시 pyside6-qsb 로 자동 컴파일한다.
+  RAF 디코딩(rawpy) -> 프록시 QImage -> QML ShaderEffect(GPU) 파이프라인.
+  프래그먼트 셰이더는 시작 시 번들 qsb 로 자동 컴파일한다(ensure_shader).
 
 사용:
   pip install -r requirements.txt
@@ -24,30 +24,46 @@ from lut import atlas_qimage, load_cube
 from raw_loader import load_proxy
 
 BASE = Path(__file__).resolve().parent
-SHADER_SRC = BASE / "shaders" / "adjust.frag"
-SHADER_QSB = BASE / "shaders" / "adjust.frag.qsb"
+SHADERS_DIR = BASE / "shaders"
+SHADER_NAMES = ["adjust.frag", "blur.frag"]
 LUTS_DIR = BASE / "luts"
 
 # 시작 시 자동으로 열어볼 샘플 RAF (명령줄 인자가 없을 때 사용)
 DEFAULT_RAF = r"C:\Pic\x100v\131_FUJI\DSCF1039.RAF"
 
 
+def _find_qsb():
+    """셰이더 컴파일러(qsb) 경로. PySide6 번들 qsb 우선 — venv 폴더 rename 에도 안전
+    (console-script 래퍼 pyside6-qsb 는 절대경로가 박혀 폴더 이동 시 깨질 수 있음)."""
+    try:
+        import PySide6
+        exe = "qsb.exe" if sys.platform == "win32" else "qsb"
+        cand = Path(PySide6.__file__).resolve().parent / exe
+        if cand.exists():
+            return str(cand)
+    except Exception:
+        pass
+    return shutil.which("pyside6-qsb") or shutil.which("qsb")
+
+
 def ensure_shader() -> None:
-    """adjust.frag 를 .qsb 로 컴파일 (이미 최신이면 건너뜀)."""
-    if SHADER_QSB.exists() and SHADER_QSB.stat().st_mtime >= SHADER_SRC.stat().st_mtime:
-        return
-    qsb = shutil.which("pyside6-qsb") or shutil.which("qsb")
-    if not qsb:
-        raise RuntimeError(
-            "pyside6-qsb(또는 qsb) 를 찾을 수 없습니다. "
-            "PySide6 가 제대로 설치됐는지 확인하세요."
+    """frag 셰이더들을 .qsb 로 컴파일 (이미 최신이면 건너뜀)."""
+    qsb = None
+    for name in SHADER_NAMES:
+        src = SHADERS_DIR / name
+        out = SHADERS_DIR / (name + ".qsb")
+        if out.exists() and out.stat().st_mtime >= src.stat().st_mtime:
+            continue
+        if qsb is None:
+            qsb = _find_qsb()
+            if not qsb:
+                raise RuntimeError("qsb(PySide6 셰이더 컴파일러)를 찾을 수 없습니다.")
+        subprocess.run(
+            [qsb, "--glsl", "120,150,300es", "--hlsl", "50", "--msl", "12",
+             "-o", str(out), str(src)],
+            check=True,
         )
-    subprocess.run(
-        [qsb, "--glsl", "120,150,300es", "--hlsl", "50", "--msl", "12",
-         "-o", str(SHADER_QSB), str(SHADER_SRC)],
-        check=True,
-    )
-    print(f"[shader] compiled -> {SHADER_QSB.name}")
+        print(f"[shader] compiled -> {out.name}")
 
 
 class RawProvider(QQuickImageProvider):

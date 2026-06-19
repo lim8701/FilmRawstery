@@ -22,7 +22,7 @@ PySide6 + QML + GPU 셰이더 기반 RAW(.RAF) 현상/보정 에디터.
 
 - 전용 venv 사용:
   ```
-  cd C:\California\TEST36\raw_editor
+  cd C:\California\TEST36\CamRawEditor
   .\.venv\Scripts\python.exe main.py
   ```
 - venv = Python 3.13. 의존성: `requirements.txt` (PySide6, rawpy, numpy, scipy).
@@ -31,12 +31,16 @@ PySide6 + QML + GPU 셰이더 기반 RAW(.RAF) 현상/보정 에디터.
 
 ## 셰이더 컴파일 (필수)
 
-`shaders/*.frag` 를 수정하면 **반드시 .qsb 로 재컴파일**해야 반영된다(앱이 시작 시 자동
-재컴파일도 하지만, 수정 후 직접 컴파일 권장):
+`shaders/*.frag`(adjust, blur)를 수정하면 **.qsb 로 재컴파일**해야 반영된다. 앱이 시작 시
+`ensure_shader()`로 **mtime 비교 후 자동 재컴파일**하므로(번들 qsb 사용), 보통은 그냥 앱을
+다시 실행하면 된다. 수동 컴파일 시:
 ```
-.\.venv\Scripts\pyside6-qsb.exe --glsl 120,150,300es --hlsl 50 --msl 12 -o shaders/adjust.frag.qsb shaders/adjust.frag
-.\.venv\Scripts\pyside6-qsb.exe --glsl 120,150,300es --hlsl 50 --msl 12 -o shaders/blur.frag.qsb shaders/blur.frag
+.venv/Lib/site-packages/PySide6/qsb.exe --glsl 120,150,300es --hlsl 50 --msl 12 -o shaders/adjust.frag.qsb shaders/adjust.frag
 ```
+⚠️ **`pyside6-qsb.exe`(console-script 래퍼)는 절대경로가 박혀 있어 폴더 이동/rename 시 깨진다**
+(에러 메시지 없이 exit 1). 위처럼 **번들 `PySide6/qsb.exe`** 를 직접 쓰는 게 안전하다.
+`ensure_shader()`도 번들 qsb를 우선 사용하도록 돼 있다. (venv 자체를 옮겼다면 console-script
+들이 전부 깨지니, 깔끔히 하려면 venv 재생성 권장.)
 
 ## 검증 방법
 

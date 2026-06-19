@@ -105,6 +105,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     deh = float(p.get("dehaze", 0))
     vig = float(p.get("vignette", 0))
     con = float(p.get("contrast", 1.0))
+    lut_strength = float(p.get("lutStrength", 1.0))
 
     # --- 전역/공간 단계 (전체 배열) ---
     c = rgb16.astype(np.float32) / 65535.0
@@ -136,7 +137,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     for y in range(0, h, strip):
         blk = c[y:y + strip]
         if lut_arr is not None:
-            blk = _apply_lut3d(blk, lut_arr, lut_n)
+            looked = _apply_lut3d(blk, lut_arr, lut_n)
+            blk = blk * (1.0 - lut_strength) + looked * lut_strength   # 강도 블렌딩
         blk = np.clip((blk - 0.5) * con + 0.5, 0.0, 1.0)
         for ch in range(3):
             blk[..., ch] = np.interp(blk[..., ch], xs, cl)

@@ -23,6 +23,7 @@ layout(std140, binding = 0) uniform buf {
     float dehaze;       // 디헤이즈 (-1..1) +대비/채도/로컬대비 / -흰베일·플랫
     float vignette;     // 비네팅 (-1..1) 음수=가장자리 어둡게
     float lutSize;      // 3D LUT 한 변 N
+    float lutStrength;  // 필름시뮬 강도 0..1 (1=LUT 그대로, 0=미적용)
     int   lutEnabled;   // 0=미적용
 } ubuf;
 
@@ -115,9 +116,10 @@ void main() {
     }
     rgb = clamp(rgb, 0.0, 1.0);
 
-    // 7) 필름 시뮬레이션 3D LUT
+    // 7) 필름 시뮬레이션 3D LUT (강도 블렌딩 = 라이트룸 프로파일 Amount)
     if (ubuf.lutEnabled != 0) {
-        rgb = apply_lut(rgb, ubuf.lutSize);
+        vec3 looked = apply_lut(rgb, ubuf.lutSize);
+        rgb = mix(rgb, looked, ubuf.lutStrength);
     }
 
     // 8) 대비

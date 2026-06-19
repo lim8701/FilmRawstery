@@ -112,6 +112,7 @@ ApplicationWindow {
             "vignette": vignetteSlider.value,
             "lutEnabled": simCombo.currentIndex !== 0,
             "simKey": win.simKeys[simCombo.currentIndex],
+            "lutStrength": simStrengthSlider.value,
             "curve": curveEditor.lut256()
         })
     }
@@ -274,6 +275,7 @@ ApplicationWindow {
                         property real wbG: wbGain.y
                         property real wbB: wbGain.z
                         property real lutSize: lutN             // context property (LUT 크기 N)
+                        property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
 
                         fragmentShader: "shaders/adjust.frag.qsb"
@@ -367,6 +369,25 @@ ApplicationWindow {
                         "Reala Ace",
                         "Bleach Bypass"
                     ]
+                }
+
+                Label {
+                    text: "Strength:  " + Math.round(simStrengthSlider.value * 100) + "%"
+                    color: "white"
+                    enabled: simCombo.currentIndex !== 0
+                }
+                Slider {
+                    id: simStrengthSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 1.0
+                    enabled: simCombo.currentIndex !== 0   // None 이면 비활성
+                    property real defaultValue: 1.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(simStrengthSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
@@ -611,6 +632,7 @@ ApplicationWindow {
                         tempSlider.value = controller.asShotKelvin
                         tintSlider.value = 0.0
                         simCombo.currentIndex = 0
+                        simStrengthSlider.value = 1.0
                         curveEditor.reset()
                     }
                 }
