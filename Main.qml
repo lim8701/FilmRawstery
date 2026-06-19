@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Controls.Basic as B
 import QtQuick.Layouts
 import QtQuick.Dialogs
 
@@ -143,6 +144,8 @@ ApplicationWindow {
             "texAmt": texSlider.value,
             "clarity": claritySlider.value,
             "dehaze": dehazeSlider.value,
+            "saturation": satSlider.value,
+            "vibrance": vibSlider.value,
             "vignette": vignetteSlider.value,
             "grainAmt": grainSlider.value,
             "grainSize": grainSizeSlider.value,
@@ -152,7 +155,8 @@ ApplicationWindow {
             "curve": curveEditor.lut256(),
             "dateStamp": win.dateStamp,
             "stampText": stampField.text,
-            "outEdge": win.exportEdges[resCombo.currentIndex]
+            "outEdge": win.exportEdges[resCombo.currentIndex],
+            "lensCorrection": lensCheck.checked
         })
     }
 
@@ -319,6 +323,8 @@ ApplicationWindow {
                         property real texAmt: texSlider.value
                         property real clarity: claritySlider.value
                         property real dehaze: dehazeSlider.value
+                        property real saturation: satSlider.value
+                        property real vibrance: vibSlider.value
                         property real vignette: vignetteSlider.value
                         property real grainAmt: grainSlider.value
                         property real grainSize: grainSizeSlider.value
@@ -403,22 +409,22 @@ ApplicationWindow {
                 }
             }
 
-            // Export 진행 중 스피너 오버레이 (이미지 위)
+            // 진행 중 스피너 오버레이 (이미지 위): export 또는 디코딩(렌즈 보정 등)
             Rectangle {
                 anchors.fill: parent
-                visible: controller.exporting
+                visible: controller.exporting || controller.busy
                 color: "#aa000000"
                 MouseArea { anchors.fill: parent }   // 진행 중 이미지 입력 차단
                 ColumnLayout {
                     anchors.centerIn: parent
                     spacing: 12
                     BusyIndicator {
-                        running: controller.exporting
+                        running: controller.exporting || controller.busy
                         Layout.alignment: Qt.AlignHCenter
                         implicitWidth: 64; implicitHeight: 64
                     }
                     Label {
-                        text: "내보내는 중…"
+                        text: controller.exporting ? "내보내는 중…" : "처리 중…"
                         color: "white"; font.pixelSize: 14
                         Layout.alignment: Qt.AlignHCenter
                     }
@@ -432,14 +438,30 @@ ApplicationWindow {
             Layout.fillHeight: true
             color: "#2b2b2b"
 
-            ScrollView {
+            Flickable {
                 id: panelScroll
                 anchors.fill: parent
-                padding: 16
                 clip: true
+                contentWidth: width
+                contentHeight: panelCol.height + 32
+                boundsBehavior: Flickable.StopAtBounds
+                // 다크 테마 스크롤바 (Flickable + 명시적 Basic ScrollBar -> 확실히 표시)
+                ScrollBar.vertical: B.ScrollBar {
+                    id: vbar
+                    width: 12
+                    policy: ScrollBar.AlwaysOn
+                    contentItem: Rectangle {
+                        implicitWidth: 8
+                        radius: 4
+                        color: vbar.pressed ? "#cfcfcf" : "#9a9a9a"   // 밝게(항상 보임)
+                    }
+                    background: Rectangle { radius: 4; color: "#3a3a3a" }
+                }
 
                 ColumnLayout {
-                    width: panelScroll.availableWidth
+                    id: panelCol
+                    x: 16; y: 16
+                    width: panelScroll.width - 32
                     spacing: 12
 
                 RowLayout {
@@ -470,6 +492,8 @@ ApplicationWindow {
                             texSlider.value = 0.0
                             claritySlider.value = 0.0
                             dehazeSlider.value = 0.0
+                            satSlider.value = 0.0
+                            vibSlider.value = 0.0
                             vignetteSlider.value = 0.0
                             grainSlider.value = 0.0
                             grainSizeSlider.value = 0.5
@@ -751,11 +775,67 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
                 Label {
-                    text: "Effects"
+                    text: "Lens Corrections"
                     color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
                     font.capitalization: Font.AllUppercase
                 }
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    CheckBox {
+                        id: lensCheck
+                        checked: controller.lensCorrection
+                        onToggled: controller.setLensCorrection(checked)
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "X100V 프로파일 (왜곡·주변광량·CA)"
+                        color: "white"; font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
 
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Color"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
+                Label { text: "Vibrance:  " + vibSlider.value.toFixed(2); color: "white" }
+                Slider {
+                    id: vibSlider
+                    Layout.fillWidth: true
+                    from: -1.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(vibSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+                Label { text: "Saturation:  " + satSlider.value.toFixed(2); color: "white" }
+                Slider {
+                    id: satSlider
+                    Layout.fillWidth: true
+                    from: -1.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(satSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Detail & Vignette"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
                 Label { text: "Texture:  " + texSlider.value.toFixed(2); color: "white" }
                 Slider {
                     id: texSlider
@@ -769,7 +849,6 @@ ApplicationWindow {
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
                 }
-
                 Label { text: "Clarity:  " + claritySlider.value.toFixed(2); color: "white" }
                 Slider {
                     id: claritySlider
@@ -783,7 +862,6 @@ ApplicationWindow {
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
                 }
-
                 Label { text: "Dehaze:  " + dehazeSlider.value.toFixed(2); color: "white" }
                 Slider {
                     id: dehazeSlider
@@ -797,7 +875,6 @@ ApplicationWindow {
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
                 }
-
                 Label {
                     text: "Vignette:  " + vignetteSlider.value.toFixed(2) + "  (− 어둡게)"
                     color: "white"
@@ -815,6 +892,13 @@ ApplicationWindow {
                     }
                 }
 
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Grain"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
                 Label {
                     text: "Grain:  " + grainSlider.value.toFixed(2)
                     color: "white"

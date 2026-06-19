@@ -16,6 +16,7 @@ from PySide6.QtGui import QImage
 from scipy.ndimage import gaussian_filter, zoom
 
 import date_stamp
+import lens
 from wb import compute_user_wb
 
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
@@ -68,6 +69,19 @@ def _dehaze(c, amt, sigma):
     return l[..., None] + (c - l[..., None]) * (1.0 + amt * 0.3)  # 채도
 
 
+def _presence(c, sat, vib):
+    """바이브런스/채도 (셰이더와 동일, luma 축 mix -> 휘도 보존)."""
+    if vib != 0.0:
+        lum = c @ LUMA
+        cur = c.max(axis=2) - c.min(axis=2)
+        f = 1.0 + vib * (1.0 - np.clip(cur, 0.0, 1.0))
+        c = np.clip(lum[..., None] + (c - lum[..., None]) * f[..., None], 0.0, 1.0)
+    if sat != 0.0:
+        lum = c @ LUMA
+        c = np.clip(lum[..., None] + (c - lum[..., None]) * (1.0 + sat), 0.0, 1.0)
+    return c
+
+
 def _apply_lut3d(c, lut, n):
     x = np.clip(c, 0.0, 1.0) * (n - 1)
     b0 = np.floor(x).astype(np.intp)
@@ -116,6 +130,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     # 출력 해상도 지정(긴 변): 처리 전 다운스케일 -> 빠르고, 효과 sigma 가 해상도에
     # 비례해 룩 동일 유지(그레인/스탬프도 이미지 상대 크기라 일관).
     rgb16 = _downscale_to_edge(rgb16, int(p.get("outEdge", 0) or 0))
+    if p.get("lensCorrection", True):
+        rgb16 = lens.apply(rgb16)      # X100V 렌즈 프로파일(프록시와 동일)
 
     h, w, _ = rgb16.shape
     scale = max(h, w) / float(proxy_edge)     # 프록시 텍셀 반경 -> 풀해상도 px
@@ -128,6 +144,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     deh = float(p.get("dehaze", 0))
     vig = float(p.get("vignette", 0))
     con = float(p.get("contrast", 1.0))
+    sat = float(p.get("saturation", 0))
+    vib = float(p.get("vibrance", 0))
     lut_strength = float(p.get("lutStrength", 1.0))
     grain_amt = float(p.get("grainAmt", 0))
     grain_size = float(p.get("grainSize", 0.5))
@@ -179,6 +197,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         if lut_arr is not None:
             looked = _apply_lut3d(blk, lut_arr, lut_n)
             blk = blk * (1.0 - lut_strength) + looked * lut_strength   # 강도 블렌딩
+        if sat != 0.0 or vib != 0.0:
+            blk = _presence(blk, sat, vib)                             # 바이브런스/채도
         blk = np.clip((blk - 0.5) * con + 0.5, 0.0, 1.0)
         for ch in range(3):
             blk[..., ch] = np.interp(blk[..., ch], xs, cl)

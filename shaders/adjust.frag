@@ -30,6 +30,8 @@ layout(std140, binding = 0) uniform buf {
     float grainAspect;  // 프록시 가로/세로비 W/H (정사각 입자용)
     float stampOn;      // 날짜 스탬프 표시 1/0
     float stampStrength;// 날짜 스탬프 가산 강도
+    float saturation;   // 채도 (-1..1, 0=무변화, -1=흑백)
+    float vibrance;     // 바이브런스 (-1..1, 저채도 우선 보정)
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본 이미지
@@ -142,6 +144,18 @@ void main() {
     if (ubuf.lutEnabled != 0) {
         vec3 looked = apply_lut(rgb, ubuf.lutSize);
         rgb = mix(rgb, looked, ubuf.lutStrength);
+    }
+
+    // 7.5) 바이브런스/채도 (luma 축 mix -> 휘도 보존)
+    if (ubuf.vibrance != 0.0) {
+        float l = dot(rgb, LUMA);
+        float cur = max(rgb.r, max(rgb.g, rgb.b)) - min(rgb.r, min(rgb.g, rgb.b));
+        float f = 1.0 + ubuf.vibrance * (1.0 - clamp(cur, 0.0, 1.0));  // 저채도일수록 강하게
+        rgb = clamp(mix(vec3(l), rgb, f), 0.0, 1.0);
+    }
+    if (ubuf.saturation != 0.0) {
+        float l = dot(rgb, LUMA);
+        rgb = clamp(mix(vec3(l), rgb, 1.0 + ubuf.saturation), 0.0, 1.0);
     }
 
     // 8) 대비

@@ -159,6 +159,9 @@ class Controller(QObject):
     stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
     stampReset = Signal()       # 새 파일 로드 -> 입력필드를 EXIF 기본값으로 되돌림
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
+    lensChanged = Signal()       # 렌즈 보정 on/off 변경 알림
+    busyChanged = Signal()       # 디코딩(렌즈 보정 포함) 진행 중 표시
+    _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None):
@@ -188,6 +191,10 @@ class Controller(QObject):
         self._histogram = []        # 256-bin 휘도 히스토그램(0..1 정규화)
         self._proxy_small = None    # 히스토그램 재계산용 축소 프록시(float32 0..1)
         self._lut_cache = {}        # simKey -> (lut_arr, n)
+        self._lens = True           # X100V 렌즈 프로파일 보정 on/off
+        self._busy = False          # 디코딩 진행 중(스피너)
+        self._render_seq = 0        # 비동기 렌더 순번(오래된 결과 폐기용)
+        self._renderReady.connect(self._on_render_ready)
 
     @Slot("QVariantList")
     def setCurve(self, lut) -> None:  # noqa: N802 (QML 슬롯)
@@ -376,13 +383,56 @@ class Controller(QObject):
         self._stamp_url = f"image://stamp/s?v={self._stamp_counter}"
         self.stampChanged.emit()
 
-    def _render(self) -> None:
-        try:
-            img, as_shot, cam, ref = load_proxy(
-                self._path, kelvin=self._kelvin, tint=self._tint)
-        except Exception as exc:  # 스켈레톤: 콘솔에만 출력
-            print(f"[load] 실패: {exc}")
+    @Slot(bool)
+    def setLensCorrection(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
+        """X100V 렌즈 보정 on/off (재디코딩)."""
+        if self._lens == on:
             return
+        self._lens = on
+        self.lensChanged.emit()
+        if self._path:
+            self._render()
+
+    def _get_lens(self) -> bool:
+        return self._lens
+
+    lensCorrection = Property(bool, _get_lens, notify=lensChanged)
+
+    def _get_busy(self) -> bool:
+        return self._busy
+
+    busy = Property(bool, _get_busy, notify=busyChanged)
+
+    def _render(self) -> None:
+        """디코딩(+렌즈 보정)을 백그라운드 스레드에서 수행. UI 안 멈추고 스피너 표시."""
+        if not self._path:
+            return
+        self._render_seq += 1
+        seq = self._render_seq
+        if not self._busy:
+            self._busy = True
+            self.busyChanged.emit()
+        args = (seq, self._path, self._kelvin, self._tint, self._lens)
+        threading.Thread(target=self._render_worker, args=args, daemon=True).start()
+
+    def _render_worker(self, seq, path, kelvin, tint, lens_on) -> None:
+        try:
+            res = load_proxy(path, kelvin=kelvin, tint=tint, lens_correct=lens_on)
+        except Exception as exc:
+            print(f"[load] 실패: {exc}")
+            res = None
+        self._renderReady.emit((seq, res))   # 메인 스레드로 큐잉
+
+    @Slot(object)
+    def _on_render_ready(self, payload) -> None:
+        seq, res = payload
+        if seq != self._render_seq:
+            return                            # 더 최신 렌더 진행 중 -> 폐기(busy 유지)
+        self._busy = False
+        self.busyChanged.emit()
+        if res is None:
+            return
+        img, as_shot, cam, ref = res
         if self._kelvin is None:
             self._kelvin = as_shot       # as-shot 으로 디코딩됨 -> 현재값 동기화
         self._cam = cam
@@ -438,6 +488,22 @@ def ensure_luts() -> None:
         make_luts.generate_all()
 
 
+def apply_dark_titlebar(window) -> None:
+    """Windows OS 타이틀바를 다크 모드로(DWMWA_USE_IMMERSIVE_DARK_MODE)."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+        hwnd = int(window.winId())
+        v = ctypes.c_int(1)
+        # 20 = Win10 2004+/Win11, 19 = 이전 빌드 (둘 다 시도)
+        for attr in (20, 19):
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attr, ctypes.byref(v), ctypes.sizeof(v))
+    except Exception as exc:
+        print(f"[theme] 다크 타이틀바 적용 실패: {exc}")
+
+
 def main() -> int:
     ensure_shader()
     ensure_luts()
@@ -467,6 +533,8 @@ def main() -> int:
     engine.load(QUrl.fromLocalFile(str(BASE / "Main.qml")))
     if not engine.rootObjects():
         return -1
+
+    apply_dark_titlebar(engine.rootObjects()[0])   # OS 타이틀바 다크 모드(Windows)
 
     # 명령줄 인자가 있으면 그 경로, 없으면 기본 샘플을 자동 로드
     start_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_RAF

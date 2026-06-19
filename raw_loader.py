@@ -9,10 +9,12 @@ import rawpy
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QImage
 
+import lens
 from wb import compute_user_wb, estimate_cct
 
 
-def load_proxy(path: str, kelvin=None, tint: float = 0.0, max_edge: int = 2560):
+def load_proxy(path: str, kelvin=None, tint: float = 0.0, max_edge: int = 2560,
+               lens_correct: bool = True):
     """RAF 를 디코딩해 (QImage, as_shot_kelvin, cam_xyz(3x3 list), ref(3 list)) 반환.
 
     kelvin=None 이면 카메라 as-shot 추정 색온도로 디코딩한다.
@@ -35,6 +37,8 @@ def load_proxy(path: str, kelvin=None, tint: float = 0.0, max_edge: int = 2560):
             gamma=(2.4, 12.92),    # 표준 sRGB EOTF (LibRaw 기본 2.222/4.5는 섀도를 더 눌러 대비↑)
         )
 
+    if lens_correct:
+        rgb = lens.apply(rgb)          # X100V 렌즈 프로파일(왜곡/주변광량/CA)
     rgb = np.ascontiguousarray(rgb)
     h, w, _ = rgb.shape
     img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
