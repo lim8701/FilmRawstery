@@ -166,8 +166,8 @@ void main() {
         float a = clamp(st.a * ubuf.stampStrength, 0.0, 1.0);
         float coreA = smoothstep(0.45, 0.85, a) * 0.70;   // 코어 불투명도 상한(배경 비침)
         rgb = mix(rgb, st.rgb, coreA);                    // 코어 source-over (일관)
-        vec3 glow = st.rgb * (a * (1.0 - coreA));         // 헤일로 광량
-        rgb = 1.0 - (1.0 - rgb) * (1.0 - glow);           // screen 가산 (빛 번짐)
+        vec3 glow = st.rgb * clamp(a * (1.0 - coreA * 0.5) * 1.2, 0.0, 1.0);  // 빛 가산(게인1.2)
+        rgb = 1.0 - (1.0 - rgb) * (1.0 - glow);           // screen 가산 (코어도 일부 태움)
     }
 
     // 12) 필름 그레인 (에멀전 입자) — 맨 끝: 장면과 날짜 스탬프 모두에 입혀짐.

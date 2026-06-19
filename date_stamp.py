@@ -22,12 +22,13 @@ _family = None
 TEXT_FRAC = 0.040       # 숫자 높이 = 짧은 변의 4.0%
 MARGIN_FRAC = 0.030     # 우/하 여백 = 짧은 변의 3.0%
 # 필름 광학 각인의 색: 핫코어(밝은 주황-노랑) → 앰버 → 적주황 헤일로로 번짐.
-C_CORE = np.array([1.00, 0.93, 0.66], np.float32)   # 노출 과다된 뜨거운 중심(흰빛쪽)
-C_MID = np.array([1.00, 0.52, 0.14], np.float32)    # 앰버
-C_HALO = np.array([0.92, 0.22, 0.05], np.float32)   # 적주황 외곽 번짐
+C_CORE = np.array([1.00, 0.95, 0.76], np.float32)   # 노출 과다된 뜨거운 중심(흰빛쪽, 더 밝게)
+C_MID = np.array([1.00, 0.54, 0.16], np.float32)    # 앰버
+C_HALO = np.array([0.94, 0.24, 0.06], np.float32)   # 적주황 외곽 번짐
 # source-over(알파) 합성의 불투명도 배율. 배경 밝기와 무관하게 일정한 룩.
 STAMP_STRENGTH = 0.92   # 셰이더 ubuf.stampStrength = QML pipe.stampStrength 와 일치
 STAMP_CORE_OPACITY = 0.70  # 코어(숫자) 최대 불투명도 (<1 이면 배경이 비침). 셰이더 리터럴과 일치
+STAMP_GLOW_GAIN = 1.2      # screen 글로우(빛 가산) 게인 — 클수록 더 밝게 탐. 셰이더 리터럴과 일치
 
 
 def font_family():
@@ -132,8 +133,8 @@ def stamp_export(out_u8, text):
     coreA = (t * t * (3.0 - 2.0 * t))[..., None] * STAMP_CORE_OPACITY   # 코어 불투명도(배경 비침)
     region = out_u8[y0:y0 + sh, x0:x0 + sw, :].astype(np.float32) / 255.0
     region = region * (1.0 - coreA) + col * coreA            # 코어 source-over
-    glow = col * (a[..., None] * (1.0 - coreA))              # 헤일로 광량
-    region = 1.0 - (1.0 - region) * (1.0 - glow)             # screen 가산
+    glow = col * np.clip(a[..., None] * (1.0 - coreA * 0.5) * STAMP_GLOW_GAIN, 0.0, 1.0)
+    region = 1.0 - (1.0 - region) * (1.0 - glow)             # screen 가산(코어도 일부 태움)
     out_u8[y0:y0 + sh, x0:x0 + sw, :] = np.rint(np.clip(region, 0.0, 1.0) * 255.0).astype(np.uint8)
     return out_u8
 
