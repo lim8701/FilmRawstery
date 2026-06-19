@@ -3,7 +3,7 @@
 화면 프리뷰(GPU 셰이더, 프록시)와 동일한 단계/수식을 풀해상도에 재현한다:
 
   노출 -> (WB: 정확 색온도 디코딩이라 게인=1, 생략) -> 톤영역(hi/sh/wh/bl)
-       -> 텍스처/클래리티/디헤이즈 -> 3D LUT -> 대비 -> 톤커브 -> 비네팅
+       -> 텍스처/클래리티/디헤이즈 -> 3D LUT -> 대비 -> 톤커브 -> 그레인 -> 비네팅
 
 텍스처/클래리티는 공간(이웃) 연산이라 셰이더의 '프록시 텍셀' 반경을 풀해상도
 비율(full/proxy)로 스케일해 시각적으로 맞춘다. 공간 단계는 전체 배열에서,
@@ -13,7 +13,7 @@
 import numpy as np
 import rawpy
 from PySide6.QtGui import QImage
-from scipy.ndimage import gaussian_filter
+from scipy.ndimage import gaussian_filter, zoom
 
 from wb import compute_user_wb
 
@@ -106,6 +106,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     vig = float(p.get("vignette", 0))
     con = float(p.get("contrast", 1.0))
     lut_strength = float(p.get("lutStrength", 1.0))
+    grain_amt = float(p.get("grainAmt", 0))
+    grain_size = float(p.get("grainSize", 0.5))
 
     # --- 전역/공간 단계 (전체 배열) ---
     c = rgb16.astype(np.float32) / 65535.0
@@ -130,6 +132,19 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     else:
         vig_mask = None
 
+    # 필름 그레인 필드(흑백 단색, 전체 H,W 1회 생성 -> 스트립 시드 이음매 방지).
+    # 셰이더 value-noise 와 '성격(셀 크기/강도)' 일치: gridN=mix(1500,150,size),
+    # 정사각 입자(gridN/aspect)로 거친 그리드를 bilinear 업샘플. 패턴 픽셀일치는 기대 안 함.
+    if grain_amt > 0.0:
+        gridN = int(round(1500.0 + (500.0 - 1500.0) * grain_size))  # 셰이더 mix 와 동일
+        gx, gy = gridN, max(1, int(round(gridN * h / w)))           # gridN / aspect(W/H)
+        rng = np.random.default_rng(12345)                          # 재export 결정적
+        grid = (rng.random((gy + 1, gx + 1), dtype=np.float32) - 0.5)
+        grain2d = zoom(grid, (h / (gy + 1), w / (gx + 1)), order=1)
+        grain2d = grain2d[:h, :w].astype(np.float32)
+    else:
+        grain2d = None
+
     # --- LUT/대비/커브/비네팅 (메모리 큰 LUT 는 스트립) ---
     out = np.empty((h, w, 3), dtype=np.uint8)
     xs = np.linspace(0.0, 1.0, len(curve_lut))
@@ -142,6 +157,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         blk = np.clip((blk - 0.5) * con + 0.5, 0.0, 1.0)
         for ch in range(3):
             blk[..., ch] = np.interp(blk[..., ch], xs, cl)
+        if grain2d is not None:                                     # 톤커브 뒤·비네팅 앞
+            blk = blk + grain2d[y:y + strip, :, None] * grain_amt * 0.12
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * 255.0).astype(np.uint8)

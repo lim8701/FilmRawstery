@@ -20,6 +20,7 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider
 
 import make_luts
+from exif_info import read_shooting_info
 from lut import atlas_qimage, load_cube
 from raw_loader import load_proxy
 
@@ -29,7 +30,8 @@ SHADER_NAMES = ["adjust.frag", "blur.frag"]
 LUTS_DIR = BASE / "luts"
 
 # 시작 시 자동으로 열어볼 샘플 RAF (명령줄 인자가 없을 때 사용)
-DEFAULT_RAF = r"C:\Pic\x100v\131_FUJI\DSCF1039.RAF"
+DEFAULT_RAF = r"C:\Pic\x100v\128_FUJI\DSCF8035.RAF"
+# DEFAULT_RAF = r"C:\Pic\x100v\131_FUJI\DSCF1039.RAF"  # 임시 비활성
 
 
 def _find_qsb():
@@ -137,6 +139,7 @@ class Controller(QObject):
     wbBaked = Signal()          # 재디코딩 완료(=baked WB 갱신) 알림
     curveChanged = Signal()     # 톤 커브 LUT 갱신 알림
     exportStatusChanged = Signal()
+    exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider"):
         super().__init__()
@@ -154,6 +157,8 @@ class Controller(QObject):
         self._curve_counter = 0
         self._export_status = ""
         self._exporting = False
+        self._exif_fields = []      # [{"label","value"}, ...] 패널용
+        self._exif_summary = ""     # 오버레이용 2줄 요약
 
     @Slot("QVariantList")
     def setCurve(self, lut) -> None:  # noqa: N802 (QML 슬롯)
@@ -206,12 +211,24 @@ class Controller(QObject):
 
     curveUrl = Property(str, _get_curve_url, notify=curveChanged)
 
+    def _get_exif(self) -> list:
+        return self._exif_fields
+
+    def _get_exif_summary(self) -> str:
+        return self._exif_summary
+
+    shootingInfo = Property("QVariantList", _get_exif, notify=exifChanged)
+    shootingSummary = Property(str, _get_exif_summary, notify=exifChanged)
+
     @Slot(QUrl)
     def load(self, file_url: QUrl) -> None:
         path = file_url.toLocalFile() if file_url.isLocalFile() else file_url.toString()
         self._path = path
         self._kelvin = None     # 새 파일은 as-shot 색온도로 시작
         self._tint = 0.0
+        # 촬영정보는 경로에만 의존 -> 로드 시 1회 읽음(WB 변경 재디코딩과 무관)
+        self._exif_fields, self._exif_summary = read_shooting_info(path)
+        self.exifChanged.emit()
         self._render()
 
     @Slot(float, float)

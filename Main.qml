@@ -17,6 +17,10 @@ ApplicationWindow {
     // 유도상 daylight_ref·기준온도가 약분돼 카메라 매트릭스(camMatrix)만 있으면 계산 가능.
     readonly property int wbTRef: 5500
 
+    // 촬영정보 플로팅 패널 표시 여부 (I 키로 토글)
+    property bool infoOverlay: true
+    Shortcut { sequence: "I"; onActivated: win.infoOverlay = !win.infoOverlay }
+
     // 콤보 인덱스 -> luts/<key>.cube 파일명. 0(identity)=필름시뮬 미적용.
     readonly property var simKeys: [
         "identity", "provia", "velvia", "astia",
@@ -110,6 +114,8 @@ ApplicationWindow {
             "clarity": claritySlider.value,
             "dehaze": dehazeSlider.value,
             "vignette": vignetteSlider.value,
+            "grainAmt": grainSlider.value,
+            "grainSize": grainSizeSlider.value,
             "lutEnabled": simCombo.currentIndex !== 0,
             "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value,
@@ -269,6 +275,9 @@ ApplicationWindow {
                         property real clarity: claritySlider.value
                         property real dehaze: dehazeSlider.value
                         property real vignette: vignetteSlider.value
+                        property real grainAmt: grainSlider.value
+                        property real grainSize: grainSizeSlider.value
+                        property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
                         // WB 실시간 프리뷰 게인 (baked->target). 커밋되면 (1,1,1).
                         property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
                         property real wbR: wbGain.x
@@ -302,6 +311,48 @@ ApplicationWindow {
                         color: "#888"
                         font.pixelSize: 16
                         text: "오른쪽 'Open RAF…' 버튼으로 파일을 여세요"
+                    }
+
+                    // 촬영정보 플로팅 패널 (I 키 토글) — 좌측 뷰 왼쪽 끝에 고정
+                    Rectangle {
+                        visible: win.infoOverlay && pipeView.visible
+                                 && controller.shootingInfo.length > 0
+                        anchors.left: parent.left
+                        anchors.top: parent.top
+                        anchors.margins: 12
+                        radius: 6
+                        color: "#cc1e1e1e"
+                        border.color: "#55ffffff"; border.width: 1
+                        width: ovCol.implicitWidth + 24
+                        height: ovCol.implicitHeight + 20
+                        ColumnLayout {
+                            id: ovCol
+                            anchors.centerIn: parent
+                            spacing: 3
+                            Label {
+                                text: "Shooting Info"
+                                color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                                Layout.bottomMargin: 3
+                            }
+                            Repeater {
+                                model: controller.shootingInfo
+                                delegate: RowLayout {
+                                    Layout.fillWidth: true
+                                    spacing: 16
+                                    Label {
+                                        text: modelData.label
+                                        color: "#9a9a9a"; font.pixelSize: 11
+                                    }
+                                    Item { Layout.fillWidth: true }
+                                    Label {
+                                        text: modelData.value
+                                        color: "#e6e6e6"; font.pixelSize: 11
+                                        horizontalAlignment: Text.AlignRight
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -348,7 +399,11 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
                 // 필름 시뮬레이션 선택
-                Label { text: "Film Simulation"; color: "white" }
+                Label {
+                    text: "Film Simulation"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
                 ComboBox {
                     id: simCombo
                     Layout.fillWidth: true
@@ -391,6 +446,12 @@ ApplicationWindow {
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Light"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
 
                 Label {
                     text: "Exposure:  " + expSlider.value.toFixed(2)
@@ -496,6 +557,82 @@ ApplicationWindow {
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
+                Label {
+                    text: "Tone Curve"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
+                CurveEditor {
+                    id: curveEditor
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 240     // 고정 높이(너비에서 분리: 레이아웃 루프 방지)
+                    onEdited: controller.setCurve(lut256())
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "White Balance"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
+
+                Label {
+                    text: "Temp:  " + Math.round(tempSlider.value) + " K"
+                            + "   (as-shot " + controller.asShotKelvin + "K)"
+                    color: "white"
+                }
+                Slider {
+                    id: tempSlider
+                    Layout.fillWidth: true
+                    from: 2000; to: 12000; value: 6500
+                    stepSize: 50
+                    // 더블클릭 -> as-shot 색온도로 리셋
+                    property real defaultValue: controller.asShotKelvin
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    // press: 더블 여부 판정. release: (더블이면 리셋 후) 재디코딩 커밋.
+                    onPressedChanged: {
+                        if (pressed) {
+                            _pendingReset = win.isDblPress(tempSlider)
+                        } else {
+                            if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                            controller.setWb(tempSlider.value, tintSlider.value)
+                        }
+                    }
+                    onValueChanged: if (!pressed) wbTimer.restart()
+                }
+
+                Label {
+                    text: "Tint:  " + tintSlider.value.toFixed(2) + "  (− green / + magenta)"
+                    color: "white"
+                }
+                Slider {
+                    id: tintSlider
+                    Layout.fillWidth: true
+                    from: -1.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) {
+                            _pendingReset = win.isDblPress(tintSlider)
+                        } else {
+                            if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                            controller.setWb(tempSlider.value, tintSlider.value)
+                        }
+                    }
+                    onValueChanged: if (!pressed) wbTimer.restart()
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Effects"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
+
                 Label { text: "Texture:  " + texSlider.value.toFixed(2); color: "white" }
                 Slider {
                     id: texSlider
@@ -555,64 +692,38 @@ ApplicationWindow {
                     }
                 }
 
-                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
-
                 Label {
-                    text: "Temp:  " + Math.round(tempSlider.value) + " K"
-                            + "   (as-shot " + controller.asShotKelvin + "K)"
+                    text: "Grain:  " + grainSlider.value.toFixed(2)
                     color: "white"
                 }
                 Slider {
-                    id: tempSlider
+                    id: grainSlider
                     Layout.fillWidth: true
-                    from: 2000; to: 12000; value: 6500
-                    stepSize: 50
-                    // 더블클릭 -> as-shot 색온도로 리셋
-                    property real defaultValue: controller.asShotKelvin
-                    property real _lastPressMs: 0
-                    property bool _pendingReset: false
-                    // press: 더블 여부 판정. release: (더블이면 리셋 후) 재디코딩 커밋.
-                    onPressedChanged: {
-                        if (pressed) {
-                            _pendingReset = win.isDblPress(tempSlider)
-                        } else {
-                            if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                            controller.setWb(tempSlider.value, tintSlider.value)
-                        }
-                    }
-                    onValueChanged: if (!pressed) wbTimer.restart()
-                }
-
-                Label {
-                    text: "Tint:  " + tintSlider.value.toFixed(2) + "  (− green / + magenta)"
-                    color: "white"
-                }
-                Slider {
-                    id: tintSlider
-                    Layout.fillWidth: true
-                    from: -1.0; to: 1.0; value: 0.0
+                    from: 0.0; to: 1.0; value: 0.0
                     property real defaultValue: 0.0
                     property real _lastPressMs: 0
                     property bool _pendingReset: false
                     onPressedChanged: {
-                        if (pressed) {
-                            _pendingReset = win.isDblPress(tintSlider)
-                        } else {
-                            if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                            controller.setWb(tempSlider.value, tintSlider.value)
-                        }
+                        if (pressed) _pendingReset = win.isDblPress(grainSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
-                    onValueChanged: if (!pressed) wbTimer.restart()
                 }
 
-                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
-
-                Label { text: "Tone Curve"; color: "white" }
-                CurveEditor {
-                    id: curveEditor
+                Label {
+                    text: "Grain Size:  " + grainSizeSlider.value.toFixed(2) + "  (작게 ↔ 굵게)"
+                    color: "white"
+                }
+                Slider {
+                    id: grainSizeSlider
                     Layout.fillWidth: true
-                    Layout.preferredHeight: 240     // 고정 높이(너비에서 분리: 레이아웃 루프 방지)
-                    onEdited: controller.setCurve(lut256())
+                    from: 0.0; to: 1.0; value: 0.5
+                    property real defaultValue: 0.5
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(grainSizeSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
                 }
 
                 Button {
@@ -629,6 +740,8 @@ ApplicationWindow {
                         claritySlider.value = 0.0
                         dehazeSlider.value = 0.0
                         vignetteSlider.value = 0.0
+                        grainSlider.value = 0.0
+                        grainSizeSlider.value = 0.5
                         tempSlider.value = controller.asShotKelvin
                         tintSlider.value = 0.0
                         simCombo.currentIndex = 0
