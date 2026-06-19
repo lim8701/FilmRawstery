@@ -235,6 +235,12 @@ class Controller(QObject):
 
     exportStatus = Property(str, _get_export_status, notify=exportStatusChanged)
 
+    def _get_exporting(self) -> bool:
+        return self._exporting
+
+    # 내보내는 중 여부(스피너 표시용). 상태 변경과 동시에 갱신되므로 같은 시그널로 통지.
+    exporting = Property(bool, _get_exporting, notify=exportStatusChanged)
+
     def _get_curve_url(self) -> str:
         return self._curve_url
 
@@ -269,7 +275,7 @@ class Controller(QObject):
         else:
             arr = (np.frombuffer(im.constBits(), np.uint8)
                    .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3))
-            step = max(1, max(h, w) // 384)          # 히스토그램은 축소본으로 충분(빠름)
+            step = max(1, max(h, w) // 128)          # 히스토그램용 소형 축소본(드래그 중 가벼움)
             self._proxy_small = arr[::step, ::step].astype(np.float32) / 255.0
             self._histogram = self._hist_of(self._proxy_small)
         self.histogramChanged.emit()

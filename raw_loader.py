@@ -32,6 +32,7 @@ def load_proxy(path: str, kelvin=None, tint: float = 0.0, max_edge: int = 2560):
             half_size=True,        # 빠른 디코딩(프록시 용도)
             output_bps=8,
             no_auto_bright=True,   # 자동 밝기 보정 OFF (LUT가 톤을 책임짐)
+            gamma=(2.4, 12.92),    # 표준 sRGB EOTF (LibRaw 기본 2.222/4.5는 섀도를 더 눌러 대비↑)
         )
 
     rgb = np.ascontiguousarray(rgb)

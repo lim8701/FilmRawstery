@@ -110,7 +110,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         ref = np.array(raw.daylight_whitebalance)[:3]
         ref = ref / ref[1]
         user_wb = compute_user_wb(cam, ref, kelvin, tint)
-        rgb16 = raw.postprocess(user_wb=user_wb, output_bps=16, no_auto_bright=True)
+        rgb16 = raw.postprocess(user_wb=user_wb, output_bps=16, no_auto_bright=True,
+                                gamma=(2.4, 12.92))   # 표준 sRGB EOTF (프록시와 동일)
 
     # 출력 해상도 지정(긴 변): 처리 전 다운스케일 -> 빠르고, 효과 sigma 가 해상도에
     # 비례해 룩 동일 유지(그레인/스탬프도 이미지 상대 크기라 일관).

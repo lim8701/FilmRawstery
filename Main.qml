@@ -88,12 +88,15 @@ ApplicationWindow {
         onTriggered: controller.setWb(tempSlider.value, tintSlider.value)
     }
 
-    // 톤커브 배경 히스토그램 재계산(디바운스). 슬라이더 릴리즈/콤보 변경 시 호출.
+    // 톤커브 배경 히스토그램 재계산(스로틀). 드래그 중 주기적 갱신(메인 스레드 부담 완화).
     Timer {
         id: histTimer
-        interval: 120
+        interval: 130
         onTriggered: controller.updateHistogram(win.curParams())
     }
+    // 스로틀: 실행 중이 아니면 시작 -> 연속 드래그 중에도 interval 마다 갱신(디바운스와 달리 멈춤 없음).
+    function refreshHistogram() { if (!histTimer.running) histTimer.start() }
+
     function curParams() {
         return {
             "exposure": expSlider.value, "contrast": conSlider.value,
@@ -105,7 +108,6 @@ ApplicationWindow {
             "curve": curveEditor.lut256()
         }
     }
-    function refreshHistogram() { histTimer.restart() }
 
     // 새 파일 로드 시 추정된 as-shot 색온도로 Temp 슬라이더 초기화.
     Connections {
@@ -400,6 +402,28 @@ ApplicationWindow {
                     }
                 }
             }
+
+            // Export 진행 중 스피너 오버레이 (이미지 위)
+            Rectangle {
+                anchors.fill: parent
+                visible: controller.exporting
+                color: "#aa000000"
+                MouseArea { anchors.fill: parent }   // 진행 중 이미지 입력 차단
+                ColumnLayout {
+                    anchors.centerIn: parent
+                    spacing: 12
+                    BusyIndicator {
+                        running: controller.exporting
+                        Layout.alignment: Qt.AlignHCenter
+                        implicitWidth: 64; implicitHeight: 64
+                    }
+                    Label {
+                        text: "내보내는 중…"
+                        color: "white"; font.pixelSize: 14
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                }
+            }
         }
 
         // ---------- 우측 패널 (스크롤) ----------
@@ -525,6 +549,7 @@ ApplicationWindow {
                 Slider {
                     id: simStrengthSlider
                     Layout.fillWidth: true
+                    onMoved: win.refreshHistogram()
                     from: 0.0; to: 1.0; value: 1.0
                     enabled: simCombo.currentIndex !== 0   // None 이면 비활성
                     property real defaultValue: 1.0
@@ -551,6 +576,7 @@ ApplicationWindow {
                 Slider {
                     id: expSlider
                     Layout.fillWidth: true
+                    onMoved: win.refreshHistogram()
                     from: -3.0; to: 3.0; value: 0.0
                     property real defaultValue: 0.0
                     property real _lastPressMs: 0
@@ -568,6 +594,7 @@ ApplicationWindow {
                 Slider {
                     id: conSlider
                     Layout.fillWidth: true
+                    onMoved: win.refreshHistogram()
                     from: 0.5; to: 2.0; value: 1.0
                     property real defaultValue: 1.0
                     property real _lastPressMs: 0
@@ -585,6 +612,7 @@ ApplicationWindow {
                 Slider {
                     id: hiSlider
                     Layout.fillWidth: true
+                    onMoved: win.refreshHistogram()
                     from: -1.0; to: 1.0; value: 0.0
                     property real defaultValue: 0.0
                     property real _lastPressMs: 0
@@ -602,6 +630,7 @@ ApplicationWindow {
                 Slider {
                     id: shSlider
                     Layout.fillWidth: true
+                    onMoved: win.refreshHistogram()
                     from: -1.0; to: 1.0; value: 0.0
                     property real defaultValue: 0.0
                     property real _lastPressMs: 0
@@ -619,6 +648,7 @@ ApplicationWindow {
                 Slider {
                     id: whSlider
                     Layout.fillWidth: true
+                    onMoved: win.refreshHistogram()
                     from: -1.0; to: 1.0; value: 0.0
                     property real defaultValue: 0.0
                     property real _lastPressMs: 0
@@ -636,6 +666,7 @@ ApplicationWindow {
                 Slider {
                     id: blSlider
                     Layout.fillWidth: true
+                    onMoved: win.refreshHistogram()
                     from: -1.0; to: 1.0; value: 0.0
                     property real defaultValue: 0.0
                     property real _lastPressMs: 0
