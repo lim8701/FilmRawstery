@@ -30,6 +30,24 @@ ApplicationWindow {
     property bool showExplorer: true
     Shortcut { sequence: "B"; onActivated: win.showExplorer = !win.showExplorer }
 
+    // 탐색기 "좋아요만 보기" 필터
+    property bool showLikedOnly: false
+    // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAF 만.
+    //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
+    property var explorerFiles: {
+        controller.likeRevision               // 좋아요 토글 시 재평가용 의존
+        var files = controller.fileList        // folderChanged 시 재평가 + 1회만 읽기
+        if (!win.showLikedOnly)
+            return files
+        var out = []
+        for (var i = 0; i < files.length; i++) {
+            var it = files[i]
+            if (it.isDir || controller.isLiked(it.path))   // 폴더는 항상 표시
+                out.push(it)
+        }
+        return out
+    }
+
     // Export 해상도 프리셋(긴 변 px, 0=원본). resCombo 모델 순서와 일치.
     readonly property var exportEdges: [0, 4096, 3840, 2560, 2048, 1920, 1280]
 
@@ -144,7 +162,7 @@ ApplicationWindow {
     // 탐색기에서 우클릭한 파일을 프리뷰 창으로 연다.
     // 현재 폴더의 RAF(디렉터리 제외)만 경로 배열로 만들어 좌/우 네비 대상으로 넘긴다.
     function openPreview(path) {
-        var files = controller.fileList     // ⚠️ 한 번만 마샬링(루프 안에서 반복 접근 금지)
+        var files = win.explorerFiles       // 현재 보이는(필터 반영) 목록 기준으로 좌/우 이동
         var list = []
         var start = 0
         for (var i = 0; i < files.length; i++) {
@@ -224,9 +242,39 @@ ApplicationWindow {
                         onClicked: controller.goUp()
                     }
                     Button {
+                        id: folderBtn
                         text: "폴더…"
                         Layout.fillWidth: true
                         onClicked: folderDialog.open()
+                    }
+                    // "좋아요만 보기" 토글 — Canvas 하트(활성=채움/적색, 비활성=외곽선/회색)
+                    Rectangle {
+                        id: likeFilterBtn
+                        Layout.preferredWidth: 36
+                        Layout.preferredHeight: folderBtn.height   // 옆 버튼 높이에 맞춤
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: 5
+                        color: win.showLikedOnly ? "#3a2a2e"
+                             : (lfHover.hovered ? "#3a3f4b" : "transparent")
+                        border.color: win.showLikedOnly ? "#ff6b6b" : "#555555"
+                        border.width: 1
+
+                        ToolTip.visible: lfHover.hovered
+                        ToolTip.text: "좋아요만 보기"
+
+                        // 팝업 패널과 동일하게 ♥(채움)/♡(빈) 글리프로 활성/비활성 표시
+                        Text {
+                            anchors.centerIn: parent
+                            text: win.showLikedOnly ? "♥" : "♡"
+                            color: win.showLikedOnly ? "#ff6b6b" : "#cfcfcf"
+                            font.pixelSize: 19
+                        }
+                        HoverHandler { id: lfHover }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: win.showLikedOnly = !win.showLikedOnly
+                        }
                     }
                 }
 
@@ -249,7 +297,7 @@ ApplicationWindow {
                     clip: true
                     spacing: 2
                     cacheBuffer: 400
-                    model: controller.fileList
+                    model: win.explorerFiles      // "좋아요만 보기" 필터 반영
                     currentIndex: -1
                     boundsBehavior: Flickable.StopAtBounds
                     enabled: !controller.busy      // 로드 진행 중엔 사진 변경 차단
