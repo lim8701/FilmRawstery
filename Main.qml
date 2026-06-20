@@ -76,6 +76,13 @@ ApplicationWindow {
         return Qt.vector3d(g[0], g[1], g[2])
     }
 
+    // 카메라 네이티브 -> 선형 sRGB 매트릭스(행우선 9개). 로드 전엔 identity.
+    readonly property var camM: (controller.camToSrgb && controller.camToSrgb.length >= 9)
+                                ? controller.camToSrgb : [1,0,0, 0,1,0, 0,0,1]
+    // dispSrc(블러 base)용 as-shot WB 상대게인(TREF 대비). bakedKelvin=TREF 이므로
+    // wbPreview(asShot,0) = userWb(asShot)/userWb(TREF) 가 된다.
+    readonly property vector3d asShotRelGain: win.wbPreview(controller.asShotKelvin, 0)
+
     // 슬라이더 더블클릭 리셋: press 중에는 Slider 가 value 를 커서 위치로 덮어쓰므로
     // press 시점엔 '더블 여부'만 판정하고, 실제 리셋은 release 때 수행한다(아래 슬라이더들).
     // 두 번째 press 가 400ms 안이면 true.
@@ -225,6 +232,8 @@ ApplicationWindow {
                     model: controller.fileList
                     currentIndex: -1
                     boundsBehavior: Flickable.StopAtBounds
+                    enabled: !controller.busy      // 로드 진행 중엔 사진 변경 차단
+                    opacity: controller.busy ? 0.5 : 1.0   // 비활성 시각 표시
 
                     B.ScrollBar.vertical: B.ScrollBar {
                         id: fileVbar
@@ -430,12 +439,32 @@ ApplicationWindow {
                     property real claW: Math.max(1, Math.round(procW / 4))   // 클래리티 블러 다운샘플
                     property real claH: Math.max(1, Math.round(procH / 4))
 
-                    // --- 로컬대비용 가우시안 블러 (src 에만 의존 -> 로드 시 1회 계산) ---
+                    // --- dispSrc: 카메라네이티브 src -> display sRGB(as-shot WB) 변환 ---
+                    // 블러 체인과 메인 셰이더의 로컬대비 base. srcImage·asShot 에만 의존.
+                    ShaderEffect {
+                        id: dispPre; visible: false
+                        width: viewport.procW; height: viewport.procH
+                        property variant src: srcImage
+                        property real relR: win.asShotRelGain.x
+                        property real relG: win.asShotRelGain.y
+                        property real relB: win.asShotRelGain.z
+                        property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
+                        property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
+                        property real camM6: win.camM[6]; property real camM7: win.camM[7]; property real camM8: win.camM[8]
+                        fragmentShader: "shaders/convert.frag.qsb"
+                    }
+                    ShaderEffectSource {
+                        id: dispSrcTex; sourceItem: dispPre; visible: false
+                        textureSize: Qt.size(viewport.procW, viewport.procH)
+                        hideSource: true; live: true; smooth: true
+                    }
+
+                    // --- 로컬대비용 가우시안 블러 (dispSrc 에만 의존 -> 로드 시 1회 계산) ---
                     // 텍스처: 작은 반경, 풀 프록시 해상도
                     ShaderEffect {
                         id: texBlurH; visible: false
                         width: viewport.procW; height: viewport.procH
-                        property variant src: srcImage
+                        property variant src: dispSrcTex
                         property vector2d dir: Qt.vector2d(1.25 / viewport.procW, 0)
                         fragmentShader: "shaders/blur.frag.qsb"
                     }
@@ -460,7 +489,7 @@ ApplicationWindow {
                     ShaderEffect {
                         id: claBlurH; visible: false
                         width: viewport.claW; height: viewport.claH
-                        property variant src: srcImage
+                        property variant src: dispSrcTex
                         property vector2d dir: Qt.vector2d(1.5 / viewport.claW, 0)
                         fragmentShader: "shaders/blur.frag.qsb"
                     }
@@ -491,11 +520,15 @@ ApplicationWindow {
 
                         // 셰이더 uniform 과 이름이 일치해야 함
                         property variant src: srcImage
+                        property variant dispSrc: dispSrcTex
                         property variant lut: lutImage
                         property variant curve: curveImage
                         property variant texBlur: texBlurTex
                         property variant claBlur: claBlurTex
                         property variant stampTex: stampImage
+                        property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
+                        property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
+                        property real camM6: win.camM[6]; property real camM7: win.camM[7]; property real camM8: win.camM[8]
                         property real stampOn: (win.dateStamp && controller.stampText !== "") ? 1.0 : 0.0
                         property real stampStrength: 0.92
                         property real exposure: expSlider.value
@@ -513,7 +546,7 @@ ApplicationWindow {
                         property real grainAmt: grainSlider.value
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
-                        // WB 실시간 프리뷰 게인 (baked->target). 커밋되면 (1,1,1).
+                        // WB 게인: TREF 베이크 대비 상대게인(카메라공간). 재디코딩 없이 실시간.
                         property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
                         property real wbR: wbGain.x
                         property real wbG: wbGain.y

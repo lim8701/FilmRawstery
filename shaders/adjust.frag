@@ -32,16 +32,37 @@ layout(std140, binding = 0) uniform buf {
     float stampStrength;// 날짜 스탬프 가산 강도
     float saturation;   // 채도 (-1..1, 0=무변화, -1=흑백)
     float vibrance;     // 바이브런스 (-1..1, 저채도 우선 보정)
+    // 카메라 네이티브 RGB -> 선형 sRGB 매트릭스 (행우선 9개, wb.cam_to_srgb_matrix)
+    float camM0; float camM1; float camM2;
+    float camM3; float camM4; float camM5;
+    float camM6; float camM7; float camM8;
 } ubuf;
 
-layout(binding = 1) uniform sampler2D src;       // 원본 이미지
+layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
 layout(binding = 2) uniform sampler2D lut;       // 3D LUT 아틀라스 (N*N x N)
 layout(binding = 3) uniform sampler2D curve;     // 톤 커브 1D LUT (256x1)
-layout(binding = 4) uniform sampler2D texBlur;   // src 가우시안 블러(작은 반경)
-layout(binding = 5) uniform sampler2D claBlur;   // src 가우시안 블러(큰 반경)
+layout(binding = 4) uniform sampler2D texBlur;   // dispSrc 가우시안 블러(작은 반경)
+layout(binding = 5) uniform sampler2D claBlur;   // dispSrc 가우시안 블러(큰 반경)
 layout(binding = 6) uniform sampler2D stampTex;  // 날짜 스탬프 오버레이(프록시 RGBA)
+layout(binding = 7) uniform sampler2D dispSrc;   // src 의 display sRGB 변환본(블러/로컬대비 base)
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+
+// sRGB <-> linear (정확 EOTF, rawpy gamma=(2.4,12.92) 와 정합)
+vec3 srgbToLinear(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c));
+}
+vec3 linearToSrgb(vec3 c) {
+    c = clamp(c, 0.0, 1.0);
+    return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c));
+}
+// 행우선 9-float 매트릭스 적용 (GLSL mat3 열우선 혼동 회피)
+vec3 applyCamMat(vec3 v) {
+    return vec3(dot(vec3(ubuf.camM0, ubuf.camM1, ubuf.camM2), v),
+                dot(vec3(ubuf.camM3, ubuf.camM4, ubuf.camM5), v),
+                dot(vec3(ubuf.camM6, ubuf.camM7, ubuf.camM8), v));
+}
 
 // 의사난수 해시 + value noise (필름 그레인용, 절차적·결정적)
 // hash12: Dave Hoskins (https://www.shadertoy.com/view/4djSRW) — 곱셈해시의
@@ -101,17 +122,21 @@ vec3 apply_lut(vec3 col, float N) {
 
 void main() {
     vec2 uv = qt_TexCoord0;
-    vec3 rgb = texture(src, uv).rgb;
 
-    // 1) 노출
+    // 0) WB (카메라 네이티브 공간, linear) -> cam->sRGB 매트릭스 -> display sRGB
+    //    src 는 감마 인코딩된 카메라 네이티브. 선형화 후 WB 상대게인(TREF 대비),
+    //    매트릭스로 sRGB(linear) 변환, OETF 로 display sRGB. = rawpy 내부 수학 재현.
+    vec3 cam = srgbToLinear(texture(src, uv).rgb);
+    cam *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
+    vec3 rgb = linearToSrgb(applyCamMat(cam));
+
+    // 1) 노출 (기존과 동일 display 공간 위치)
     rgb *= pow(2.0, ubuf.exposure);
-    // 2) WB 프리뷰 게인
-    rgb *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
     rgb = clamp(rgb, 0.0, 1.0);
     // 3) 톤 영역별
     rgb = clamp(tone_zones(rgb, ubuf.highlights, ubuf.shadows, ubuf.whites, ubuf.blacks), 0.0, 1.0);
 
-    vec3 s0 = texture(src, uv).rgb;              // 원본(블러 비교용)
+    vec3 s0 = texture(dispSrc, uv).rgb;          // display sRGB 변환본(블러 비교용)
 
     // 4) 텍스처 — 중주파 디테일 (원본 - 작은반경 블러)
     if (ubuf.texAmt != 0.0) {

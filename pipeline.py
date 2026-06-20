@@ -2,7 +2,7 @@
 
 화면 프리뷰(GPU 셰이더, 프록시)와 동일한 단계/수식을 풀해상도에 재현한다:
 
-  노출 -> (WB: 정확 색온도 디코딩이라 게인=1, 생략) -> 톤영역(hi/sh/wh/bl)
+  WB(카메라네이티브 선형화→상대게인→cam->sRGB 매트릭스→sRGB) -> 노출 -> 톤영역
        -> 텍스처/클래리티/디헤이즈 -> 3D LUT -> 대비 -> 톤커브 -> 그레인 -> 비네팅
 
 텍스처/클래리티는 공간(이웃) 연산이라 셰이더의 '프록시 텍셀' 반경을 풀해상도
@@ -17,7 +17,8 @@ from scipy.ndimage import gaussian_filter, zoom
 
 import date_stamp
 import lens
-from wb import compute_user_wb
+import wb
+from wb import baked_wb, cam_to_srgb_matrix
 
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 
@@ -123,18 +124,29 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
         ref = np.array(raw.daylight_whitebalance)[:3]
         ref = ref / ref[1]
-        user_wb = compute_user_wb(cam, ref, kelvin, tint)
-        rgb16 = raw.postprocess(user_wb=user_wb, output_bps=16, no_auto_bright=True,
-                                gamma=(2.4, 12.92))   # 표준 sRGB EOTF (프록시와 동일)
+        # 프록시와 동일: 카메라 네이티브(매트릭스 미적용) + TREF daylight 베이크 + 감마 저장.
+        rgb16 = raw.postprocess(user_wb=baked_wb(cam, ref),
+                                output_color=rawpy.ColorSpace.raw,
+                                output_bps=16, no_auto_bright=True,
+                                gamma=(2.4, 12.92),
+                                highlight_mode=rawpy.HighlightMode.Clip)
 
     # 출력 해상도 지정(긴 변): 처리 전 다운스케일 -> 빠르고, 효과 sigma 가 해상도에
     # 비례해 룩 동일 유지(그레인/스탬프도 이미지 상대 크기라 일관).
     rgb16 = _downscale_to_edge(rgb16, int(p.get("outEdge", 0) or 0))
     if p.get("lensCorrection", True):
-        rgb16 = lens.apply(rgb16)      # X100V 렌즈 프로파일(프록시와 동일)
+        rgb16 = lens.apply(rgb16)      # X100V 렌즈 프로파일(프록시와 동일, 색공간 무관)
 
     h, w, _ = rgb16.shape
     scale = max(h, w) / float(proxy_edge)     # 프록시 텍셀 반경 -> 풀해상도 px
+
+    # WB 프론트엔드(셰이더 adjust.frag 와 동일 수학):
+    # 카메라 네이티브 감마 -> 선형화 -> WB 상대게인(카메라공간) -> cam->sRGB 매트릭스 -> sRGB.
+    nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
+    nat *= wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)
+    M = cam_to_srgb_matrix(cam).astype(np.float32)
+    nat = nat @ M.T
+    disp = wb.linear_to_srgb(nat).astype(np.float32)   # display sRGB (0..1)
 
     exp = 2.0 ** float(p.get("exposure", 0.0))
     hi, sh = float(p.get("highlights", 0)), float(p.get("shadows", 0))
@@ -153,8 +165,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
 
     # --- 전역/공간 단계 (전체 배열) ---
-    c = rgb16.astype(np.float32) / 65535.0
-    c = np.clip(c * exp, 0.0, 1.0)
+    c = np.clip(disp * exp, 0.0, 1.0)
     c = np.clip(_tone_zones(c, hi, sh, wh, bl), 0.0, 1.0)
     sigma_tex = 1.5 * scale     # 프리뷰 텍스처 블러에 대응
     sigma_cla = 7.0 * scale     # 프리뷰 클래리티/디헤이즈 블러에 대응

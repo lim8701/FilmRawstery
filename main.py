@@ -24,12 +24,13 @@ from PySide6.QtQuick import QQuickImageProvider
 import date_stamp
 import make_luts
 from exif_info import read_shooting_info, _read_embedded_jpeg
+import wb
 from lut import atlas_qimage, load_cube
 from raw_loader import load_proxy
 
 BASE = Path(__file__).resolve().parent
 SHADERS_DIR = BASE / "shaders"
-SHADER_NAMES = ["adjust.frag", "blur.frag"]
+SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag"]
 LUTS_DIR = BASE / "luts"
 
 # 시작 시 자동으로 열어볼 샘플 RAF (명령줄 인자가 없을 때 사용)
@@ -271,6 +272,7 @@ class Controller(QObject):
         self._asshot = 5500
         self._cam = []          # cam_xyz 3x3 평탄화 (9개)
         self._ref = [1.0, 1.0, 1.0]
+        self._cam2srgb = []     # 카메라네이티브->선형 sRGB 매트릭스 평탄화 (9개)
         self._counter = 0
         self._curve_url = "image://curve/c?v=0"
         self._curve_counter = 0
@@ -369,7 +371,10 @@ class Controller(QObject):
     stampText = Property(str, _get_stamp_text, notify=stampChanged)
 
     def _compute_histogram(self, img: QImage) -> None:
-        """프록시 QImage → 히스토그램용 축소본 캐시 + 기준(입력) 히스토그램."""
+        """프록시 QImage → 히스토그램용 축소본 캐시 + 기준(입력) 히스토그램.
+
+        프록시는 카메라 네이티브(감마)라, 셰이더와 동일하게 display sRGB(as-shot WB)
+        로 변환한 값으로 히스토그램/캐시를 만든다(updateHistogram 의 display 가정 유지)."""
         import numpy as np
         im = img.convertToFormat(QImage.Format.Format_RGB888)
         w, h = im.width(), im.height()
@@ -380,9 +385,21 @@ class Controller(QObject):
             arr = (np.frombuffer(im.constBits(), np.uint8)
                    .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3))
             step = max(1, max(h, w) // 128)          # 히스토그램용 소형 축소본(드래그 중 가벼움)
-            self._proxy_small = arr[::step, ::step].astype(np.float32) / 255.0
+            small = arr[::step, ::step].astype(np.float32) / 255.0
+            self._proxy_small = self._native_to_display(small)
             self._histogram = self._hist_of(self._proxy_small)
         self.histogramChanged.emit()
+
+    def _native_to_display(self, arr):
+        """카메라 네이티브(감마, 0..1) → display sRGB. 셰이더 프론트엔드(as-shot WB)와 동일."""
+        import numpy as np
+        if not self._cam2srgb or not self._cam or not self._ref:
+            return arr
+        M = np.asarray(self._cam2srgb, float).reshape(3, 3)
+        cam = np.asarray(self._cam, float).reshape(3, 3)
+        rel = wb.rel_gain(cam, np.asarray(self._ref, float), self._asshot, 0.0)
+        lin = wb.srgb_to_linear(arr) * rel
+        return wb.linear_to_srgb(lin @ M.T).astype(np.float32)
 
     @staticmethod
     def _hist_of(c) -> list:
@@ -508,13 +525,10 @@ class Controller(QObject):
 
     @Slot(float, float)
     def setWb(self, kelvin: float, tint: float) -> None:  # noqa: N802 (QML 슬롯)
-        """절대 색온도(Kelvin) + Tint 변경 -> 재디코딩."""
-        if self._kelvin == kelvin and self._tint == tint:
-            return  # 변화 없음 -> 재디코딩 생략 (초기화 시 중복 디코딩 방지)
+        """절대 색온도(Kelvin) + Tint 저장(export 용). WB 는 셰이더가 실시간 적용 →
+        재디코딩 없음. 프리뷰는 QML wbGain 바인딩이 매 프레임 갱신."""
         self._kelvin = kelvin
         self._tint = tint
-        if self._path:
-            self._render()
 
     @Slot(str)
     def setStampText(self, text: str) -> None:  # noqa: N802 (QML 슬롯)
@@ -586,11 +600,12 @@ class Controller(QObject):
         self.busyChanged.emit()
         if res is None:
             return
-        img, as_shot, cam, ref = res
+        img, as_shot, cam, ref, cam2srgb = res
         if self._kelvin is None:
             self._kelvin = as_shot       # as-shot 으로 디코딩됨 -> 현재값 동기화
         self._cam = cam
         self._ref = ref
+        self._cam2srgb = cam2srgb
         if as_shot != self._asshot:
             self._asshot = as_shot
             self.asShotKelvinChanged.emit()
@@ -621,17 +636,21 @@ class Controller(QObject):
     def _get_ref(self) -> list:
         return self._ref
 
+    def _get_cam2srgb(self) -> list:
+        return self._cam2srgb
+
     def _get_baked_k(self) -> float:
-        return float(self._kelvin if self._kelvin is not None else self._asshot)
+        return float(wb.TREF)    # 프록시는 항상 TREF daylight 베이크(셰이더가 상대게인)
 
     def _get_baked_t(self) -> float:
-        return float(self._tint)
+        return 0.0
 
     imageUrl = Property(str, _get_url, notify=imageChanged)
     imagePath = Property(str, _get_path, notify=imageChanged)
     asShotKelvin = Property(int, _get_asshot, notify=asShotKelvinChanged)
     camMatrix = Property("QVariantList", _get_cam, notify=wbBaked)
     daylightRef = Property("QVariantList", _get_ref, notify=wbBaked)
+    camToSrgb = Property("QVariantList", _get_cam2srgb, notify=wbBaked)
     bakedKelvin = Property(float, _get_baked_k, notify=wbBaked)
     bakedTint = Property(float, _get_baked_t, notify=wbBaked)
 

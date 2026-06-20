@@ -49,6 +49,55 @@ def compute_user_wb(cam_xyz, daylight_ref, kelvin, tint: float = 0.0):
     return [float(m[0]), float(m[1]), float(m[2]), float(m[1])]
 
 
+# 선형 sRGB -> XYZ (D65) 표준 매트릭스 (dcraw xyz_rgb 와 동일)
+_XYZ_RGB_D65 = np.array([
+    [0.4124564, 0.3575761, 0.1804375],
+    [0.2126729, 0.7151522, 0.0721750],
+    [0.0193339, 0.1191920, 0.9503041],
+])
+
+
+def cam_to_srgb_matrix(cam_xyz):
+    """카메라 네이티브 RGB -> 선형 sRGB 3x3 매트릭스 (dcraw/LibRaw 방식).
+
+    cam_xyz 는 XYZ->cameraRGB (wb.py 전반에서 `cam_xyz @ XYZ` 로 사용).
+    dcraw `cam_xyz_coeff`: cam_rgb = cam_xyz @ (sRGB->XYZ) [=sRGB->cam], 각 행을
+    행합=1 로 정규화(=pre_mul, 화이트 D65->중성), 그 역행렬이 cam->sRGB(linear).
+    rawpy output_color=sRGB 의 매트릭스와 일치(잔차 ~1/255 는 rawpy 독자 비선형
+    색렌더이며 매트릭스로 재현 불가 — 표준 colorimetry 를 따른다).
+    """
+    cam_xyz = np.asarray(cam_xyz, float).reshape(3, 3)
+    cam_rgb = cam_xyz @ _XYZ_RGB_D65                       # sRGB -> cam
+    cam_rgb = cam_rgb / cam_rgb.sum(axis=1, keepdims=True)  # 행합=1 (pre_mul)
+    return np.linalg.inv(cam_rgb)                          # cam -> sRGB(linear)
+
+
+def baked_wb(cam_xyz, daylight_ref):
+    """프록시 디코딩에 베이크할 TREF(daylight) 기준 WB 배수."""
+    return compute_user_wb(cam_xyz, daylight_ref, TREF, 0.0)
+
+
+def srgb_to_linear(c):
+    """sRGB(또는 rawpy gamma=(2.4,12.92)) -> 선형. 셰이더 srgbToLinear 와 정합."""
+    c = np.clip(np.asarray(c, float), 0.0, 1.0)
+    return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+
+
+def linear_to_srgb(c):
+    """선형 -> sRGB. 셰이더 linearToSrgb 와 정합."""
+    c = np.clip(np.asarray(c, float), 0.0, 1.0)
+    return np.where(c <= 0.0031308, c * 12.92, 1.055 * (c ** (1.0 / 2.4)) - 0.055)
+
+
+def rel_gain(cam_xyz, daylight_ref, kelvin, tint=0.0):
+    """TREF 베이크 대비 상대 WB 게인(카메라공간, green 정규화). 셰이더 wbPreview 와 동일."""
+    t = np.asarray(compute_user_wb(cam_xyz, daylight_ref, kelvin, tint)[:3], float)
+    b = np.asarray(baked_wb(cam_xyz, daylight_ref)[:3], float)
+    g = t / b
+    g = g / g[1]
+    return g
+
+
 def estimate_cct(cam_xyz, daylight_ref, camera_wb) -> int:
     """카메라 as-shot WB 배수에 가장 가까운 Kelvin 을 탐색해 반환."""
     cw = np.asarray(camera_wb, float)[:3]
