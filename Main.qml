@@ -138,6 +138,26 @@ ApplicationWindow {
         onAccepted: controller.setFolder(selectedFolder)   // QUrl -> Python .toLocalFile()
     }
 
+    // 프리뷰 모드 오버레이(탐색기에서 RAF 우클릭 → 메뉴 Preview 로 염). 메인 창 위를 꽉 덮음.
+    PreviewWindow { id: previewWin }
+
+    // 탐색기에서 우클릭한 파일을 프리뷰 창으로 연다.
+    // 현재 폴더의 RAF(디렉터리 제외)만 경로 배열로 만들어 좌/우 네비 대상으로 넘긴다.
+    function openPreview(path) {
+        var files = controller.fileList     // ⚠️ 한 번만 마샬링(루프 안에서 반복 접근 금지)
+        var list = []
+        var start = 0
+        for (var i = 0; i < files.length; i++) {
+            var it = files[i]
+            if (!it.isDir) {
+                if (it.path === path) start = list.length
+                list.push(it.path)
+            }
+        }
+        if (list.length > 0)
+            previewWin.open(list, start)
+    }
+
     // 폴더가 바뀌면 좌측 리스트 선택 하이라이트 초기화(잔상 방지).
     Connections {
         target: controller
@@ -300,6 +320,22 @@ ApplicationWindow {
                                         source: modelData.isDir ? ""
                                                 : "image://thumb/" + encodeURIComponent(modelData.path)
                                     }
+                                    // 좋아요(셀렉트) 하트 배지 — likeRevision 참조로 토글/폴더변경 시 갱신
+                                    Text {
+                                        anchors.right: parent.right
+                                        anchors.bottom: parent.bottom
+                                        anchors.margins: 1
+                                        text: "♥"
+                                        color: "#ff6b6b"
+                                        style: Text.Outline
+                                        styleColor: "#000000"
+                                        font.pixelSize: 14
+                                        visible: {
+                                            controller.likeRevision
+                                            return !modelData.isDir
+                                                   && controller.isLiked(modelData.path)
+                                        }
+                                    }
                                 }
 
                                 Label {
@@ -315,9 +351,46 @@ ApplicationWindow {
                             }
                         }
 
+                        // 우클릭 컨텍스트 메뉴(파일 전용): Preview 항목
+                        B.Menu {
+                            id: ctxMenu
+                            B.MenuItem {
+                                text: "Preview"
+                                onTriggered: win.openPreview(row.modelData.path)
+                                contentItem: Text {
+                                    text: parent.text
+                                    color: "#e6e6e6"
+                                    font.pixelSize: 12
+                                    verticalAlignment: Text.AlignVCenter
+                                    leftPadding: 8
+                                }
+                                background: Rectangle {
+                                    implicitWidth: 140
+                                    implicitHeight: 28
+                                    color: parent.highlighted ? "#3a4a6b" : "transparent"
+                                }
+                            }
+                            background: Rectangle {
+                                implicitWidth: 140
+                                color: "#2b2b2b"
+                                border.color: "#444"
+                                border.width: 1
+                                radius: 4
+                            }
+                        }
+
                         MouseArea {
                             anchors.fill: parent
-                            onClicked: fileListView.currentIndex = row.index   // 선택만
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: (mouse) => {
+                                if (mouse.button === Qt.RightButton) {
+                                    fileListView.currentIndex = row.index
+                                    if (!row.modelData.isDir)
+                                        ctxMenu.popup()             // 우클릭 = 컨텍스트 메뉴
+                                } else {
+                                    fileListView.currentIndex = row.index     // 좌클릭 = 선택만
+                                }
+                            }
                             onDoubleClicked: {
                                 if (row.modelData.isDir)
                                     controller.setFolderPath(row.modelData.path)

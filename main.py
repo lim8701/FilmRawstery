@@ -9,14 +9,16 @@
 """
 
 import io
+import json
 import shutil
 import subprocess
 import sys
 import threading
+from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import (Property, QBuffer, QObject, QSize, Qt,
-                            Signal, Slot, QUrl)
+from PySide6.QtCore import (Property, QBuffer, QFileSystemWatcher, QObject,
+                            QSize, Qt, QTimer, Signal, Slot, QUrl)
 from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QTransform
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider
@@ -244,6 +246,64 @@ class ThumbProvider(QQuickImageProvider):
         return img
 
 
+class PreviewProvider(QQuickImageProvider):
+    """RAF 내장 풀 프리뷰 JPEG -> 큰 프리뷰를 'image://preview/<percent-encoded-path>' 로 제공.
+
+    프리뷰 모드(PreviewWindow.qml)용. ThumbProvider 의 2차 폴백과 동일한 경로
+    (내장 풀 프리뷰 JPEG 를 QImageReader.setScaledSize 로 축소 디코딩)를 쓰되,
+    요청 크기(~2048px)가 커서 결과 QImage 가 장당 ~11MB → 무제한 캐시 금지.
+    최근 N 개만 유지하는 LRU 로 좌/우 인접 이동 시 재디코딩을 최소화한다.
+    """
+
+    _CACHE_MAX = 5
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image,
+                         QQuickImageProvider.Flag.ForceAsynchronousImageLoading)
+        self._cache = OrderedDict()       # "path|edge" -> QImage (LRU)
+        self._lock = threading.Lock()
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
+        raw = image_id.split("?", 1)[0]               # 쿼리스트링(?v=) 제거
+        path = QUrl.fromPercentEncoding(raw.encode("utf-8"))
+        edge = (requested_size.width()
+                if (requested_size is not None and requested_size.width() > 0) else 2048)
+        key = f"{path}|{edge}"
+        with self._lock:
+            cached = self._cache.get(key)
+            if cached is not None and not cached.isNull():
+                self._cache.move_to_end(key)          # 최근 사용 표시
+                return cached
+        img = self._make_preview(path, edge)
+        with self._lock:
+            self._cache[key] = img
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._CACHE_MAX:
+                self._cache.popitem(last=False)       # 가장 오래된 것 제거
+        return img
+
+    @staticmethod
+    def _make_preview(path, edge) -> QImage:
+        try:
+            jpeg = _read_embedded_jpeg(path, max_bytes=64 * 1024 * 1024)
+            if not jpeg:
+                return QImage()
+            buf = QBuffer()
+            buf.setData(jpeg)
+            buf.open(QBuffer.OpenModeFlag.ReadOnly)
+            reader = QImageReader(buf, b"jpeg")
+            reader.setAutoTransform(True)             # EXIF 방향 반영
+            full = reader.size()
+            if full.isValid() and full.width() > 0 and full.width() > edge:
+                h = max(1, round(edge * full.height() / full.width()))
+                reader.setScaledSize(QSize(edge, h))
+            img = reader.read()
+            buf.close()
+            return img if not img.isNull() else QImage()
+        except Exception:
+            return QImage()
+
+
 class Controller(QObject):
     imageChanged = Signal()
     asShotKelvinChanged = Signal()
@@ -257,6 +317,7 @@ class Controller(QObject):
     lensChanged = Signal()       # 렌즈 보정 on/off 변경 알림
     busyChanged = Signal()       # 디코딩(렌즈 보정 포함) 진행 중 표시
     folderChanged = Signal()     # 좌측 file explorer 현재 폴더/파일목록 갱신 알림
+    likesChanged = Signal()      # 좋아요(셀렉트) 상태 변경 알림 (썸네일 하트 반영용)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
@@ -293,7 +354,83 @@ class Controller(QObject):
         self._render_seq = 0        # 비동기 렌더 순번(오래된 결과 폐기용)
         self._folder = ""           # 좌측 file explorer 현재 폴더
         self._files = []            # [{"name","path","isDir"}, ...] 현재 폴더 항목
+        self._likes = set()         # 현재 폴더에서 좋아요된 파일명 집합
+        self._likes_folder = ""     # _likes 가 속한 폴더(저장 대상 경로)
+        self._like_rev = 0          # 좋아요 변경 리비전(QML 바인딩 재평가용)
         self._renderReady.connect(self._on_render_ready)
+        # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
+        self._watcher = QFileSystemWatcher(self)
+        self._watcher.directoryChanged.connect(self._on_dir_changed)
+        self._rescan_timer = QTimer(self)
+        self._rescan_timer.setSingleShot(True)
+        self._rescan_timer.setInterval(400)   # 연속 변화/중복 이벤트 합치기
+        self._rescan_timer.timeout.connect(self._do_auto_rescan)
+
+    def _update_watcher(self, folder: str) -> None:
+        old = self._watcher.directories()
+        if old:
+            self._watcher.removePaths(old)
+        if folder and Path(folder).is_dir():
+            self._watcher.addPath(folder)
+
+    def _on_dir_changed(self, _path: str) -> None:
+        self._rescan_timer.start()            # 디바운스(재시작)
+
+    def _do_auto_rescan(self) -> None:
+        if self._folder:
+            self._scan_folder(self._folder, force=False)
+
+    # ---------- 좋아요(셀렉트) 영속화: 폴더당 .camrawlikes.json ----------
+    @staticmethod
+    def _likes_path(folder: str) -> Path:
+        return Path(folder) / ".camrawlikes.json"
+
+    @staticmethod
+    def _load_likes(folder: str) -> set:
+        """폴더의 .camrawlikes.json 에서 좋아요(True)된 파일명 집합을 읽음(없으면 빈 집합)."""
+        try:
+            p = Controller._likes_path(folder)
+            if not p.is_file():
+                return set()
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {name for name, liked in data.items() if liked}
+        except Exception:
+            return set()
+
+    @staticmethod
+    def _save_likes(folder: str, liked_set: set) -> None:
+        """좋아요 집합을 {파일명: true} JSON 으로 폴더에 저장."""
+        try:
+            p = Controller._likes_path(folder)
+            data = {name: True for name in sorted(liked_set)}
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            print(f"[likes] 저장 실패: {exc}")
+
+    @Slot(str, result=bool)
+    def isLiked(self, path: str) -> bool:  # noqa: N802 (QML 슬롯)
+        return Path(path).name in self._likes
+
+    @Slot(str)
+    def toggleLike(self, path: str) -> None:  # noqa: N802 (QML 슬롯)
+        """파일의 좋아요 상태를 토글하고 즉시 폴더 JSON 에 저장(크래시 안전)."""
+        if not path:
+            return
+        name = Path(path).name
+        folder = str(Path(path).parent)
+        # 프리뷰 대상이 현재 탐색기 폴더와 다를 수 있으므로 해당 폴더 상태를 로드해 갱신
+        if folder != self._likes_folder:
+            self._likes = self._load_likes(folder)
+            self._likes_folder = folder
+        if name in self._likes:
+            self._likes.discard(name)
+        else:
+            self._likes.add(name)
+        self._save_likes(folder, self._likes)
+        self._like_rev += 1
+        self.likesChanged.emit()
 
     @Slot("QVariantList")
     def setCurve(self, lut) -> None:  # noqa: N802 (QML 슬롯)
@@ -479,8 +616,13 @@ class Controller(QObject):
         self.stampReset.emit()   # 입력필드를 새 파일의 EXIF 날짜로 동기화
 
     # ---------- 좌측 File Explorer (폴더/파일 모델) ----------
-    def _scan_folder(self, folder: str) -> None:
-        """폴더를 스캔해 하위폴더 + RAF 파일 목록(이름순)을 fileList 로 갱신."""
+    def _scan_folder(self, folder: str, force: bool = True) -> None:
+        """폴더를 스캔해 하위폴더 + RAF 파일 목록(이름순)을 fileList 로 갱신.
+
+        force=True: 탐색기 탐색(폴더 이동) — 항상 갱신.
+        force=False: 자동 감시 재스캔 — 같은 폴더에서 목록이 그대로면 아무 것도 안 함
+                     (우리 자신의 .camrawlikes.json 저장이나 무관한 변화로 깜빡이지 않음).
+        """
         p = Path(folder)
         try:
             entries = list(p.iterdir())
@@ -492,9 +634,18 @@ class Controller(QObject):
                       key=lambda e: e.name.lower())
         items = [{"name": d.name, "path": str(d), "isDir": True} for d in dirs]
         items += [{"name": f.name, "path": str(f), "isDir": False} for f in rafs]
+        # 자동 재스캔(force=False)인데 목록이 동일하면 갱신 생략(.json 저장 등 무시)
+        if not force and str(p) == self._folder and items == self._files:
+            return
         self._folder = str(p)
         self._files = items
+        self._update_watcher(self._folder)   # 현재 폴더로 감시 경로 교체
+        # 폴더 진입 시 좋아요 로컬 파일 체크 -> 썸네일 하트 반영
+        self._likes = self._load_likes(self._folder)
+        self._likes_folder = self._folder
+        self._like_rev += 1
         self.folderChanged.emit()
+        self.likesChanged.emit()
 
     @Slot(QUrl)
     def setFolder(self, url: QUrl) -> None:  # noqa: N802 (QML 슬롯, FolderDialog)
@@ -520,8 +671,12 @@ class Controller(QObject):
     def _get_files(self) -> list:
         return self._files
 
+    def _get_like_rev(self) -> int:
+        return self._like_rev
+
     currentFolder = Property(str, _get_folder, notify=folderChanged)
     fileList = Property("QVariantList", _get_files, notify=folderChanged)
+    likeRevision = Property(int, _get_like_rev, notify=likesChanged)
 
     @Slot(float, float)
     def setWb(self, kelvin: float, tint: float) -> None:  # noqa: N802 (QML 슬롯)
@@ -700,6 +855,9 @@ def main() -> int:
 
     thumb_provider = ThumbProvider()
     engine.addImageProvider("thumb", thumb_provider)
+
+    preview_provider = PreviewProvider()
+    engine.addImageProvider("preview", preview_provider)
 
     controller = Controller(provider, curve_provider, stamp_provider)
     ctx = engine.rootContext()
