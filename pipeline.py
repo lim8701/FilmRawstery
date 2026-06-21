@@ -10,10 +10,12 @@
 메모리 큰 3D LUT 단계는 가로 스트립으로 처리한다.
 """
 
+import math
+
 import numpy as np
 import rawpy
 from PySide6.QtGui import QImage
-from scipy.ndimage import gaussian_filter, zoom
+from scipy.ndimage import affine_transform, gaussian_filter, zoom
 
 import date_stamp
 import lens
@@ -121,6 +123,65 @@ def _downscale_to_edge(rgb16, out_edge):
     nh, nw = max(1, int(round(h * f))), max(1, int(round(w * f)))
     x = zoom(x, (nh / h, nw / w, 1.0), order=1)
     return np.clip(x + 0.5, 0.0, 65535.0).astype(np.uint16)
+
+
+def _crop_rect(arr, cx, cy, cw, ch):
+    """(H,W,...) 배열을 정규화 사각형(cx,cy,cw,ch in [0,1], 좌상단 기준)으로 크롭."""
+    h, w = arr.shape[:2]
+    x0 = max(0, min(w - 1, int(round(cx * w))))
+    y0 = max(0, min(h - 1, int(round(cy * h))))
+    x1 = max(x0 + 1, min(w, int(round((cx + cw) * w))))
+    y1 = max(y0 + 1, min(h, int(round((cy + ch) * h))))
+    return arr[y0:y1, x0:x1]
+
+
+def _apply_geometry(arr, p):
+    """현상 결과(H,W,3 uint8)에 지오메트리 적용 — 프리뷰(QML 뷰 변환)와 동일 순서/정의:
+    플립 -> 90° 회전 -> 스트레이튼(자유각 회전 + 채움 줌) -> 자유 사각 크롭.
+    회전 방향은 Qt Rotation 과 동일(양수 = 시계방향). 크롭 사각형은 캔버스A(플립+90+
+    스트레이튼 후) 정규화 좌표이며 프리뷰 cropX/Y/W/H 와 동일."""
+    flip_h = bool(p.get("flipH", False))
+    flip_v = bool(p.get("flipV", False))
+    quarter = int(p.get("quarterTurns", 0)) % 4
+    angle = float(p.get("rotateAngle", 0.0))      # 도, CW +
+    cx = float(p.get("cropX", 0.0))
+    cy = float(p.get("cropY", 0.0))
+    cw = float(p.get("cropW", 1.0))
+    ch = float(p.get("cropH", 1.0))
+
+    if flip_h:
+        arr = arr[:, ::-1]
+    if flip_v:
+        arr = arr[::-1, :]
+    if quarter:
+        arr = np.rot90(arr, k=-quarter)           # k<0 = 시계방향(= Qt 양수 회전)
+    arr = np.ascontiguousarray(arr)
+
+    h, w = arr.shape[:2]
+    if abs(angle) > 1e-3:
+        cA = w / float(h)
+        t = math.radians(abs(angle))
+        Z = math.cos(t) + max(cA, 1.0 / cA) * math.sin(t)   # 채움 줌(프리뷰 straightenZoom 과 동일)
+        phi = math.radians(angle)
+        cph, sph = math.cos(phi), math.sin(phi)
+        pcy, pcx = (h - 1) / 2.0, (w - 1) / 2.0   # 회전 중심 px (크롭 cx/cy 와 구분)
+        # 출력(y,x) -> 입력(y,x) 역매핑: 중앙 기준 (시계 회전 phi + 줌 Z) 의 역변환.
+        m00, m01 = cph / Z, -sph / Z
+        m10, m11 = sph / Z, cph / Z
+        mat = np.array([[m00, m01, 0.0],
+                        [m10, m11, 0.0],
+                        [0.0, 0.0, 1.0]], dtype=np.float64)
+        off = np.array([pcy - (m00 * pcy + m01 * pcx),
+                        pcx - (m10 * pcy + m11 * pcx),
+                        0.0], dtype=np.float64)
+        # mode=nearest: 채움 줌이 사실상 정확해 경계 1~2px 만 바깥을 샘플 -> 검정 대신
+        # 가장자리 색 복제(프리뷰 GPU edge-clamp 샘플링과 정합).
+        arr = affine_transform(arr, mat, offset=off, order=1,
+                               mode="nearest").astype(np.uint8)
+
+    if cx > 0.0 or cy > 0.0 or cw < 1.0 or ch < 1.0:
+        arr = _crop_rect(arr, cx, cy, cw, ch)
+    return np.ascontiguousarray(arr)
 
 
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
@@ -241,6 +302,9 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         f = out.astype(np.float32) / 255.0
         f += grain2d[..., None] * grain_amt * 0.12
         out = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+    # === 지오메트리(회전/크롭) — 현상 끝난 이미지에 마지막 적용(프리뷰 뷰 변환과 동일) ===
+    out = _apply_geometry(out, p)
 
     return out
 

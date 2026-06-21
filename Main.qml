@@ -30,6 +30,61 @@ ApplicationWindow {
     property bool showExplorer: true
     Shortcut { sequence: "B"; onActivated: win.showExplorer = !win.showExplorer }
 
+    // 우측 활성 패널: 0=Edit, 1=Crop/Rotate/Geometry (우측 끝 세로 셀렉터 바로 전환)
+    property int activePanel: 0
+
+    // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
+    property int quarterTurns: 0        // 90° 단위 회전 (⟳ CW +1, ⟲ CCW -1, mod 4)
+    // 종횡비 콤보 인덱스 -> 비율(가로/세로). aspectCombo 모델과 순서 일치.
+    // [0]원본=원본비율잠금(cropAspect 에서 viewport.cA), [1]자유=무잠금(-1), 나머지=고정비율.
+    readonly property var aspectRatios: [-1, -1, 1.0, 1.5, 4.0 / 3.0, 16.0 / 9.0, 1.25]
+    // 최종 크롭 비율(가로/세로). 방향 토글이 '세로'면 역수. <=0 이면 무잠금(자유).
+    readonly property real cropAspect: {
+        var idx = aspectCombo.currentIndex
+        if (idx === 0) return viewport.cA        // 원본 = 원본 비율(캔버스 비율) 잠금
+        var r = win.aspectRatios[idx]
+        if (r <= 0) return -1                    // 자유 = 무잠금
+        return cropPortraitBtn.checked ? (1.0 / r) : r
+    }
+    // 자유 크롭 박스(정규화, 캔버스A=flip+90+스트레이튼 후 기준). 기본 = 전체.
+    property real cropX: 0.0
+    property real cropY: 0.0
+    property real cropW: 1.0
+    property real cropH: 1.0
+    function resetCropRect() { cropX = 0; cropY = 0; cropW = 1; cropH = 1 }
+    // 박스 설정: [0,1] 및 최소크기(0.05)로 클램프.
+    function setCropRect(nx, ny, nw, nh) {
+        var minS = 0.05
+        nw = Math.max(minS, Math.min(1.0, nw))
+        nh = Math.max(minS, Math.min(1.0, nh))
+        nx = Math.max(0.0, Math.min(1.0 - nw, nx))
+        ny = Math.max(0.0, Math.min(1.0 - nh, ny))
+        win.cropX = nx; win.cropY = ny; win.cropW = nw; win.cropH = nh
+    }
+    // 종횡비 잠금이면 그 비율의 중앙 최대 박스로 맞춤(자유/원본이면 유지).
+    function applyCropAspect() {
+        var a = win.cropAspect
+        if (a <= 0) return
+        var kn = a / Math.max(0.0001, viewport.cA)   // 정규화 가로/세로(nw/nh)
+        var nw, nh
+        if (kn >= 1.0) { nw = 1.0; nh = 1.0 / kn }
+        else { nh = 1.0; nw = kn }
+        win.setCropRect((1.0 - nw) / 2.0, (1.0 - nh) / 2.0, nw, nh)
+    }
+    // 새 파일 로드 / 전체 초기화 시 회전·크롭·지오메트리 리셋.
+    function resetGeometry() {
+        rotAngleSlider.value = 0.0
+        win.quarterTurns = 0
+        flipHBtn.checked = false
+        flipVBtn.checked = false
+        aspectCombo.currentIndex = 0
+        cropLandscapeBtn.checked = true
+        win.resetCropRect()
+        geoVSlider.value = 0
+        geoHSlider.value = 0
+        geoScaleSlider.value = 100
+    }
+
     // 탐색기 "좋아요만 보기" 필터
     property bool showLikedOnly: false
     // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAF 만.
@@ -210,7 +265,14 @@ ApplicationWindow {
             "dateStamp": win.dateStamp,
             "stampText": stampField.text,
             "outEdge": win.exportEdges[resCombo.currentIndex],
-            "lensCorrection": lensCheck.checked
+            "lensCorrection": lensCheck.checked,
+            // 지오메트리(현상 뒤 적용): 플립 -> 90° -> 스트레이튼(회전+채움줌) -> 종횡비 중앙크롭
+            "flipH": flipHBtn.checked,
+            "flipV": flipVBtn.checked,
+            "quarterTurns": win.quarterTurns,
+            "rotateAngle": rotAngleSlider.value,
+            "cropX": win.cropX, "cropY": win.cropY,
+            "cropW": win.cropW, "cropH": win.cropH
         })
     }
 
@@ -560,6 +622,31 @@ ApplicationWindow {
                     property real claW: Math.max(1, Math.round(procW / 4))   // 클래리티 블러 다운샘플
                     property real claH: Math.max(1, Math.round(procH / 4))
 
+                    // === 회전/크롭(지오메트리) 미리보기 기하 (export numpy 와 동일 정의) ===
+                    // 크롭 패널(activePanel===1)에서는 전체 캔버스+편집 박스를, 그 외엔 크롭 결과를 표시.
+                    property bool cropEdit: win.activePanel === 1
+                    property bool geoOdd: (win.quarterTurns % 2) !== 0
+                    property real caW: geoOdd ? procH : procW     // 90° 회전 후 캔버스 크기
+                    property real caH: geoOdd ? procW : procH
+                    property real cA: caW / Math.max(1, caH)       // 캔버스 비율(가로/세로)
+                    // 크롭 결과 비율(가로/세로)
+                    property real cropDispAspect: (win.cropW * caW) / Math.max(1e-4, win.cropH * caH)
+                    // 스트레이튼(자유각) 채움 줌: 회전해도 빈 모서리가 안 생기게 캔버스를 채움.
+                    property real straightenZoom: {
+                        var t = Math.abs(rotAngleSlider.value) * Math.PI / 180.0
+                        return Math.cos(t) + Math.max(cA, 1.0 / cA) * Math.sin(t)
+                    }
+                    // 캔버스 전체 표시 크기: 편집=캔버스 fit, 결과=크롭이 viewport 를 채우게 캔버스 확대
+                    property real canvasDispW: cropEdit
+                        ? Math.min(availW, availH * cA)
+                        : Math.min(availW, availH * cropDispAspect) / Math.max(1e-4, win.cropW)
+                    property real canvasDispH: canvasDispW / Math.max(1e-4, cA)
+                    // 캔버스 px -> 화면 스케일 × 스트레이튼 줌
+                    property real geoScale: (canvasDispW / Math.max(1, caW)) * straightenZoom
+                    // 표시 클립 박스: 편집=캔버스 전체, 결과=크롭 영역
+                    property real clipW: cropEdit ? canvasDispW : (canvasDispW * win.cropW)
+                    property real clipH: cropEdit ? canvasDispH : (canvasDispH * win.cropH)
+
                     // --- dispSrc: 카메라네이티브 src -> display sRGB(as-shot WB) 변환 ---
                     // 블러 체인과 메인 셰이더의 로컬대비 base. srcImage·asShot 에만 의존.
                     ShaderEffect {
@@ -679,19 +766,263 @@ ApplicationWindow {
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
 
-                    // 고정 크기 FBO(프록시 해상도)에 렌더한 뒤 화면 크기로 스케일 표시.
-                    // -> 프래그먼트 연산량이 모니터 해상도에 비례하지 않음.
-                    ShaderEffectSource {
-                        id: pipeView
+                    // 고정 크기 FBO(프록시 해상도)에 렌더 -> 회전/크롭(지오메트리)을 뷰 변환으로
+                    // 적용. cropClip 이 표시 영역(편집=캔버스 전체 / 결과=크롭)으로 잘라낸다.
+                    // export numpy 와 동일 기하 순서: 플립 -> 90° -> 스트레이튼 -> 자유 사각 크롭.
+                    Item {
+                        id: cropClip
                         visible: srcImage.status === Image.Ready
-                        sourceItem: pipe
-                        textureSize: Qt.size(viewport.procW, viewport.procH)
-                        width: viewport.fitW
-                        height: viewport.fitH
                         anchors.centerIn: parent
-                        hideSource: true
-                        smooth: true
-                        live: true
+                        width: viewport.clipW
+                        height: viewport.clipH
+                        clip: true
+
+                        // 캔버스 홀더: 편집모드=(0,0)으로 캔버스 전체가 cropClip 채움,
+                        // 결과모드=크롭 영역의 좌상단이 cropClip 좌상단에 오도록 음수 오프셋.
+                        Item {
+                            id: canvasHolder
+                            width: viewport.canvasDispW
+                            height: viewport.canvasDispH
+                            x: viewport.cropEdit ? 0 : -win.cropX * viewport.canvasDispW
+                            y: viewport.cropEdit ? 0 : -win.cropY * viewport.canvasDispH
+
+                            ShaderEffectSource {
+                                id: pipeView
+                                sourceItem: pipe
+                                textureSize: Qt.size(viewport.procW, viewport.procH)
+                                width: viewport.procW
+                                height: viewport.procH
+                                anchors.centerIn: parent
+                                hideSource: true
+                                smooth: true
+                                live: true
+                                // transform 리스트는 나열 순서대로 적용(앞=먼저=안쪽): 플립 -> 회전 -> 줌.
+                                transform: [
+                                    Scale {
+                                        origin.x: viewport.procW / 2; origin.y: viewport.procH / 2
+                                        xScale: flipHBtn.checked ? -1 : 1
+                                        yScale: flipVBtn.checked ? -1 : 1
+                                    },
+                                    Rotation {
+                                        origin.x: viewport.procW / 2; origin.y: viewport.procH / 2
+                                        angle: win.quarterTurns * 90 + rotAngleSlider.value
+                                    },
+                                    Scale {
+                                        origin.x: viewport.procW / 2; origin.y: viewport.procH / 2
+                                        xScale: viewport.geoScale; yScale: viewport.geoScale
+                                    }
+                                ]
+                            }
+                        }
+                    }
+
+                    // === 크롭 편집 오버레이 (크롭 패널에서만): 핸들=리사이즈, 내부=이동,
+                    //     네 꼭짓점 외곽 부근 드래그=회전(스트레이튼). 캔버스 위에 정렬. ===
+                    Item {
+                        id: cropOverlay
+                        visible: viewport.cropEdit && cropClip.visible
+                        anchors.centerIn: parent
+                        width: viewport.canvasDispW
+                        height: viewport.canvasDispH
+
+                        property real bl: win.cropX * width      // 박스 px 경계
+                        property real bt: win.cropY * height
+                        property real bw: win.cropW * width
+                        property real bh: win.cropH * height
+                        property bool rotating: false            // 회전 드래그 중(촘촘한 격자)
+                        property bool rotHover: false            // 회전 영역 호버(회전 커서)
+                        property real rotPx: 0                   // 회전 커서 위치(오버레이 좌표)
+                        property real rotPy: 0
+                        property int rotCorner: 0                // 활성 회전 코너(0=NW,1=NE,2=SW,3=SE)
+
+                        // (1) 바깥 어둡게(시각용, 마우스 비소비 -> 아래 회전 영역이 받음)
+                        Rectangle { color: "#88000000"; x: 0; y: 0; width: parent.width; height: parent.bt }
+                        Rectangle { color: "#88000000"; x: 0; y: parent.bt + parent.bh
+                                    width: parent.width; height: parent.height - parent.bt - parent.bh }
+                        Rectangle { color: "#88000000"; x: 0; y: parent.bt; width: parent.bl; height: parent.bh }
+                        Rectangle { color: "#88000000"; x: parent.bl + parent.bw; y: parent.bt
+                                    width: parent.width - parent.bl - parent.bw; height: parent.bh }
+
+                        // (2) 회전 영역: 박스 네 꼭짓점 외곽 부근 드래그 -> 캔버스 중심 기준 각도변화.
+                        //     박스 안쪽(이동)·정확한 코너(리사이즈 핸들)는 위에 있어 그쪽이 우선.
+                        Repeater {
+                            model: 4
+                            delegate: MouseArea {
+                                property int ci: index   // 0=NW,1=NE,2=SW,3=SE
+                                // 드래그 중엔 영역을 크게 확장 -> 커서가 영역 밖으로 안 나가
+                                // BlankCursor 가 끝까지 유지(OS 커서 재출현으로 인한 이중커서 방지).
+                                property bool dragging: cropOverlay.rotating && cropOverlay.rotCorner === ci
+                                property real cornerX: (ci === 1 || ci === 3) ? cropOverlay.bl + cropOverlay.bw : cropOverlay.bl
+                                property real cornerY: (ci === 2 || ci === 3) ? cropOverlay.bt + cropOverlay.bh : cropOverlay.bt
+                                width: dragging ? 8000 : 80
+                                height: dragging ? 8000 : 80
+                                x: dragging ? (cropOverlay.width / 2 - width / 2) : (cornerX - width / 2)
+                                y: dragging ? (cropOverlay.height / 2 - height / 2) : (cornerY - height / 2)
+                                hoverEnabled: true
+                                cursorShape: Qt.BlankCursor     // 곡선 화살표(rotCursor)로 대체
+                                property real startAng: 0
+                                property real baseVal: 0
+                                function angAt(m) {
+                                    var p = mapToItem(cropOverlay, m.x, m.y)
+                                    cropOverlay.rotPx = p.x; cropOverlay.rotPy = p.y
+                                    return Math.atan2(p.y - cropOverlay.height / 2, p.x - cropOverlay.width / 2)
+                                }
+                                onEntered: {
+                                    cropOverlay.rotCorner = ci
+                                    cropOverlay.rotPx = x + width / 2; cropOverlay.rotPy = y + height / 2
+                                    cropOverlay.rotHover = true
+                                }
+                                onExited: if (!pressed) cropOverlay.rotHover = false
+                                onPressed: (mouse) => {
+                                    cropOverlay.rotCorner = ci
+                                    startAng = angAt(mouse)
+                                    baseVal = rotAngleSlider.value
+                                    cropOverlay.rotating = true
+                                    cropOverlay.rotHover = true
+                                }
+                                onPositionChanged: (mouse) => {
+                                    var a = angAt(mouse)
+                                    if (pressed) {
+                                        var d = (a - startAng) * 180.0 / Math.PI
+                                        rotAngleSlider.value = Math.max(-45, Math.min(45, baseVal + d))
+                                    }
+                                }
+                                onReleased: { cropOverlay.rotating = false; cropOverlay.rotHover = containsMouse }
+                            }
+                        }
+
+                        // (3) 크롭 박스 테두리 + 격자 + 내부 이동
+                        Rectangle {
+                            id: boxRect
+                            x: cropOverlay.bl; y: cropOverlay.bt
+                            width: cropOverlay.bw; height: cropOverlay.bh
+                            color: "transparent"; border.color: "#f0ffffff"; border.width: 1
+
+                            // 기본 3분할 격자(항상)
+                            Repeater { model: 2
+                                Rectangle { color: "#55ffffff"; width: 1; height: boxRect.height
+                                            x: boxRect.width * (index + 1) / 3 } }
+                            Repeater { model: 2
+                                Rectangle { color: "#55ffffff"; height: 1; width: boxRect.width
+                                            y: boxRect.height * (index + 1) / 3 } }
+
+                            // 회전 중에만: 촘촘한 정사각 격자(수평/수직 정렬 보조). 고정 px 셀 = 정사각.
+                            Item {
+                                anchors.fill: parent
+                                visible: cropOverlay.rotating
+                                property int cell: 26
+                                Repeater { model: Math.max(0, Math.floor(boxRect.width / 26))
+                                    Rectangle { color: "#33ffffff"; width: 1; height: boxRect.height; x: (index + 1) * 26 } }
+                                Repeater { model: Math.max(0, Math.floor(boxRect.height / 26))
+                                    Rectangle { color: "#33ffffff"; height: 1; width: boxRect.width; y: (index + 1) * 26 } }
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                hoverEnabled: true       // 박스 내부 호버 소비 -> 회전 커서 안 뜸
+                                cursorShape: Qt.SizeAllCursor
+                                property real ox: 0
+                                property real oy: 0
+                                onPressed: (mouse) => { ox = mouse.x; oy = mouse.y }
+                                onPositionChanged: (mouse) => {
+                                    if (!pressed) return        // 호버만으로는 이동 안 함(클릭&드래그 전용)
+                                    var dx = (mouse.x - ox) / cropOverlay.width
+                                    var dy = (mouse.y - oy) / cropOverlay.height
+                                    win.setCropRect(win.cropX + dx, win.cropY + dy, win.cropW, win.cropH)
+                                }
+                            }
+                        }
+
+                        // (4) 핸들: 자유=8(모서리+변), 종횡비 잠금=4(모서리만). 정확한 코너 = 리사이즈.
+                        Repeater {
+                            model: win.cropAspect > 0 ? 4 : 8
+                            delegate: Rectangle {
+                                property int hi: index
+                                property bool hl: hi === 0 || hi === 2 || hi === 6   // left
+                                property bool hr: hi === 1 || hi === 3 || hi === 7   // right
+                                property bool ht: hi === 0 || hi === 1 || hi === 4   // top
+                                property bool hb: hi === 2 || hi === 3 || hi === 5   // bottom
+                                width: 13; height: 13; radius: 2
+                                color: "#f0ffffff"; border.color: "#333"; border.width: 1
+                                x: (hl ? cropOverlay.bl : hr ? cropOverlay.bl + cropOverlay.bw
+                                                              : cropOverlay.bl + cropOverlay.bw / 2) - width / 2
+                                y: (ht ? cropOverlay.bt : hb ? cropOverlay.bt + cropOverlay.bh
+                                                              : cropOverlay.bt + cropOverlay.bh / 2) - height / 2
+
+                                MouseArea {
+                                    anchors.fill: parent
+                                    anchors.margins: -6     // 잡기 쉽게 확장
+                                    hoverEnabled: true      // 코너 호버 소비 -> 회전 커서 안 뜸(여기선 리사이즈)
+                                    cursorShape: (parent.hl && parent.ht) || (parent.hr && parent.hb) ? Qt.SizeFDiagCursor
+                                               : (parent.hr && parent.ht) || (parent.hl && parent.hb) ? Qt.SizeBDiagCursor
+                                               : (parent.hl || parent.hr) ? Qt.SizeHorCursor : Qt.SizeVerCursor
+                                    onPositionChanged: (mouse) => {
+                                        if (!pressed) return    // 호버만으로는 리사이즈 안 함(클릭&드래그 전용)
+                                        var p = mapToItem(cropOverlay, mouse.x, mouse.y)
+                                        var nx = Math.max(0, Math.min(1, p.x / cropOverlay.width))
+                                        var ny = Math.max(0, Math.min(1, p.y / cropOverlay.height))
+                                        if (win.cropAspect > 0) {
+                                            // 잠금(모서리): 반대 코너 고정, 너비로 높이 결정
+                                            var ax = parent.hl ? (win.cropX + win.cropW) : win.cropX
+                                            var ay = parent.ht ? (win.cropY + win.cropH) : win.cropY
+                                            var nw = Math.abs(nx - ax)
+                                            var kn = win.cropAspect / Math.max(0.0001, viewport.cA)
+                                            var nh = nw / kn
+                                            var newL = parent.hl ? (ax - nw) : ax
+                                            var newT = parent.ht ? (ay - nh) : ay
+                                            win.setCropRect(newL, newT, nw, nh)
+                                        } else {
+                                            var L = win.cropX, T = win.cropY
+                                            var R = win.cropX + win.cropW, B = win.cropY + win.cropH
+                                            if (parent.hl) L = nx
+                                            if (parent.hr) R = nx
+                                            if (parent.ht) T = ny
+                                            if (parent.hb) B = ny
+                                            win.setCropRect(Math.min(L, R), Math.min(T, B),
+                                                            Math.abs(R - L), Math.abs(B - T))
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // (5) 회전 커서: 곡선 화살표(BlankCursor 대체). 호는 짧고(~150°), 열린 구간이
+                        //     코너별 바깥 대각선(박스 반대쪽)을 향함. 회전영역 호버/드래그 시 마우스 추적.
+                        Canvas {
+                            id: rotCursor
+                            visible: cropOverlay.rotHover || cropOverlay.rotating
+                            width: 30; height: 30; z: 100
+                            x: cropOverlay.rotPx - width / 2
+                            y: cropOverlay.rotPy - height / 2
+                            property int corner: cropOverlay.rotCorner
+                            onCornerChanged: requestPaint()
+                            onPaint: {
+                                var ctx = getContext("2d"); ctx.reset()
+                                var cc = width / 2, r = 8.5
+                                // 바깥 대각선 방향(코너별로 다름) = 호의 중심, 열린 구간은 반대(박스쪽).
+                                var dx = (corner === 1 || corner === 3) ? 1 : -1
+                                var dy = (corner === 2 || corner === 3) ? 1 : -1
+                                var base = Math.atan2(dy, dx)
+                                var span = 2.4                     // ~138°
+                                var a0 = base - span / 2, a1 = base + span / 2
+                                ctx.lineCap = "round"
+                                for (var pass = 0; pass < 2; pass++) {
+                                    ctx.lineWidth = (pass === 0) ? 3.0 : 1.6
+                                    ctx.strokeStyle = (pass === 0) ? "#202020" : "#ffffff"
+                                    ctx.beginPath(); ctx.arc(cc, cc, r, a0, a1); ctx.stroke()
+                                    // 호 양 끝 화살촉(접선 방향) -> 회전 의미
+                                    var ends = [[a1, a1 + Math.PI / 2], [a0, a0 - Math.PI / 2]]
+                                    for (var i = 0; i < 2; i++) {
+                                        var ea = ends[i][0], ta = ends[i][1], s = 3.8, b = 0.40
+                                        var ex = cc + r * Math.cos(ea), ey = cc + r * Math.sin(ea)
+                                        ctx.beginPath()
+                                        ctx.moveTo(ex, ey); ctx.lineTo(ex - s * Math.cos(ta - b), ey - s * Math.sin(ta - b))
+                                        ctx.moveTo(ex, ey); ctx.lineTo(ex - s * Math.cos(ta + b), ey - s * Math.sin(ta + b))
+                                        ctx.stroke()
+                                    }
+                                }
+                            }
+                        }
                     }
 
 
@@ -705,7 +1036,7 @@ ApplicationWindow {
 
                     // 촬영정보 플로팅 패널 (I 키 토글) — 좌측 뷰 왼쪽 끝에 고정
                     Rectangle {
-                        visible: win.infoOverlay && pipeView.visible
+                        visible: win.infoOverlay && cropClip.visible
                                  && controller.shootingInfo.length > 0
                         anchors.left: parent.left
                         anchors.top: parent.top
@@ -770,36 +1101,23 @@ ApplicationWindow {
             }
         }
 
-        // ---------- 우측 패널 (스크롤) ----------
+        // ---------- 우측 패널 (헤더 고정 + 패널 전환 스택) ----------
         Rectangle {
             Layout.preferredWidth: 300
             Layout.fillHeight: true
             color: "#2b2b2b"
 
-            Flickable {
-                id: panelScroll
+            ColumnLayout {
                 anchors.fill: parent
-                clip: true
-                contentWidth: width
-                contentHeight: panelCol.height + 32
-                boundsBehavior: Flickable.StopAtBounds
-                // 다크 테마 스크롤바 (Flickable + 명시적 Basic ScrollBar -> 확실히 표시)
-                ScrollBar.vertical: B.ScrollBar {
-                    id: vbar
-                    width: 12
-                    policy: ScrollBar.AlwaysOn
-                    contentItem: Rectangle {
-                        implicitWidth: 8
-                        radius: 4
-                        color: vbar.pressed ? "#cfcfcf" : "#9a9a9a"   // 밝게(항상 보임)
-                    }
-                    background: Rectangle { radius: 4; color: "#3a3a3a" }
-                }
+                spacing: 0
 
+                // ── 고정 헤더: 패널과 무관한 전역 동작(Export/해상도/상태). 항상 보임 ──
                 ColumnLayout {
-                    id: panelCol
-                    x: 16; y: 16
-                    width: panelScroll.width - 32
+                    id: panelHeader
+                    Layout.fillWidth: true
+                    Layout.leftMargin: 16
+                    Layout.rightMargin: 16
+                    Layout.topMargin: 16
                     spacing: 12
 
                 RowLayout {
@@ -868,6 +1186,41 @@ ApplicationWindow {
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+                }   // end panelHeader
+
+                // ── 패널 전환 스택 (Edit / Rotation / Crop) ──
+                StackLayout {
+                    Layout.fillWidth: true
+                    Layout.fillHeight: true
+                    currentIndex: win.activePanel
+
+                    // ===== index 0: Edit (기존 편집 컨트롤 전부, 스크롤) =====
+                    Flickable {
+                        id: panelScroll
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: width
+                        contentHeight: panelCol.height + 32
+                        boundsBehavior: Flickable.StopAtBounds
+                        // 다크 테마 스크롤바 (Flickable + 명시적 Basic ScrollBar -> 확실히 표시)
+                        ScrollBar.vertical: B.ScrollBar {
+                            id: vbar
+                            width: 12
+                            policy: ScrollBar.AlwaysOn
+                            contentItem: Rectangle {
+                                implicitWidth: 8
+                                radius: 4
+                                color: vbar.pressed ? "#cfcfcf" : "#9a9a9a"   // 밝게(항상 보임)
+                            }
+                            background: Rectangle { radius: 4; color: "#3a3a3a" }
+                        }
+
+                        ColumnLayout {
+                            id: panelCol
+                            x: 16; y: 16
+                            width: panelScroll.width - 32
+                            spacing: 12
 
                 // 필름 시뮬레이션 선택
                 Label {
@@ -1310,9 +1663,254 @@ ApplicationWindow {
                 }
                 Connections {
                     target: controller
-                    // 새 파일 로드 시 입력필드를 EXIF 날짜로 동기화(사용자 편집은 안 건드림)
-                    function onStampReset() { stampField.text = controller.stampText }
+                    // 새 파일 로드 시: 입력필드를 EXIF 날짜로 동기화 + 회전/크롭/지오메트리 초기화.
+                    // (stampReset 은 새 파일 로드 시점에만 발생 — imageChanged 는 WB 커밋에도 발생해 부적합)
+                    function onStampReset() {
+                        stampField.text = controller.stampText
+                        win.resetGeometry()
+                    }
                 }
+                        }   // end panelCol
+                    }       // end Flickable (Edit 페이지)
+
+                    // ===== index 1: Crop / Rotate / Geometry (UI 골격만, 변환은 다음 단계) =====
+                    Flickable {
+                        id: geoScroll
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: width
+                        contentHeight: geoCol.height + 32
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: B.ScrollBar {
+                            id: geoBar
+                            width: 12
+                            policy: ScrollBar.AlwaysOn
+                            contentItem: Rectangle { implicitWidth: 8; radius: 4; color: geoBar.pressed ? "#cfcfcf" : "#9a9a9a" }
+                            background: Rectangle { radius: 4; color: "#3a3a3a" }
+                        }
+
+                        ColumnLayout {
+                            id: geoCol
+                            x: 16; y: 16
+                            width: geoScroll.width - 32
+                            spacing: 12
+
+                            // ---- Crop ----
+                            Label {
+                                text: "Crop"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+                            Label { text: "종횡비(Aspect Ratio)"; color: "white"; font.pixelSize: 12 }
+                            ComboBox {
+                                id: aspectCombo
+                                Layout.fillWidth: true
+                                currentIndex: 0
+                                model: ["원본 (Original)", "자유 (Free)", "1:1",
+                                        "3:2", "4:3", "16:9", "5:4"]
+                                // 고정 비율 선택 -> 박스를 그 비율 중앙 최대로. 원본/자유 -> 전체로.
+                                onActivated: {
+                                    if (win.cropAspect > 0) win.applyCropAspect()
+                                    else win.resetCropRect()
+                                }
+                            }
+                            Label { text: "방향(Orientation)"; color: "white"; font.pixelSize: 12 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Button { id: cropLandscapeBtn; text: "가로"; checkable: true; checked: true; autoExclusive: true; Layout.fillWidth: true
+                                         onClicked: win.applyCropAspect() }
+                                Button { id: cropPortraitBtn; text: "세로"; checkable: true; autoExclusive: true; Layout.fillWidth: true
+                                         onClicked: win.applyCropAspect() }
+                            }
+                            // 안내
+                            Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: "이미지 위에서 박스 핸들=크기, 안쪽 드래그=이동, 꼭짓점 외곽 부근 드래그=회전."
+                                color: "#9a9a9a"; font.pixelSize: 11
+                            }
+
+                            Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                            // ---- Rotate ----
+                            Label {
+                                text: "Rotate"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+
+                            Label {
+                                text: "각도(Straighten):  "
+                                      + (rotAngleSlider.value >= 0 ? "+" : "")
+                                      + rotAngleSlider.value.toFixed(1) + "°"
+                                color: "white"
+                            }
+                            Slider {
+                                id: rotAngleSlider
+                                Layout.fillWidth: true
+                                from: -45.0; to: 45.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(rotAngleSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                            }
+
+                            Label {
+                                text: "90° 회전" + (win.quarterTurns !== 0 ? "  (" + (win.quarterTurns * 90) + "°)" : "")
+                                color: "white"; font.pixelSize: 12
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Button {
+                                    text: "⟲ 90°"
+                                    Layout.fillWidth: true
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "반시계 90°"
+                                    onClicked: { win.quarterTurns = (win.quarterTurns + 3) % 4; win.applyCropAspect() }
+                                }
+                                Button {
+                                    text: "⟳ 90°"
+                                    Layout.fillWidth: true
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "시계 90°"
+                                    onClicked: { win.quarterTurns = (win.quarterTurns + 1) % 4; win.applyCropAspect() }
+                                }
+                            }
+
+                            Label { text: "반전(Flip)"; color: "white"; font.pixelSize: 12 }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: 6
+                                Button {
+                                    id: flipHBtn
+                                    text: "좌우 반전"
+                                    checkable: true
+                                    Layout.fillWidth: true
+                                }
+                                Button {
+                                    id: flipVBtn
+                                    text: "상하 반전"
+                                    checkable: true
+                                    Layout.fillWidth: true
+                                }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                            // ---- Geometry (원근/왜곡 보정) ----
+                            Label {
+                                text: "Geometry"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+                            Label { text: "수직 원근(Vertical):  " + geoVSlider.value.toFixed(0); color: "white" }
+                            Slider {
+                                id: geoVSlider
+                                Layout.fillWidth: true
+                                from: -100; to: 100; value: 0
+                                property real defaultValue: 0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(geoVSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                            }
+                            Label { text: "수평 원근(Horizontal):  " + geoHSlider.value.toFixed(0); color: "white" }
+                            Slider {
+                                id: geoHSlider
+                                Layout.fillWidth: true
+                                from: -100; to: 100; value: 0
+                                property real defaultValue: 0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(geoHSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                            }
+                            Label { text: "배율(Scale):  " + geoScaleSlider.value.toFixed(0) + "%"; color: "white" }
+                            Slider {
+                                id: geoScaleSlider
+                                Layout.fillWidth: true
+                                from: 50; to: 150; value: 100
+                                property real defaultValue: 100
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(geoScaleSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                            Button {
+                                text: "Crop · Rotate · Geometry 초기화"
+                                Layout.fillWidth: true
+                                onClicked: win.resetGeometry()
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                text: "※ 크롭(종횡비 중앙크롭)·회전(스트레이튼/90°/반전)은 프리뷰와 Export에 실제 적용됩니다. Geometry(원근/배율)는 아직 UI 전용입니다."
+                                color: "#888"; font.pixelSize: 11
+                            }
+                        }
+                    }
+                }   // end StackLayout
+            }       // end 우측 패널 outer ColumnLayout
+        }           // end 우측 패널 Rectangle
+
+        // ---------- 우측 끝 세로 패널 셀렉터 바 ----------
+        Rectangle {
+            Layout.preferredWidth: 44
+            Layout.fillHeight: true
+            color: "#222"
+
+            Column {
+                anchors.top: parent.top
+                anchors.horizontalCenter: parent.horizontalCenter
+                anchors.topMargin: 8
+                spacing: 4
+
+                Repeater {
+                    model: [
+                        { label: "✎", tip: "편집 (Edit)" },
+                        { label: "⊡", tip: "자르기·회전·지오메트리 (Crop / Rotate / Geometry)" }
+                    ]
+                    delegate: Rectangle {
+                        width: 40; height: 40
+                        radius: 6
+                        color: win.activePanel === index ? "#3a4a6b"
+                               : (selMouse.containsMouse ? "#33373f" : "transparent")
+                        border.width: win.activePanel === index ? 1 : 0
+                        border.color: "#8ab4f8"
+
+                        Text {
+                            anchors.centerIn: parent
+                            text: modelData.label
+                            color: win.activePanel === index ? "#8ab4f8" : "#cfcfcf"
+                            font.pixelSize: 18
+                        }
+                        MouseArea {
+                            id: selMouse
+                            anchors.fill: parent
+                            hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: win.activePanel = index
+                        }
+                        ToolTip.visible: selMouse.containsMouse
+                        ToolTip.delay: 1500
+                        ToolTip.text: modelData.tip
+                    }
                 }
             }
         }
