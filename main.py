@@ -563,10 +563,13 @@ class Controller(QObject):
         import numpy as np
         import pipeline
         c = self._proxy_small.copy()
-        c = np.clip(c * (2.0 ** float(params.get("exposure", 0.0))), 0.0, 1.0)
-        c = np.clip(pipeline._tone_zones(
+        # ★노출 헤드룸 유지(상한 클램프 X) → highlights- 로 white hole 복원 반영.
+        #   LUT/대비 전에 [0,1] 로 클램프(셰이더/ export 와 동일 순서).
+        c = np.maximum(c * (2.0 ** float(params.get("exposure", 0.0))), 0.0)
+        c = np.maximum(pipeline._tone_zones(
             c, float(params.get("highlights", 0)), float(params.get("shadows", 0)),
-            float(params.get("whites", 0)), float(params.get("blacks", 0))), 0.0, 1.0)
+            float(params.get("whites", 0)), float(params.get("blacks", 0))), 0.0)
+        c = np.clip(c, 0.0, 1.0)
         if params.get("lutEnabled", False):
             arr, n = self._get_lut(params.get("simKey", "identity"))
             if arr is not None:

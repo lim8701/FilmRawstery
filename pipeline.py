@@ -28,14 +28,19 @@ def _smoothstep(e0, e1, x):
     return t * t * (3.0 - 2.0 * t)
 
 
-def _tone_zones(c, hi, sh, wh, bl):
+def _tone_zones(c, hi, sh, wh, bl, lb=None):
+    # 하이/섀도우=국소 노출(곱셈 게인, 색비·대비 보존). 마스크는 '국소 평균 휘도'(lb,
+    # 블러)로 계산 = 라이트룸식 로컬 톤맵. lb 미지정 시 픽셀 휘도로 폴백(히스토그램용).
+    if lb is None:
+        lb = c @ LUMA
+    sh_m = 1.0 - _smoothstep(0.0, 0.75, lb)   # 라이트룸식 넓은 범위(미드톤 겹침)
+    hi_m = _smoothstep(0.25, 1.0, lb)
+    c = c * np.exp2(sh * 1.0 * sh_m + hi * 1.0 * hi_m)[..., None]
+    # 화이트/블랙=끝단 레벨(가산, 픽셀 휘도 기준, 좁게 유지).
     l = c @ LUMA
-    sh_m = 1.0 - _smoothstep(0.0, 0.5, l)
-    hi_m = _smoothstep(0.5, 1.0, l)
-    bl_m = 1.0 - _smoothstep(0.0, 0.25, l)
     wh_m = _smoothstep(0.75, 1.0, l)
-    delta = sh * 0.3 * sh_m + hi * 0.3 * hi_m + bl * 0.3 * bl_m + wh * 0.3 * wh_m
-    return c + delta[..., None]
+    bl_m = 1.0 - _smoothstep(0.0, 0.25, l)
+    return c + (wh * 0.3 * wh_m + bl * 0.3 * bl_m)[..., None]
 
 
 def _blur_rgb(c, sigma):
@@ -165,10 +170,15 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
 
     # --- 전역/공간 단계 (전체 배열) ---
-    c = np.clip(disp * exp, 0.0, 1.0)
-    c = np.clip(_tone_zones(c, hi, sh, wh, bl), 0.0, 1.0)
     sigma_tex = 1.5 * scale     # 프리뷰 텍스처 블러에 대응
-    sigma_cla = 7.0 * scale     # 프리뷰 클래리티/디헤이즈 블러에 대응
+    sigma_cla = 7.0 * scale     # 프리뷰 클래리티/디헤이즈/톤영역 마스크 블러에 대응
+    # ★노출로 1.0 을 넘는 하이라이트는 여기서 클램프하지 않고 헤드룸 유지 →
+    #   highlights- 로 다시 끌어내려 'white hole' 디테일 복원 가능(라이트룸식).
+    #   상한 클램프는 아래 공간단계 뒤 line 의 clip(LUT 직전)에서 [0,1] 로 수행.
+    c = np.maximum(disp * exp, 0.0)
+    # hi/sh 국소 톤맵 마스크 = 국소 평균 휘도(disp 블러 휘도 × 노출). 셰이더 claBlur 대응.
+    lb = _blur_luma((disp @ LUMA).astype(np.float32), sigma_cla) * exp
+    c = np.maximum(_tone_zones(c, hi, sh, wh, bl, lb), 0.0)
     if tex != 0.0:
         c = _texture(c, tex, sigma_tex)
     if cla != 0.0:

@@ -80,16 +80,22 @@ float valueNoise(vec2 p) {
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
-// 톤 영역별 (휘도 보존 luma 오프셋)
-vec3 tone_zones(vec3 c, float hi, float sh, float wh, float bl) {
+// 톤 영역별
+//  - 하이라이트/섀도우 = 국소 노출(멀티플리커티브 게인 c*2^g): 색비·대비 보존, 회색화 방지.
+//    ★마스크는 '국소 평균 휘도'(lb=큰반경 블러 휘도)로 계산 → 라이트룸식 로컬 톤맵.
+//    픽셀 휘도로 마스킹하면 어두운 영역 속 밝은 디테일이 안 올라가 밋밋·이질적이라
+//    라이트룸과 느낌이 다름. 주변 밝기로 판단해 영역째 들어올리고 로컬 대비는 보존한다.
+//  - 화이트/블랙 = 끝단 레벨(가산, 픽셀 휘도): 화이트/블랙 포인트(클리핑 지점) 이동.
+vec3 tone_zones(vec3 c, float lb, float hi, float sh, float wh, float bl) {
+    // 라이트룸식: 범위를 넓혀 미드톤(0.25~0.75)에서 shadows/highlights 가 겹치게.
+    float shMask = 1.0 - smoothstep(0.0, 0.75, lb);
+    float hiMask = smoothstep(0.25, 1.0, lb);
+    c *= exp2(sh * 1.0 * shMask + hi * 1.0 * hiMask);     // 국소 노출(stop)
     float l = dot(c, LUMA);
-    float shMask = 1.0 - smoothstep(0.0, 0.5, l);
-    float hiMask = smoothstep(0.5, 1.0, l);
+    float whMask = smoothstep(0.75, 1.0, l);              // 화이트/블랙은 끝단(좁게) 유지
     float blMask = 1.0 - smoothstep(0.0, 0.25, l);
-    float whMask = smoothstep(0.75, 1.0, l);
-    float delta = sh * 0.3 * shMask + hi * 0.3 * hiMask
-                + bl * 0.3 * blMask + wh * 0.3 * whMask;
-    return c + vec3(delta);
+    c += vec3(wh * 0.3 * whMask + bl * 0.3 * blMask);     // 끝단 레벨 이동
+    return c;
 }
 
 vec3 lut_texel(float ri, float gi, float bi, float N) {
@@ -130,11 +136,16 @@ void main() {
     cam *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
     vec3 rgb = linearToSrgb(applyCamMat(cam));
 
-    // 1) 노출 (기존과 동일 display 공간 위치)
+    // 1) 노출 (display 공간). ★1.0 을 넘는 하이라이트를 여기서 클램프하지 않는다 —
+    //    헤드룸을 유지해야 뒤의 highlights- 로 다시 끌어내려 디테일을 복원할 수 있다
+    //    (클램프하면 모두 1.0 으로 뭉개져 'white hole' 이 평평한 흰판으로 남는다).
+    //    상한은 디헤이즈 뒤 clamp(LUT 직전)에서 [0,1] 로 잡는다.
     rgb *= pow(2.0, ubuf.exposure);
-    rgb = clamp(rgb, 0.0, 1.0);
-    // 3) 톤 영역별
-    rgb = clamp(tone_zones(rgb, ubuf.highlights, ubuf.shadows, ubuf.whites, ubuf.blacks), 0.0, 1.0);
+    rgb = max(rgb, 0.0);
+    // 3) 톤 영역별 — hi/sh 마스크는 국소 평균 휘도(claBlur)로 계산(라이트룸식 로컬 톤맵).
+    //    claBlur 는 dispSrc(노출 전) 블러라 노출을 반영하려 같은 게인을 곱한다.
+    float lb = dot(texture(claBlur, uv).rgb, LUMA) * pow(2.0, ubuf.exposure);
+    rgb = max(tone_zones(rgb, lb, ubuf.highlights, ubuf.shadows, ubuf.whites, ubuf.blacks), 0.0);
 
     vec3 s0 = texture(dispSrc, uv).rgb;          // display sRGB 변환본(블러 비교용)
 
