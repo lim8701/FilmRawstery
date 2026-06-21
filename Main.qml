@@ -85,8 +85,9 @@ ApplicationWindow {
         geoScaleSlider.value = 100
     }
 
-    // 탐색기 "좋아요만 보기" 필터
+    // 탐색기 "좋아요만 보기" 필터 (L 키로 토글)
     property bool showLikedOnly: false
+    Shortcut { sequence: "L"; onActivated: win.showLikedOnly = !win.showLikedOnly }
     // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAF 만.
     //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
     property var explorerFiles: {
@@ -898,12 +899,14 @@ ApplicationWindow {
                             width: cropOverlay.bw; height: cropOverlay.bh
                             color: "transparent"; border.color: "#f0ffffff"; border.width: 1
 
-                            // 기본 3분할 격자(항상)
+                            // 기본 3분할 격자(회전 중에는 숨김 -> 촘촘한 격자만 표시)
                             Repeater { model: 2
-                                Rectangle { color: "#55ffffff"; width: 1; height: boxRect.height
+                                Rectangle { visible: !cropOverlay.rotating; color: "#55ffffff"
+                                            width: 1; height: boxRect.height
                                             x: boxRect.width * (index + 1) / 3 } }
                             Repeater { model: 2
-                                Rectangle { color: "#55ffffff"; height: 1; width: boxRect.width
+                                Rectangle { visible: !cropOverlay.rotating; color: "#55ffffff"
+                                            height: 1; width: boxRect.width
                                             y: boxRect.height * (index + 1) / 3 } }
 
                             // 회전 중에만: 촘촘한 정사각 격자(수평/수직 정렬 보조). 고정 px 셀 = 정사각.
@@ -1883,8 +1886,8 @@ ApplicationWindow {
 
                 Repeater {
                     model: [
-                        { label: "✎", tip: "편집 (Edit)" },
-                        { label: "⊡", tip: "자르기·회전·지오메트리 (Crop / Rotate / Geometry)" }
+                        { icon: "edit", tip: "편집 (Edit)" },
+                        { icon: "crop", tip: "자르기·회전·지오메트리 (Crop / Rotate / Geometry)" }
                     ]
                     delegate: Rectangle {
                         width: 40; height: 40
@@ -1894,11 +1897,37 @@ ApplicationWindow {
                         border.width: win.activePanel === index ? 1 : 0
                         border.color: "#8ab4f8"
 
-                        Text {
-                            anchors.centerIn: parent
-                            text: modelData.label
-                            color: win.activePanel === index ? "#8ab4f8" : "#cfcfcf"
-                            font.pixelSize: 18
+                        // 기능 아이콘(편집=연필, 크롭=크롭 브래킷). 활성=accent, 비활성=회색.
+                        Canvas {
+                            anchors.fill: parent
+                            property string ic: modelData.icon
+                            property color col: win.activePanel === index ? "#8ab4f8"
+                                                : (selMouse.containsMouse ? "#e6e6e6" : "#cfcfcf")
+                            onColChanged: requestPaint()
+                            onPaint: {
+                                var ctx = getContext("2d"); ctx.reset()
+                                var o = 8                       // 40px 버튼 안 24px 아이콘 오프셋
+                                function P(x, y) { return [o + x, o + y] }
+                                ctx.lineWidth = 2
+                                ctx.lineJoin = "round"; ctx.lineCap = "round"
+                                ctx.strokeStyle = col; ctx.fillStyle = col
+                                if (ic === "edit") {
+                                    // 조정 슬라이더 아이콘(가로선 3 + 노브) — 사진 보정 패널
+                                    var rows = [[6, 16], [12, 9], [18, 14]]   // [y, knobX]
+                                    for (var i = 0; i < 3; i++) {
+                                        var a = P(3, rows[i][0]), b = P(21, rows[i][0])
+                                        ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke()
+                                        var k = P(rows[i][1], rows[i][0])
+                                        ctx.beginPath(); ctx.arc(k[0], k[1], 2.6, 0, 2 * Math.PI); ctx.fill()
+                                    }
+                                } else {
+                                    // 크롭 브래킷(└ 좌하 + ┐ 우상)
+                                    ctx.lineCap = "butt"; ctx.lineJoin = "miter"
+                                    function seg(a, b) { ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke() }
+                                    seg(P(7,2), P(7,17));  seg(P(7,17), P(22,17))
+                                    seg(P(2,7), P(17,7));  seg(P(17,7), P(17,22))
+                                }
+                            }
                         }
                         MouseArea {
                             id: selMouse
