@@ -17,6 +17,7 @@ from scipy.ndimage import gaussian_filter, zoom
 
 import date_stamp
 import lens
+import raw_loader
 import wb
 from wb import baked_wb, cam_to_srgb_matrix
 
@@ -129,6 +130,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
         ref = np.array(raw.daylight_whitebalance)[:3]
         ref = ref / ref[1]
+        as_shot = wb.estimate_cct(cam, ref, raw.camera_whitebalance)
+        target_mean = raw_loader._embedded_jpeg_mean(raw)   # 이미지별 자동 노출 목표
         # 프록시와 동일: 카메라 네이티브(매트릭스 미적용) + TREF daylight 베이크 + 감마 저장.
         rgb16 = raw.postprocess(user_wb=baked_wb(cam, ref),
                                 output_color=rawpy.ColorSpace.raw,
@@ -148,6 +151,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     # WB 프론트엔드(셰이더 adjust.frag 와 동일 수학):
     # 카메라 네이티브 감마 -> 선형화 -> WB 상대게인(카메라공간) -> cam->sRGB 매트릭스 -> sRGB.
     nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
+    # 프록시와 동일 이미지별 자동 베이스라인 노출(임베드 JPEG 밝기 매칭, 선형광)
+    nat *= raw_loader.solve_baseline_gain(target_mean, cam, ref, as_shot, nat)
     nat *= wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)
     M = cam_to_srgb_matrix(cam).astype(np.float32)
     nat = nat @ M.T
