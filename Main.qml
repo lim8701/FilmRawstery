@@ -273,7 +273,9 @@ ApplicationWindow {
             "quarterTurns": win.quarterTurns,
             "rotateAngle": rotAngleSlider.value,
             "cropX": win.cropX, "cropY": win.cropY,
-            "cropW": win.cropW, "cropH": win.cropH
+            "cropW": win.cropW, "cropH": win.cropH,
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value,
+            "geoScalePct": geoScaleSlider.value
         })
     }
 
@@ -642,11 +644,29 @@ ApplicationWindow {
                         ? Math.min(availW, availH * cA)
                         : Math.min(availW, availH * cropDispAspect) / Math.max(1e-4, win.cropW)
                     property real canvasDispH: canvasDispW / Math.max(1e-4, cA)
-                    // 캔버스 px -> 화면 스케일 × 스트레이튼 줌
-                    property real geoScale: (canvasDispW / Math.max(1, caW)) * straightenZoom
+                    // 캔버스 px -> 화면 fit 스케일(스트레이튼 줌은 원근 앞에 별도 적용 → export 와 순서 일치)
+                    property real fitScale: canvasDispW / Math.max(1, caW)
                     // 표시 클립 박스: 편집=캔버스 전체, 결과=크롭 영역
                     property real clipW: cropEdit ? canvasDispW : (canvasDispW * win.cropW)
                     property real clipH: cropEdit ? canvasDispH : (canvasDispH * win.cropH)
+
+                    // 원근(키스톤)+배율 호모그래피 (export pipeline._persp_homography 와 동일 수식).
+                    // GEO_PERSP_K=0.35 강도 일치 필수. 중심 기준, 소스(procW/procH) 정규화.
+                    property matrix4x4 perspMat: {
+                        var cx = procW / 2, cy = procH / 2
+                        var s = geoScaleSlider.value / 100.0
+                        var kxn = (geoHSlider.value / 100.0) * 0.35
+                        var kyn = (geoVSlider.value / 100.0) * 0.35
+                        var kx = kxn / Math.max(1, procW / 2)
+                        var ky = kyn / Math.max(1, procH / 2)
+                        var w0 = 1.0 - kx * cx - ky * cy
+                        var h00 = s + cx * kx, h01 = cx * ky, h02 = cx * w0 - s * cx
+                        var h10 = cy * kx, h11 = s + cy * ky, h12 = cy * w0 - s * cy
+                        return Qt.matrix4x4(h00, h01, 0, h02,
+                                            h10, h11, 0, h12,
+                                            0, 0, 1, 0,
+                                            kx, ky, 0, w0)
+                    }
 
                     // --- dispSrc: 카메라네이티브 src -> display sRGB(as-shot WB) 변환 ---
                     // 블러 체인과 메인 셰이더의 로컬대비 base. srcImage·asShot 에만 의존.
@@ -808,9 +828,14 @@ ApplicationWindow {
                                         origin.x: viewport.procW / 2; origin.y: viewport.procH / 2
                                         angle: win.quarterTurns * 90 + rotAngleSlider.value
                                     },
-                                    Scale {
+                                    Scale {   // 스트레이튼 채움 줌(원근 앞 — export 와 동일 순서 H∘Z∘R)
                                         origin.x: viewport.procW / 2; origin.y: viewport.procH / 2
-                                        xScale: viewport.geoScale; yScale: viewport.geoScale
+                                        xScale: viewport.straightenZoom; yScale: viewport.straightenZoom
+                                    },
+                                    Matrix4x4 { matrix: viewport.perspMat },   // 원근(키스톤)+배율
+                                    Scale {   // 화면 fit (최외곽)
+                                        origin.x: viewport.procW / 2; origin.y: viewport.procH / 2
+                                        xScale: viewport.fitScale; yScale: viewport.fitScale
                                     }
                                 ]
                             }
@@ -1863,7 +1888,7 @@ ApplicationWindow {
                             Label {
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
-                                text: "※ 크롭(종횡비 중앙크롭)·회전(스트레이튼/90°/반전)은 프리뷰와 Export에 실제 적용됩니다. Geometry(원근/배율)는 아직 UI 전용입니다."
+                                text: "※ 크롭·회전·Geometry(수직/수평 원근·배율) 모두 프리뷰와 Export에 실제 적용됩니다. 원근 보정 후 생기는 빈 영역은 크롭으로 정리하세요."
                                 color: "#888"; font.pixelSize: 11
                             }
                         }

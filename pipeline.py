@@ -15,7 +15,7 @@ import math
 import numpy as np
 import rawpy
 from PySide6.QtGui import QImage
-from scipy.ndimage import affine_transform, gaussian_filter, zoom
+from scipy.ndimage import affine_transform, gaussian_filter, map_coordinates, zoom
 
 import date_stamp
 import lens
@@ -135,6 +135,42 @@ def _crop_rect(arr, cx, cy, cw, ch):
     return arr[y0:y1, x0:x1]
 
 
+# 원근(키스톤) 슬라이더 ±100 -> 키스톤 강도. 프리뷰(Main.qml perspMat)와 동일해야 함.
+GEO_PERSP_K = 0.35
+
+
+def _persp_homography(w, h, kxn, kyn, s):
+    """소스→출력 호모그래피(3x3). 중심 기준 원근(kxn/kyn)+균등배율(s).
+    프리뷰 perspMat 와 동일 수식. kxn/kyn 은 정규화 강도(가장자리에서 w' 가 1±k)."""
+    cx, cy = w / 2.0, h / 2.0
+    kx = kxn / (w / 2.0)
+    ky = kyn / (h / 2.0)
+    w0 = 1.0 - kx * cx - ky * cy
+    return np.array([
+        [s + cx * kx, cx * ky,     cx * w0 - s * cx],
+        [cy * kx,     s + cy * ky, cy * w0 - s * cy],
+        [kx,          ky,          w0]], dtype=np.float64)
+
+
+def _warp_perspective(arr, kxn, kyn, s):
+    """현상 결과에 원근+배율(중심 기준)을 적용. 출력 화소->소스 역매핑(map_coordinates)."""
+    h, w = arr.shape[:2]
+    H = _persp_homography(w, h, kxn, kyn, s)
+    Hinv = np.linalg.inv(H)
+    ys, xs = np.indices((h, w), dtype=np.float64)
+    ones = np.ones_like(xs)
+    sx = Hinv[0, 0] * xs + Hinv[0, 1] * ys + Hinv[0, 2] * ones
+    sy = Hinv[1, 0] * xs + Hinv[1, 1] * ys + Hinv[1, 2] * ones
+    sw = Hinv[2, 0] * xs + Hinv[2, 1] * ys + Hinv[2, 2] * ones
+    sx /= sw
+    sy /= sw
+    out = np.empty_like(arr)
+    for ch in range(arr.shape[2]):
+        out[..., ch] = map_coordinates(arr[..., ch], [sy, sx], order=1,
+                                       mode="constant", cval=0)
+    return out
+
+
 def _apply_geometry(arr, p):
     """현상 결과(H,W,3 uint8)에 지오메트리 적용 — 프리뷰(QML 뷰 변환)와 동일 순서/정의:
     플립 -> 90° 회전 -> 스트레이튼(자유각 회전 + 채움 줌) -> 자유 사각 크롭.
@@ -148,6 +184,9 @@ def _apply_geometry(arr, p):
     cy = float(p.get("cropY", 0.0))
     cw = float(p.get("cropW", 1.0))
     ch = float(p.get("cropH", 1.0))
+    geo_v = float(p.get("geoV", 0.0))         # 수직 원근 슬라이더 (-100..100)
+    geo_h = float(p.get("geoH", 0.0))         # 수평 원근 슬라이더 (-100..100)
+    geo_s = float(p.get("geoScalePct", 100.0))  # 배율 슬라이더 (50..150 %)
 
     if flip_h:
         arr = arr[:, ::-1]
@@ -178,6 +217,12 @@ def _apply_geometry(arr, p):
         # 가장자리 색 복제(프리뷰 GPU edge-clamp 샘플링과 정합).
         arr = affine_transform(arr, mat, offset=off, order=1,
                                mode="nearest").astype(np.uint8)
+
+    # 원근(키스톤)+배율 — 스트레이튼 뒤, 크롭 앞(프리뷰 Matrix4x4 와 동일 순서/수식)
+    if abs(geo_v) > 1e-3 or abs(geo_h) > 1e-3 or abs(geo_s - 100.0) > 1e-3:
+        arr = np.ascontiguousarray(arr)
+        arr = _warp_perspective(arr, (geo_h / 100.0) * GEO_PERSP_K,
+                                (geo_v / 100.0) * GEO_PERSP_K, geo_s / 100.0)
 
     if cx > 0.0 or cy > 0.0 or cw < 1.0 or ch < 1.0:
         arr = _crop_rect(arr, cx, cy, cw, ch)
