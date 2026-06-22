@@ -1587,66 +1587,6 @@ ApplicationWindow {
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
                 Label {
-                    text: "Sharpening"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
-                }
-                Label { text: "Amount:  " + Math.round(sharpAmtSlider.value * 100); color: "white" }
-                Slider {
-                    id: sharpAmtSlider
-                    Layout.fillWidth: true
-                    from: 0.0; to: 1.0; value: 0.0
-                    property real defaultValue: 0.0
-                    property real _lastPressMs: 0
-                    property bool _pendingReset: false
-                    onPressedChanged: {
-                        if (pressed) _pendingReset = win.isDblPress(sharpAmtSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                    }
-                }
-                Label { text: "Radius:  " + sharpRadiusSlider.value.toFixed(1) + " px"; color: "white" }
-                Slider {
-                    id: sharpRadiusSlider
-                    Layout.fillWidth: true
-                    from: 0.5; to: 3.0; value: 1.0
-                    property real defaultValue: 1.0
-                    property real _lastPressMs: 0
-                    property bool _pendingReset: false
-                    onPressedChanged: {
-                        if (pressed) _pendingReset = win.isDblPress(sharpRadiusSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                    }
-                }
-                Label { text: "Detail:  " + Math.round(sharpDetailSlider.value * 100); color: "white" }
-                Slider {
-                    id: sharpDetailSlider
-                    Layout.fillWidth: true
-                    from: 0.0; to: 1.0; value: 0.25
-                    property real defaultValue: 0.25
-                    property real _lastPressMs: 0
-                    property bool _pendingReset: false
-                    onPressedChanged: {
-                        if (pressed) _pendingReset = win.isDblPress(sharpDetailSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                    }
-                }
-                Label { text: "Masking:  " + Math.round(sharpMaskSlider.value * 100); color: "white" }
-                Slider {
-                    id: sharpMaskSlider
-                    Layout.fillWidth: true
-                    from: 0.0; to: 1.0; value: 0.0
-                    property real defaultValue: 0.0
-                    property real _lastPressMs: 0
-                    property bool _pendingReset: false
-                    onPressedChanged: {
-                        if (pressed) _pendingReset = win.isDblPress(sharpMaskSlider)
-                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                    }
-                }
-
-                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
-
-                Label {
                     text: "Detail & Vignette"
                     color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
                     font.capitalization: Font.AllUppercase
@@ -1744,6 +1684,66 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(grainSizeSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Sharpening"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
+                Label { text: "Amount:  " + Math.round(sharpAmtSlider.value * 100); color: "white" }
+                Slider {
+                    id: sharpAmtSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(sharpAmtSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+                Label { text: "Radius:  " + sharpRadiusSlider.value.toFixed(1) + " px"; color: "white" }
+                Slider {
+                    id: sharpRadiusSlider
+                    Layout.fillWidth: true
+                    from: 0.5; to: 3.0; value: 1.0
+                    property real defaultValue: 1.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(sharpRadiusSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+                Label { text: "Detail:  " + Math.round(sharpDetailSlider.value * 100); color: "white" }
+                Slider {
+                    id: sharpDetailSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.25
+                    property real defaultValue: 0.25
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(sharpDetailSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+                Label { text: "Masking:  " + Math.round(sharpMaskSlider.value * 100); color: "white" }
+                Slider {
+                    id: sharpMaskSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(sharpMaskSlider)
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
                 }

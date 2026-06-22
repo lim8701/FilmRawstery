@@ -70,6 +70,18 @@ vec3 applyCamMat(vec3 v) {
                 dot(vec3(ubuf.camM6, ubuf.camM7, ubuf.camM8), v));
 }
 
+// 프록시 헤드룸(raw_loader.PROXY_HEADROOM 와 동일해야 함) 및 단일 필름릭 베이스 톤커브.
+const float PROXY_HEADROOM = 4.0;
+const float HL_KNEE = 0.7;   // wb.HL_KNEE 와 동일(하이라이트 숄더 시작, 선형)
+// scene-linear sRGB(≥0) -> display sRGB[0,1]. knee 이상을 1.0 으로 점근 압축 후 OETF.
+// wb.filmic / wb.highlight_rolloff 와 동일 수식(채널별).
+vec3 filmic(vec3 x) {
+    vec3 hi = max(x - HL_KNEE, 0.0);
+    vec3 rolled = 1.0 - (1.0 - HL_KNEE) * exp(-hi / (1.0 - HL_KNEE));
+    vec3 shoulder = mix(x, rolled, step(vec3(HL_KNEE), x));
+    return linearToSrgb(shoulder);
+}
+
 // 의사난수 해시 + value noise (필름 그레인용, 절차적·결정적)
 // hash12: Dave Hoskins (https://www.shadertoy.com/view/4djSRW) — 곱셈해시의
 // 세로/대각 줄무늬 아티팩트를 피한 고품질 해시.
@@ -135,30 +147,23 @@ vec3 apply_lut(vec3 col, float N) {
 void main() {
     vec2 uv = qt_TexCoord0;
 
-    // 0) WB (카메라 네이티브 공간, linear) -> cam->sRGB 매트릭스 -> display sRGB
-    //    src 는 감마 인코딩된 카메라 네이티브. 선형화 후 WB 상대게인(TREF 대비),
-    //    매트릭스로 sRGB(linear) 변환, OETF 로 display sRGB. = rawpy 내부 수학 재현.
-    vec3 cam = srgbToLinear(texture(src, uv).rgb);
+    // 0) scene-linear 프론트엔드: 헤드룸 디코드 → WB(카메라공간) → cam→sRGB 매트릭스
+    //    → 유저 노출(scene-linear 배수) → filmic(단일 베이스 톤커브) → display sRGB.
+    //    src 는 헤드룸 인코딩(code=oetf(L/H)) 카메라네이티브 → ×H 로 scene-linear 복원.
+    vec3 cam = srgbToLinear(texture(src, uv).rgb) * PROXY_HEADROOM;
     cam *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
-    vec3 rgb = linearToSrgb(applyCamMat(cam));
+    vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure);   // scene-linear sRGB + 노출
+    vec3 rgb = filmic(lin);                                  // → display sRGB[0,1]
 
-    // 0.5) 하이라이트 디새추레이션(클리핑 롤오프): 한 채널만 포화돼 생기는 색끼
-    //      (예: 불꽃 코어 청록)를 제거 — 최댓값이 포화에 가까울수록 중성(흰색)으로.
-    //      카메라/라이트룸 하이라이트 거동. 휘도(최댓값) 보존하며 색만 뺀다.
+    // 0.5) 하이라이트 디새추레이션: 단일채널 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성.
+    //      filmic 채널별 숄더로는 안 잡힘(클립채널 복원은 별개). filmic 뒤 display 공간.
     {
         float mx = max(rgb.r, max(rgb.g, rgb.b));
         rgb = mix(rgb, vec3(mx), smoothstep(0.95, 1.0, mx));
     }
 
-    // 1) 노출 (display 공간). ★1.0 을 넘는 하이라이트를 여기서 클램프하지 않는다 —
-    //    헤드룸을 유지해야 뒤의 highlights- 로 다시 끌어내려 디테일을 복원할 수 있다
-    //    (클램프하면 모두 1.0 으로 뭉개져 'white hole' 이 평평한 흰판으로 남는다).
-    //    상한은 디헤이즈 뒤 clamp(LUT 직전)에서 [0,1] 로 잡는다.
-    rgb *= pow(2.0, ubuf.exposure);
-    rgb = max(rgb, 0.0);
-    // 3) 톤 영역별 — hi/sh 마스크는 국소 평균 휘도(claBlur)로 계산(라이트룸식 로컬 톤맵).
-    //    claBlur 는 dispSrc(노출 전) 블러라 노출을 반영하려 같은 게인을 곱한다.
-    float lb = dot(texture(claBlur, uv).rgb, LUMA) * pow(2.0, ubuf.exposure);
+    // 3) 톤 영역별 — hi/sh 마스크 = 중성 dispSrc(claBlur) 국소 평균 휘도(노출 무관, 장면 구조 기준).
+    float lb = dot(texture(claBlur, uv).rgb, LUMA);
     rgb = max(tone_zones(rgb, lb, ubuf.highlights, ubuf.shadows, ubuf.whites, ubuf.blacks), 0.0);
 
     vec3 s0 = texture(dispSrc, uv).rgb;          // display sRGB 변환본(블러 비교용)

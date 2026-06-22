@@ -33,8 +33,19 @@ vec3 applyCamMat(vec3 v) {
                 dot(vec3(ubuf.camM6, ubuf.camM7, ubuf.camM8), v));
 }
 
+// adjust.frag 와 동일: 헤드룸 디코드(×H) + 단일 필름릭 베이스 톤커브.
+const float PROXY_HEADROOM = 4.0;
+const float HL_KNEE = 0.7;
+vec3 filmic(vec3 x) {
+    vec3 hi = max(x - HL_KNEE, 0.0);
+    vec3 rolled = 1.0 - (1.0 - HL_KNEE) * exp(-hi / (1.0 - HL_KNEE));
+    vec3 shoulder = mix(x, rolled, step(vec3(HL_KNEE), x));
+    return linearToSrgb(shoulder);
+}
+
 void main() {
-    vec3 cam = srgbToLinear(texture(src, qt_TexCoord0).rgb);
+    // dispSrc = 블러/로컬대비 base. 헤드룸 디코드 → as-shot WB → 매트릭스 → filmic(노출 무관 중성).
+    vec3 cam = srgbToLinear(texture(src, qt_TexCoord0).rgb) * PROXY_HEADROOM;
     cam *= vec3(ubuf.relR, ubuf.relG, ubuf.relB);
-    fragColor = vec4(linearToSrgb(applyCamMat(cam)), 1.0) * ubuf.qt_Opacity;
+    fragColor = vec4(filmic(applyCamMat(cam)), 1.0) * ubuf.qt_Opacity;
 }

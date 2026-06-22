@@ -252,7 +252,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         ref = np.array(raw.daylight_whitebalance)[:3]
         ref = ref / ref[1]
         as_shot = wb.estimate_cct(cam, ref, raw.camera_whitebalance)
-        target_mean = raw_loader._embedded_jpeg_mean(raw)   # 이미지별 자동 노출 목표
+        target_median = raw_loader._embedded_jpeg_median(raw)   # 이미지별 자동 노출 목표(중앙값)
         # 프록시와 동일: 카메라 네이티브(매트릭스 미적용) + TREF daylight 베이크 + 감마 저장.
         rgb16 = raw.postprocess(user_wb=baked_wb(cam, ref),
                                 output_color=rawpy.ColorSpace.raw,
@@ -269,21 +269,20 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     h, w, _ = rgb16.shape
     scale = max(h, w) / float(proxy_edge)     # 프록시 텍셀 반경 -> 풀해상도 px
 
-    # WB 프론트엔드(셰이더 adjust.frag 와 동일 수학):
-    # 카메라 네이티브 감마 -> 선형화 -> WB 상대게인(카메라공간) -> cam->sRGB 매트릭스 -> sRGB.
+    # === scene-linear 프론트엔드(셰이더 adjust.frag 와 동일 수학) ===
+    # 카메라네이티브 감마 -> 선형화 -> 자동노출(중앙값) -> WB(카메라공간) -> cam->sRGB 매트릭스
+    # -> scene-linear sRGB -> 유저노출(scene-linear) -> filmic(단일 톤커브) -> display sRGB.
     nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
-    # 프록시와 동일 이미지별 자동 베이스라인 노출(임베드 JPEG 밝기 매칭, 선형광)
-    nat *= raw_loader.solve_baseline_gain(target_mean, cam, ref, as_shot, nat)
-    nat = wb.highlight_rolloff(nat)     # 하이라이트 숄더(프록시와 동일, 블로우아웃 방지)
+    nat *= wb.auto_exposure_gain(target_median, cam, ref, as_shot, nat)
     nat *= wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)
     M = cam_to_srgb_matrix(cam).astype(np.float32)
-    nat = nat @ M.T
-    disp = wb.linear_to_srgb(nat).astype(np.float32)   # display sRGB (0..1)
-    # 하이라이트 디새추레이션(셰이더 0.5 블록과 동일): 클리핑 근처 색끼 제거 -> 중성.
+    linsrgb = (nat @ M.T) * (2.0 ** float(p.get("exposure", 0.0)))   # 노출 = scene-linear 배수
+    disp = wb.filmic(linsrgb).astype(np.float32)                     # scene→display[0,1]
+    # 하이라이트 디새추레이션: 단일채널 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성(흰색).
+    # filmic 의 채널별 숄더로는 안 잡힘(클립채널 복원은 별개). filmic 뒤 display 공간.
     _mx = disp.max(axis=2, keepdims=True)
     disp = disp + (_mx - disp) * _smoothstep(0.95, 1.0, _mx)
 
-    exp = 2.0 ** float(p.get("exposure", 0.0))
     hi, sh = float(p.get("highlights", 0)), float(p.get("shadows", 0))
     wh, bl = float(p.get("whites", 0)), float(p.get("blacks", 0))
     tex = float(p.get("texAmt", p.get("texture", 0)))
@@ -303,15 +302,12 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     stamp_text = str(p.get("stampText", "") or "")
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
 
-    # --- 전역/공간 단계 (전체 배열) ---
+    # --- 전역/공간 단계 (전체 배열). 노출/하이라이트는 filmic 프론트엔드에서 이미 처리됨 ---
     sigma_tex = 1.5 * scale     # 프리뷰 텍스처 블러에 대응
     sigma_cla = 7.0 * scale     # 프리뷰 클래리티/디헤이즈/톤영역 마스크 블러에 대응
-    # ★노출로 1.0 을 넘는 하이라이트는 여기서 클램프하지 않고 헤드룸 유지 →
-    #   highlights- 로 다시 끌어내려 'white hole' 디테일 복원 가능(라이트룸식).
-    #   상한 클램프는 아래 공간단계 뒤 line 의 clip(LUT 직전)에서 [0,1] 로 수행.
-    c = np.maximum(disp * exp, 0.0)
-    # hi/sh 국소 톤맵 마스크 = 국소 평균 휘도(disp 블러 휘도 × 노출). 셰이더 claBlur 대응.
-    lb = _blur_luma((disp @ LUMA).astype(np.float32), sigma_cla) * exp
+    c = disp
+    # hi/sh 국소 톤맵 마스크 = 국소 평균 휘도(display 블러 휘도). 셰이더 claBlur 대응.
+    lb = _blur_luma((disp @ LUMA).astype(np.float32), sigma_cla)
     c = np.maximum(_tone_zones(c, hi, sh, wh, bl, lb), 0.0)
     if tex != 0.0:
         c = _texture(c, tex, sigma_tex)

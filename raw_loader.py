@@ -4,28 +4,26 @@
 처리한다. 화이트밸런스는 절대 색온도(Kelvin)로 디코딩 단계에서 적용한다.
 """
 
-import math
-
 import numpy as np
 import rawpy
 from scipy.ndimage import zoom
 from PySide6.QtGui import QImage
 
 import lens
-from wb import (baked_wb, cam_to_srgb_matrix, estimate_wb, highlight_rolloff,
-                linear_to_srgb, rel_gain, srgb_to_linear)
+from wb import (auto_exposure_gain, baked_wb, cam_to_srgb_matrix, estimate_wb,
+                linear_to_srgb, srgb_to_linear)
+
+# 프리뷰 프록시 헤드룸: scene-linear 를 8bit 에 담을 때 code=oetf(L/H), 셰이더가 ×H 로 복원.
+# H 만큼(여기 4× ≈ 2스톱) 하이라이트 헤드룸 확보 → filmic 톤커브가 누를 여지 보존.
+# ⚠️adjust.frag/convert.frag 의 PROXY_HEADROOM 와 반드시 동일해야 함.
+PROXY_HEADROOM = 4.0
 
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 
-# 디코딩 베이스라인 노출 폴백 게인 (임베드 JPEG 를 못 읽을 때만 사용).
-# RAF 의 no_auto_bright 선형 디코딩은 카메라 JPEG 보다 어둡다(화이트포인트가 상위 레인지를
-# 안 씀). 보통은 아래 solve_baseline_gain 이 임베드 JPEG 밝기에 맞춰 이미지별 게인을 구한다.
-BASELINE_GAIN = 4.0
 
-
-def _embedded_jpeg_mean(raw):
-    """RAF 임베드 JPEG(카메라 현상본)의 평균 휘도(0..1). 실패 시 None.
-    이미지별 자동 베이스라인 노출의 '목표 밝기'(카메라의 샷별 측광/톤 의도)."""
+def _embedded_jpeg_lum(raw):
+    """RAF 임베드 JPEG(카메라 현상본)의 휘도(0..1) 1D 배열. 실패 시 None.
+    이미지별 자동 노출의 '목표 밝기'(카메라의 샷별 측광/톤 의도)를 통계로 쓴다."""
     try:
         th = raw.extract_thumb()
         if th.format != rawpy.ThumbFormat.JPEG:
@@ -39,9 +37,15 @@ def _embedded_jpeg_mean(raw):
             return None
         a = (np.frombuffer(qi.constBits(), np.uint8)
              .reshape(h, qi.bytesPerLine())[:, :w * 3].reshape(h, w, 3).astype(np.float32) / 255.0)
-        return float((a @ LUMA).mean())
+        return (a @ LUMA).ravel()
     except Exception:
         return None
+
+
+def _embedded_jpeg_median(raw):
+    """임베드 JPEG 중앙값 휘도(0..1). 고휘도(하늘 등)에 강건 → scene-linear 자동노출 목표."""
+    lum = _embedded_jpeg_lum(raw)
+    return None if lum is None else float(np.median(lum))
 
 
 # 감마 변환 LUT(pow 대신 게더). wb 의 정확 함수로 1회 구축 → 값 동일, 속도만 향상.
@@ -68,45 +72,6 @@ def _lin2srgb_lut():
     return _LIN2SRGB
 
 
-def solve_baseline_gain(target_mean, cam, ref, as_shot, lin_native):
-    """카메라 네이티브 *선형광* 에 곱할 베이스라인 게인을 이미지별로 solve.
-
-    화면 표시 평균 휘도가 임베드 JPEG 평균(target_mean)과 같아지는 게인을 찾는다
-    (= 카메라 JPEG 밝기에 매칭). display mean 은 게인에 대해 단조증가 → 로그공간 이분법.
-    target 없으면 고정 폴백(BASELINE_GAIN). ⚠️프리뷰(raw_loader)·export(pipeline) 동일 사용.
-    고정배수와 달리 어두운/밝은 씬 모두 자기 JPEG 에 맞음(상대노출은 카메라 측광이 이미 반영)."""
-    if not target_mean or not math.isfinite(target_mean) or target_mean <= 0:
-        return BASELINE_GAIN
-    M = cam_to_srgb_matrix(cam).astype(np.float32)
-    rel = rel_gain(cam, ref, as_shot, 0.0).astype(np.float32)
-    s = lin_native[::8, ::8].reshape(-1, 3)          # 빠른 통계용 서브샘플
-    def disp_mean(g):
-        # 굽는 순서와 동일: 베이스라인 게인 -> 하이라이트 롤오프 -> WB -> 매트릭스 -> sRGB
-        nat = highlight_rolloff(s * g)
-        d = linear_to_srgb(np.clip((nat * rel) @ M.T, 0.0, 1.0))
-        return float((d @ LUMA).mean())
-    lo, hi = 0.25, 32.0
-    for _ in range(24):
-        g = math.sqrt(lo * hi)
-        if disp_mean(g) < target_mean:
-            lo = g
-        else:
-            hi = g
-    g_mean = math.sqrt(lo * hi)
-    # 하이라이트 보호: 고휘도 장면(밝은 하늘 등)에서 평균매칭 게인이 하이라이트를 과하게
-    # 밀어 블로우아웃(플레어)됨. 밝은 분위(native 최대채널)가 천장을 안 넘게 게인 상한.
-    # 97th 분위 → 화면의 ~3% 이상이 밝아야(=고휘도 장면, 하늘 등) 캡이 걸린다. 모닥불/
-    # 조명 같은 '어두운 배경 위 작은 밝은 피사체'는 분위가 어두워 캡이 안 걸림(밝기 보존).
-    bright = float(np.percentile(s.max(axis=1), 97.0))
-    if bright > 1e-6:
-        g_cap = HL_CEIL / bright
-        return max(min(g_mean, g_cap), g_mean * 0.5)   # 과도한 억제 방지(최대 ~1stop)
-    return g_mean
-
-
-HL_CEIL = 0.68   # 베이스라인 후 밝은 분위(native 선형)가 머무를 천장(롤오프 숄더 안쪽)
-
-
 def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
     """RAF 를 디코딩해 (QImage, as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9)) 반환.
 
@@ -120,7 +85,7 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
         ref = np.array(raw.daylight_whitebalance)[:3]
         ref = ref / ref[1]
         as_shot, as_shot_tint = estimate_wb(cam_xyz, ref, raw.camera_whitebalance)
-        target_mean = _embedded_jpeg_mean(raw)   # 이미지별 자동 노출 목표(카메라 JPEG 밝기)
+        target_median = _embedded_jpeg_median(raw)   # 이미지별 자동 노출 목표(중앙값, 고휘도 강건)
 
         rgb16 = raw.postprocess(
             user_wb=baked_wb(cam_xyz, ref),     # TREF daylight 베이크(고정)
@@ -149,13 +114,13 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
             x = zoom(x, (f, f, 1.0), order=1)
         rgb16 = np.clip(x + 0.5, 0.0, 65535.0).astype(np.uint16)
 
-    # 베이스라인 노출: 카메라 네이티브 선형광에 이미지별 자동 게인 곱 → JPEG 수준 밝기.
-    # 8bit 양자화 전 선형에서 적용해 섀도우 밴딩 방지. pow 대신 LUT 게더(rgb16=uint16).
-    lin = _srgb2lin_lut()[rgb16]                         # (H,W,3) float32 선형
-    lin *= solve_baseline_gain(target_mean, cam_xyz, ref, as_shot, lin)
-    lin = highlight_rolloff(lin)                         # 하이라이트 숄더(블로우아웃 방지)
-    idx = (np.clip(lin, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
-    disp = _lin2srgb_lut()[idx]                          # float32 [0,1] display(카메라네이티브 색)
+    # 카메라네이티브 선형광 → 이미지별 자동 노출(중앙값 기반 scene-linear 게인) → 헤드룸 인코딩.
+    # 톤커브(filmic)는 셰이더/export 가 적용하므로 여기선 베이스라인 노출만 굽고 헤드룸을 남긴다.
+    # code = oetf(L/H): scene-linear L 을 H 로 나눠 [0,1] 감마로 인코딩(셰이더가 ×H 복원).
+    lin = _srgb2lin_lut()[rgb16]                         # (H,W,3) float32 선형(카메라네이티브)
+    lin *= auto_exposure_gain(target_median, cam_xyz, ref, as_shot, lin)
+    idx = (np.clip(lin * (1.0 / PROXY_HEADROOM), 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
+    disp = _lin2srgb_lut()[idx]                          # float32 [0,1] 헤드룸 인코딩(카메라네이티브)
 
     # ⚠️렌즈 보정(특히 비네팅 반경 게인)을 8bit 에 적용하면 매끄러운 구름/하늘에 동심(방사형)
     #   양자화 밴딩이 생기고 WB(temp) 조정 시 증폭됨. → float 에서 적용 + 최종 8bit 양자화에

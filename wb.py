@@ -10,6 +10,8 @@ import numpy as np
 
 TREF = 5500  # daylight_whitebalance 가 중립이 되는 기준 색온도(K)
 
+_LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)  # Rec.601 휘도(자동노출 통계용)
+
 
 def planckian_xy(T: float):
     """색온도 T(K) -> CIE xy 색도 (Planckian locus 근사)."""
@@ -106,6 +108,41 @@ def highlight_rolloff(lin, knee=HL_KNEE):
         e = lin[hi] - knee
         out[hi] = 1.0 - (1.0 - knee) * np.exp(-e / (1.0 - knee))
     return out
+
+
+def filmic(x):
+    """scene-linear sRGB(≥0, 헤드룸 >1 가능) → display sRGB[0,1] 단일 베이스 톤커브.
+
+    하이라이트 숄더(highlight_rolloff: knee 이상을 1.0 으로 점근 압축)로 밝은 영역을
+    부드럽게 롤오프한 뒤 sRGB OETF 로 인코딩. 이 곡선 하나가 scene→display 변환과
+    하이라이트 처리를 담당한다(기존 linear_to_srgb + rolloff + 게인캡 + 디새추 대체)."""
+    return linear_to_srgb(highlight_rolloff(x))
+
+
+def auto_exposure_gain(target_median, cam_xyz, daylight_ref, as_shot, lin_native):
+    """이미지별 자동 노출(scene-linear 게인). 렌더(as-shot WB → 매트릭스 → filmic) 후
+    display 휘도의 **중앙값**이 target_median 이 되도록 solve(로그공간 이분법).
+
+    중앙값 기반이라 밝은 하늘이 큰 면적이어도 안 끌려감(평균매칭+게인캡 휴리스틱 대체).
+    target 없으면 1.0 폴백."""
+    if not target_median or not np.isfinite(target_median) or target_median <= 0:
+        return 1.0
+    M = cam_to_srgb_matrix(cam_xyz).astype(np.float32)
+    rel = rel_gain(cam_xyz, daylight_ref, as_shot, 0.0).astype(np.float32)
+    s = np.asarray(lin_native, np.float32)[::8, ::8].reshape(-1, 3)   # 통계용 서브샘플
+
+    def disp_median(g):
+        d = filmic((s * (g * rel)) @ M.T)
+        return float(np.median(d @ _LUMA))
+
+    lo, hi = 0.05, 64.0
+    for _ in range(24):
+        g = (lo * hi) ** 0.5
+        if disp_median(g) < target_median:
+            lo = g
+        else:
+            hi = g
+    return (lo * hi) ** 0.5
 
 
 def rel_gain(cam_xyz, daylight_ref, kelvin, tint=0.0):

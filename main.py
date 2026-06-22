@@ -28,7 +28,7 @@ import make_luts
 from exif_info import read_shooting_info, _read_embedded_jpeg
 import wb
 from lut import atlas_qimage, load_cube
-from raw_loader import load_proxy
+from raw_loader import PROXY_HEADROOM, load_proxy
 
 BASE = Path(__file__).resolve().parent
 SHADERS_DIR = BASE / "shaders"
@@ -511,8 +511,8 @@ class Controller(QObject):
     def _compute_histogram(self, img: QImage) -> None:
         """프록시 QImage → 히스토그램용 축소본 캐시 + 기준(입력) 히스토그램.
 
-        프록시는 카메라 네이티브(감마)라, 셰이더와 동일하게 display sRGB(as-shot WB)
-        로 변환한 값으로 히스토그램/캐시를 만든다(updateHistogram 의 display 가정 유지)."""
+        프록시는 헤드룸 인코딩 카메라네이티브라, 셰이더 프론트엔드와 동일하게
+        scene-linear sRGB(as-shot WB)로 디코드해 캐시하고, 기준 히스토그램은 filmic 적용본."""
         import numpy as np
         im = img.convertToFormat(QImage.Format.Format_RGB888)
         w, h = im.width(), im.height()
@@ -524,20 +524,20 @@ class Controller(QObject):
                    .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3))
             step = max(1, max(h, w) // 128)          # 히스토그램용 소형 축소본(드래그 중 가벼움)
             small = arr[::step, ::step].astype(np.float32) / 255.0
-            self._proxy_small = self._native_to_display(small)
-            self._histogram = self._hist_of(self._proxy_small)
+            self._proxy_small = self._native_to_scenelinear(small)   # scene-linear sRGB
+            self._histogram = self._hist_of(wb.filmic(self._proxy_small))  # 기준(노출0) display
         self.histogramChanged.emit()
 
-    def _native_to_display(self, arr):
-        """카메라 네이티브(감마, 0..1) → display sRGB. 셰이더 프론트엔드(as-shot WB)와 동일."""
+    def _native_to_scenelinear(self, arr):
+        """헤드룸 인코딩 카메라네이티브(0..1) → scene-linear sRGB(filmic 전). 셰이더 프론트엔드와 동일."""
         import numpy as np
         if not self._cam2srgb or not self._cam or not self._ref:
             return arr
         M = np.asarray(self._cam2srgb, float).reshape(3, 3)
         cam = np.asarray(self._cam, float).reshape(3, 3)
         rel = wb.rel_gain(cam, np.asarray(self._ref, float), self._asshot, 0.0)
-        lin = wb.srgb_to_linear(arr) * rel
-        return wb.linear_to_srgb(lin @ M.T).astype(np.float32)
+        lin = wb.srgb_to_linear(arr) * PROXY_HEADROOM * rel    # 헤드룸 디코드 + as-shot WB
+        return (lin @ M.T).astype(np.float32)                 # scene-linear sRGB
 
     @staticmethod
     def _hist_of(c) -> list:
@@ -563,10 +563,9 @@ class Controller(QObject):
             return
         import numpy as np
         import pipeline
-        c = self._proxy_small.copy()
-        # ★노출 헤드룸 유지(상한 클램프 X) → highlights- 로 white hole 복원 반영.
-        #   LUT/대비 전에 [0,1] 로 클램프(셰이더/ export 와 동일 순서).
-        c = np.maximum(c * (2.0 ** float(params.get("exposure", 0.0))), 0.0)
+        c = self._proxy_small.copy()                       # scene-linear sRGB
+        # 노출 = scene-linear 배수 → filmic(단일 톤커브) → display. (셰이더/export 와 동일 순서)
+        c = wb.filmic(c * (2.0 ** float(params.get("exposure", 0.0))))
         c = np.maximum(pipeline._tone_zones(
             c, float(params.get("highlights", 0)), float(params.get("shadows", 0)),
             float(params.get("whites", 0)), float(params.get("blacks", 0))), 0.0)
