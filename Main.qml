@@ -256,6 +256,10 @@ ApplicationWindow {
             "dehaze": dehazeSlider.value,
             "saturation": satSlider.value,
             "vibrance": vibSlider.value,
+            "sharpenAmt": sharpAmtSlider.value,
+            "sharpenRadius": sharpRadiusSlider.value,
+            "sharpenDetail": sharpDetailSlider.value,
+            "sharpenMask": sharpMaskSlider.value,
             "vignette": vignetteSlider.value,
             "grainAmt": grainSlider.value,
             "grainSize": grainSizeSlider.value,
@@ -739,6 +743,31 @@ ApplicationWindow {
                         textureSize: Qt.size(viewport.claW, viewport.claH)
                         hideSource: true; live: true; smooth: true
                     }
+                    // 샤프닝: 가변 반경 블러(Radius 슬라이더에 dir 바인딩 → 반경 변경 시만 재계산)
+                    ShaderEffect {
+                        id: sharpBlurH; visible: false
+                        width: viewport.procW; height: viewport.procH
+                        property variant src: dispSrcTex
+                        property vector2d dir: Qt.vector2d(sharpRadiusSlider.value / viewport.procW, 0)
+                        fragmentShader: "shaders/blur.frag.qsb"
+                    }
+                    ShaderEffectSource {
+                        id: sharpBlurHSrc; sourceItem: sharpBlurH; visible: false
+                        textureSize: Qt.size(viewport.procW, viewport.procH)
+                        hideSource: true; live: true
+                    }
+                    ShaderEffect {
+                        id: sharpBlurV; visible: false
+                        width: viewport.procW; height: viewport.procH
+                        property variant src: sharpBlurHSrc
+                        property vector2d dir: Qt.vector2d(0, sharpRadiusSlider.value / viewport.procH)
+                        fragmentShader: "shaders/blur.frag.qsb"
+                    }
+                    ShaderEffectSource {
+                        id: sharpBlurTex; sourceItem: sharpBlurV; visible: false
+                        textureSize: Qt.size(viewport.procW, viewport.procH)
+                        hideSource: true; live: true; smooth: true
+                    }
 
                     // 파이프라인 셰이더: 프록시 해상도에서만 렌더(직접 표시 안 함)
                     ShaderEffect {
@@ -754,6 +783,7 @@ ApplicationWindow {
                         property variant curve: curveImage
                         property variant texBlur: texBlurTex
                         property variant claBlur: claBlurTex
+                        property variant sharpBlur: sharpBlurTex
                         property variant stampTex: stampImage
                         property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
                         property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
@@ -771,6 +801,11 @@ ApplicationWindow {
                         property real dehaze: dehazeSlider.value
                         property real saturation: satSlider.value
                         property real vibrance: vibSlider.value
+                        property real sharpenAmt: sharpAmtSlider.value
+                        property real sharpenDetail: sharpDetailSlider.value
+                        property real sharpenMask: sharpMaskSlider.value
+                        property real texelW: 1.0 / Math.max(1, viewport.procW)
+                        property real texelH: 1.0 / Math.max(1, viewport.procH)
                         property real vignette: vignetteSlider.value
                         property real grainAmt: grainSlider.value
                         property real grainSize: grainSizeSlider.value
@@ -1184,6 +1219,10 @@ ApplicationWindow {
                             dehazeSlider.value = 0.0
                             satSlider.value = 0.0
                             vibSlider.value = 0.0
+                            sharpAmtSlider.value = 0.0
+                            sharpRadiusSlider.value = 1.0
+                            sharpDetailSlider.value = 0.25
+                            sharpMaskSlider.value = 0.0
                             vignetteSlider.value = 0.0
                             grainSlider.value = 0.0
                             grainSizeSlider.value = 0.5
@@ -1544,6 +1583,66 @@ ApplicationWindow {
                     property bool _pendingReset: false
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(satSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Sharpening"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
+                Label { text: "Amount:  " + Math.round(sharpAmtSlider.value * 100); color: "white" }
+                Slider {
+                    id: sharpAmtSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(sharpAmtSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+                Label { text: "Radius:  " + sharpRadiusSlider.value.toFixed(1) + " px"; color: "white" }
+                Slider {
+                    id: sharpRadiusSlider
+                    Layout.fillWidth: true
+                    from: 0.5; to: 3.0; value: 1.0
+                    property real defaultValue: 1.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(sharpRadiusSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+                Label { text: "Detail:  " + Math.round(sharpDetailSlider.value * 100); color: "white" }
+                Slider {
+                    id: sharpDetailSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.25
+                    property real defaultValue: 0.25
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(sharpDetailSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+                Label { text: "Masking:  " + Math.round(sharpMaskSlider.value * 100); color: "white" }
+                Slider {
+                    id: sharpMaskSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(sharpMaskSlider)
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
                 }

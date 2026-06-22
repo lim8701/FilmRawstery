@@ -32,6 +32,11 @@ layout(std140, binding = 0) uniform buf {
     float stampStrength;// 날짜 스탬프 가산 강도
     float saturation;   // 채도 (-1..1, 0=무변화, -1=흑백)
     float vibrance;     // 바이브런스 (-1..1, 저채도 우선 보정)
+    float sharpenAmt;   // 샤프닝 강도 0..1 (USM, 휘도)
+    float sharpenDetail;// 샤프닝 디테일 0..1 (미세 고주파 추가 강조)
+    float sharpenMask;  // 샤프닝 마스킹 0..1 (1=강한 엣지 한정)
+    float texelW;       // 1/procW (마스킹 그래디언트 스텝)
+    float texelH;       // 1/procH
     // 카메라 네이티브 RGB -> 선형 sRGB 매트릭스 (행우선 9개, wb.cam_to_srgb_matrix)
     float camM0; float camM1; float camM2;
     float camM3; float camM4; float camM5;
@@ -45,6 +50,7 @@ layout(binding = 4) uniform sampler2D texBlur;   // dispSrc 가우시안 블러(
 layout(binding = 5) uniform sampler2D claBlur;   // dispSrc 가우시안 블러(큰 반경)
 layout(binding = 6) uniform sampler2D stampTex;  // 날짜 스탬프 오버레이(프록시 RGBA)
 layout(binding = 7) uniform sampler2D dispSrc;   // src 의 display sRGB 변환본(블러/로컬대비 base)
+layout(binding = 8) uniform sampler2D sharpBlur; // dispSrc 가우시안 블러(샤프닝 반경, 가변)
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -160,6 +166,22 @@ void main() {
         float l = dot(rgb, LUMA);
         float mid = 1.0 - abs(2.0 * l - 1.0);    // 중간톤 가중
         rgb += d * ubuf.clarity * 0.8 * mid;
+    }
+
+    // 5.5) 샤프닝 — 언샤프 마스크(휘도). 반경 블러 고주파 + Detail 미세 고주파,
+    //      Masking 으로 엣지 한정(평탄부 노이즈 증폭 억제). 휘도에만 가산 → 색 불변.
+    if (ubuf.sharpenAmt > 0.0) {
+        float Ld = dot(s0, LUMA);                            // dispSrc 휘도
+        float Lr = dot(texture(sharpBlur, uv).rgb, LUMA);    // 반경 블러 휘도
+        float Lt = dot(texture(texBlur, uv).rgb, LUMA);      // 미세 블러 휘도
+        float hp = (Ld - Lr) + ubuf.sharpenDetail * (Ld - Lt);
+        float gx = dot(texture(dispSrc, uv + vec2(ubuf.texelW, 0.0)).rgb, LUMA)
+                 - dot(texture(dispSrc, uv - vec2(ubuf.texelW, 0.0)).rgb, LUMA);
+        float gy = dot(texture(dispSrc, uv + vec2(0.0, ubuf.texelH)).rgb, LUMA)
+                 - dot(texture(dispSrc, uv - vec2(0.0, ubuf.texelH)).rgb, LUMA);
+        float edge = smoothstep(0.0, 0.06, length(vec2(gx, gy)));
+        float mask = mix(1.0, edge, ubuf.sharpenMask);
+        rgb += vec3(hp * ubuf.sharpenAmt * 1.5 * mask);
     }
 
     // 6) 디헤이즈 — 톤 모델 (라이트룸 느낌)

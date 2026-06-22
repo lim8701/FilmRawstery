@@ -66,6 +66,21 @@ def _clarity(c, amt, sigma):
     return c + (d * amt * 0.8 * mid)[..., None]
 
 
+def _sharpen(c, disp, amt, radius_px, detail, mask, scale):
+    """언샤프 마스크(휘도) — 셰이더 5.5 블록과 동일. 고주파를 disp(=dispSrc) 에서 뽑아
+    현상 결과 c 의 휘도에 가산(색 불변). 반경 블러 + Detail 미세 고주파 + 엣지 마스킹."""
+    Ld = (disp @ LUMA).astype(np.float32)
+    Lr = _blur_luma(Ld, max(0.3, 1.2 * radius_px * scale))   # 반경 블러(프리뷰 sharpBlur 대응)
+    Lt = _blur_luma(Ld, max(0.3, 1.5 * scale))               # 미세 블러(texBlur 대응)
+    hp = (Ld - Lr) + detail * (Ld - Lt)
+    step = max(1, int(round(scale)))                         # 프록시 1px ~ scale 풀px
+    gx = np.roll(Ld, -step, axis=1) - np.roll(Ld, step, axis=1)
+    gy = np.roll(Ld, -step, axis=0) - np.roll(Ld, step, axis=0)
+    edge = _smoothstep(0.0, 0.06, np.sqrt(gx * gx + gy * gy))
+    m = (1.0 - mask) + mask * edge
+    return c + (hp * amt * 1.5 * m)[..., None]
+
+
 def _dehaze(c, amt, sigma):
     """톤 모델 디헤이즈 (프리뷰 셰이더와 동일). +대비/채도/로컬대비, -흰베일·플랫."""
     lum = c @ LUMA
@@ -277,6 +292,10 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     lut_strength = float(p.get("lutStrength", 1.0))
     grain_amt = float(p.get("grainAmt", 0))
     grain_size = float(p.get("grainSize", 0.5))
+    sharp_amt = float(p.get("sharpenAmt", 0.0))
+    sharp_radius = float(p.get("sharpenRadius", 1.0))
+    sharp_detail = float(p.get("sharpenDetail", 0.25))
+    sharp_mask = float(p.get("sharpenMask", 0.0))
     stamp_text = str(p.get("stampText", "") or "")
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
 
@@ -294,6 +313,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         c = _texture(c, tex, sigma_tex)
     if cla != 0.0:
         c = _clarity(c, cla, sigma_cla)
+    if sharp_amt > 0.0:
+        c = _sharpen(c, disp, sharp_amt, sharp_radius, sharp_detail, sharp_mask, scale)
     if deh != 0.0:
         c = _dehaze(c, deh, sigma_cla)
     np.clip(c, 0.0, 1.0, out=c)
