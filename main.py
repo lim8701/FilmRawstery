@@ -10,6 +10,7 @@
 
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -28,7 +29,7 @@ import make_luts
 from exif_info import read_shooting_info, _read_embedded_jpeg
 import wb
 from lut import atlas_qimage, load_cube
-from raw_loader import PROXY_HEADROOM, load_proxy
+from raw_loader import PROXY_HEADROOM, load_full, load_proxy
 
 BASE = Path(__file__).resolve().parent
 SHADERS_DIR = BASE / "shaders"
@@ -38,6 +39,98 @@ LUTS_DIR = BASE / "luts"
 # 시작 시 자동으로 열어볼 샘플 RAF (명령줄 인자가 없을 때 사용)
 DEFAULT_RAF = r"C:\Pic\x100v\128_FUJI\DSCF8035.RAF"
 # DEFAULT_RAF = r"C:\Pic\x100v\131_FUJI\DSCF1039.RAF"  # 임시 비활성
+
+# GPU 고성능(외장 GPU) 강제: Windows 그래픽 설정과 동일하게 이 실행파일(python.exe)의
+# GPU 환경설정을 '고성능'으로 레지스트리에 기록한다. False 면 Windows 기본(보통 내장) 사용.
+PREFER_HIGH_PERF_GPU = False
+
+
+# 외장 GPU 어댑터 인덱스를 직접 지정하려면 정수로(예: 1). None=자동 탐지(전용 VRAM 최대).
+GPU_ADAPTER_INDEX = None
+
+
+def _list_d3d_adapters():
+    """DXGI 로 어댑터 (index, name, dedicated_vram_bytes, vendor_id) 목록 반환. 실패 시 []."""
+    import ctypes
+    from ctypes import (POINTER, Structure, WINFUNCTYPE, byref, c_long, c_size_t,
+                        c_ubyte, c_uint, c_ushort, c_void_p, c_wchar, wintypes)
+
+    class GUID(Structure):
+        _fields_ = [("Data1", c_uint), ("Data2", c_ushort), ("Data3", c_ushort), ("Data4", c_ubyte * 8)]
+
+    class LUID(Structure):
+        _fields_ = [("Low", wintypes.DWORD), ("High", c_long)]
+
+    class DESC(Structure):
+        _fields_ = [("Description", c_wchar * 128), ("VendorId", c_uint), ("DeviceId", c_uint),
+                    ("SubSysId", c_uint), ("Revision", c_uint), ("DedicatedVideoMemory", c_size_t),
+                    ("DedicatedSystemMemory", c_size_t), ("SharedSystemMemory", c_size_t), ("AdapterLuid", LUID)]
+    out = []
+    try:
+        iid = GUID(0x7b7166ec, 0x21c7, 0x44ae, (0xb2, 0x1a, 0xc9, 0xae, 0x32, 0x1a, 0xe3, 0x69))  # IDXGIFactory
+        fac = c_void_p()
+        if ctypes.windll.dxgi.CreateDXGIFactory(byref(iid), byref(fac)) != 0:
+            return []
+        vt = ctypes.cast(fac, POINTER(POINTER(c_void_p))).contents
+        enum_adapters = WINFUNCTYPE(c_long, c_void_p, c_uint, POINTER(c_void_p))(vt[7])  # EnumAdapters
+        i = 0
+        while True:
+            ad = c_void_p()
+            if enum_adapters(fac, i, byref(ad)) != 0:
+                break
+            avt = ctypes.cast(ad, POINTER(POINTER(c_void_p))).contents
+            get_desc = WINFUNCTYPE(c_long, c_void_p, POINTER(DESC))(avt[8])  # GetDesc
+            d = DESC()
+            get_desc(ad, byref(d))
+            out.append((i, d.Description, int(d.DedicatedVideoMemory), int(d.VendorId)))
+            i += 1
+    except Exception:
+        return []
+    return out
+
+
+def _find_discrete_adapter_index():
+    """전용 VRAM 이 가장 큰 비-소프트웨어 어댑터(=외장 GPU) 인덱스. 내장만 있으면 None."""
+    ads = [a for a in _list_d3d_adapters() if a[3] != 0x1414]   # 0x1414=Microsoft Basic Render 제외
+    if not ads:
+        return None
+    best = max(ads, key=lambda a: a[2])                          # DedicatedVideoMemory 최대
+    if best[2] < 512 * 1024 * 1024:                             # <512MB 면 외장 없음(내장만)으로 판단
+        return None
+    return best[0]
+
+
+def _prefer_high_performance_gpu() -> None:
+    """외장(고성능) GPU 강제 사용. ⚠️QGuiApplication 생성 *전* 호출해야 함.
+
+    핵심: QT_D3D_ADAPTER_INDEX 로 Qt D3D11 백엔드의 어댑터를 **직접 지정**(이번 실행부터 즉시).
+    보조: Windows GPU 환경설정(UserGpuPreferences)도 '고성능' 기록(다음 실행/전원관리용).
+    하이브리드 노트북에서 기본값(내장 Intel)으로 도는 것을 외장(NVIDIA/AMD)으로 전환한다.
+    """
+    if sys.platform != "win32":
+        return
+    idx = GPU_ADAPTER_INDEX if GPU_ADAPTER_INDEX is not None else _find_discrete_adapter_index()
+    if idx is not None:
+        os.environ.setdefault("QSG_RHI_BACKEND", "d3d11")   # QT_D3D_ADAPTER_INDEX 는 D3D11 전용
+        os.environ["QT_D3D_ADAPTER_INDEX"] = str(idx)
+        names = {a[0]: a[1] for a in _list_d3d_adapters()}
+        print(f"[gpu] 외장 GPU 강제: adapter[{idx}] {names.get(idx, '?')}")
+    else:
+        print("[gpu] 외장 GPU 미발견 — 기본 어댑터 사용")
+    # 보조: Windows 고성능 GPU 환경설정(실패 무시)
+    try:
+        import winreg
+        exe = sys.executable
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\DirectX\UserGpuPreferences",
+                                0, winreg.KEY_READ | winreg.KEY_WRITE) as k:
+            try:
+                cur, _ = winreg.QueryValueEx(k, exe)
+            except FileNotFoundError:
+                cur = None
+            if cur != "GpuPreference=2;":
+                winreg.SetValueEx(k, exe, 0, winreg.REG_SZ, "GpuPreference=2;")
+    except Exception:
+        pass
 
 
 def _find_qsb():
@@ -83,6 +176,25 @@ class RawProvider(QQuickImageProvider):
 
     def set_image(self, img: QImage) -> None:
         self._img = img
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
+        return self._img
+
+
+class RawFullProvider(QQuickImageProvider):
+    """GPU export 용 풀해상도 16bit(RGBA64) 헤드룸 인코딩 이미지를 'image://rawfull/...' 로 제공.
+
+    export(GPU) 시에만 set_image 로 채워지고, 끝나면 clear()로 메모리 해제."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._img = QImage()
+
+    def set_image(self, img: QImage) -> None:
+        self._img = img
+
+    def clear(self) -> None:
+        self._img = QImage()
 
     def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
         return self._img
@@ -321,14 +433,23 @@ class Controller(QObject):
     folderChanged = Signal()     # 좌측 file explorer 현재 폴더/파일목록 갱신 알림
     likesChanged = Signal()      # 좋아요(셀렉트) 상태 변경 알림 (썸네일 하트 반영용)
     flushEdits = Signal()        # 이미지 전환 직전: QML 이 *이전* 파일로 편집 저장(플러시)
+    fullChanged = Signal()       # GPU export: 풀해상도 src URL 갱신(QML Image 재로드용)
+    fullReady = Signal()         # GPU export: 풀해상도 디코드 완료(QML 이 grab 준비)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
+    _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
-                 stamp_provider: "StampProvider" = None):
+                 stamp_provider: "StampProvider" = None,
+                 full_provider: "RawFullProvider" = None):
         super().__init__()
         self._provider = provider
         self._curve_provider = curve_provider
         self._stamp_provider = stamp_provider
+        self._full_provider = full_provider     # GPU export 풀해상도 src
+        self._full_url = "image://rawfull/f?v=0"
+        self._full_counter = 0
+        self._gpu_path = ""                      # GPU export 대상 파일
+        self._gpu_params = {}                    # GPU export 파라미터(지오메트리 등)
         self._url = ""
         self._path = ""
         self._kelvin = None     # None = as-shot 사용
@@ -365,6 +486,7 @@ class Controller(QObject):
         self._ui_path = ""          # UI 가 현재 반영 중인 파일(=복원 완료된 파일). 저장은 이 경로 기준.
         self._fresh_load = False    # 새 파일 로드의 첫 디코딩 대기 중(완료 시 editsReady 발화)
         self._renderReady.connect(self._on_render_ready)
+        self._fullDecoded.connect(self._on_full_decoded)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -525,6 +647,77 @@ class Controller(QObject):
             self._exporting = False
         print(f"[export] {msg}")
         self._set_export_status(msg)   # 워커 스레드 -> 시그널은 메인으로 큐잉됨
+
+    # ---------- GPU export: 프리뷰와 동일한 셰이더로 풀해상도 렌더(프리뷰=Export 보장) ----------
+    @Slot(QUrl, "QVariantMap")
+    def exportImageGpu(self, file_url: QUrl, params) -> None:  # noqa: N802 (QML 슬롯)
+        """풀해상도 16bit src 를 백그라운드 디코드 → 완료 시 QML 이 GPU 셰이더로 grab/저장.
+        무거운 디코드만 스레드에서; GPU 렌더/grab 은 GUI 스레드(QML)에서 수행."""
+        if not self._path or self._exporting or self._full_provider is None:
+            return
+        self._gpu_path = file_url.toLocalFile()
+        self._gpu_params = {k: params[k] for k in params}
+        self._exporting = True
+        self._set_export_status("GPU 내보내는 중… (풀해상도 디코드)")
+        threading.Thread(target=self._do_full_decode, daemon=True).start()
+
+    def _do_full_decode(self) -> None:
+        try:
+            img, *_ = load_full(self._path, bool(self._gpu_params.get("lensCorrection", True)))
+            self._full_provider.set_image(img)
+            self._fullDecoded.emit(True)
+        except Exception as exc:
+            print(f"[export-gpu] 디코드 실패: {exc}")
+            self._fullDecoded.emit(False)
+
+    @Slot(bool)
+    def _on_full_decoded(self, ok: bool) -> None:
+        """메인 스레드: 풀해상도 src 준비됨 → URL 갱신(QML Image 재로드) + grab 트리거."""
+        if not ok:
+            self._exporting = False
+            self._set_export_status("GPU export 실패(디코드)")
+            return
+        self._full_counter += 1
+        self._full_url = f"image://rawfull/f?v={self._full_counter}"
+        self.fullChanged.emit()   # QML srcFull.source 갱신 → 재로드
+        self.fullReady.emit()     # QML: 로드 완료 시 grab
+
+    @Slot("QImage")
+    def saveGrab(self, qimg) -> None:  # noqa: N802 (QML 슬롯)
+        """QML 이 grab 한 풀해상도 GPU 결과(QImage) → 지오메트리(크롭/회전) 적용 → 저장."""
+        try:
+            import pipeline
+            im = qimg.convertToFormat(QImage.Format.Format_RGB888)
+            w, h = im.width(), im.height()
+            import numpy as np
+            arr = (np.frombuffer(im.constBits(), np.uint8)
+                   .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3).copy())
+            arr = pipeline._apply_geometry(arr, self._gpu_params)   # 프리뷰/CPU export 와 동일
+            # 해상도 프리셋(긴 변) 적용 — GPU grab 은 항상 풀해상도라 여기서 축소.
+            out_edge = int(self._gpu_params.get("outEdge", 0) or 0)
+            if out_edge > 0 and max(arr.shape[:2]) > out_edge:
+                from scipy.ndimage import zoom, gaussian_filter
+                f = out_edge / float(max(arr.shape[:2]))
+                x = arr.astype(np.float32)
+                s = 0.5 * (1.0 / f - 1.0)
+                if s > 0.4:
+                    x = gaussian_filter(x, (s, s, 0.0))
+                arr = np.clip(zoom(x, (f, f, 1.0), order=1) + 0.5, 0, 255).astype(np.uint8)
+            ok = pipeline.save_image(arr, self._gpu_path)
+            msg = f"저장됨: {self._gpu_path}" if ok else f"저장 실패: {self._gpu_path}"
+        except Exception as exc:
+            msg = f"실패: {exc}"
+        finally:
+            self._exporting = False
+            if self._full_provider is not None:
+                self._full_provider.clear()    # 풀해상도 메모리 해제
+        print(f"[export-gpu] {msg}")
+        self._set_export_status(msg)
+
+    def _get_full_url(self) -> str:
+        return self._full_url
+
+    fullUrl = Property(str, _get_full_url, notify=fullChanged)
 
     def _set_export_status(self, s: str) -> None:
         self._export_status = s
@@ -920,6 +1113,8 @@ def apply_dark_titlebar(window) -> None:
 
 
 def main() -> int:
+    if PREFER_HIGH_PERF_GPU:
+        _prefer_high_performance_gpu()   # 외장 GPU 우선(다음 실행부터). Windows 한정.
     ensure_shader()
     ensure_luts()
 
@@ -946,7 +1141,10 @@ def main() -> int:
     preview_provider = PreviewProvider()
     engine.addImageProvider("preview", preview_provider)
 
-    controller = Controller(provider, curve_provider, stamp_provider)
+    full_provider = RawFullProvider()
+    engine.addImageProvider("rawfull", full_provider)
+
+    controller = Controller(provider, curve_provider, stamp_provider, full_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)

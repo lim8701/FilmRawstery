@@ -218,6 +218,30 @@ ApplicationWindow {
     ]
     onEditSaveWatchChanged: win.scheduleSave()
 
+    // Export 파라미터(현상 전효과 + 지오메트리 + 해상도). CPU/GPU export 공용.
+    function exportParams() {
+        return {
+            "exposure": expSlider.value, "contrast": conSlider.value,
+            "highlights": hiSlider.value, "shadows": shSlider.value,
+            "whites": whSlider.value, "blacks": blSlider.value,
+            "texAmt": texSlider.value, "clarity": claritySlider.value, "dehaze": dehazeSlider.value,
+            "saturation": satSlider.value, "vibrance": vibSlider.value,
+            "hslH": win.hslH, "hslS": win.hslS, "hslL": win.hslL,
+            "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
+            "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
+            "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
+            "lutEnabled": simCombo.currentIndex !== 0, "simKey": win.simKeys[simCombo.currentIndex],
+            "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
+            "dateStamp": win.dateStamp, "stampText": stampField.text,
+            "outEdge": win.exportEdges[resCombo.currentIndex], "lensCorrection": lensCheck.checked,
+            // 지오메트리(현상 뒤 적용): 플립 -> 90° -> 스트레이튼(회전+채움줌) -> 종횡비 중앙크롭
+            "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
+            "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
+            "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScalePct": geoScaleSlider.value
+        }
+    }
+
     // 앱 종료 시 현재 파일 편집 플러시 저장.
     onClosing: if (controller.imagePath !== "") controller.saveEdits(win.editParams())
 
@@ -392,44 +416,16 @@ ApplicationWindow {
         fileMode: FileDialog.SaveFile
         nameFilters: ["PNG (*.png)", "JPEG (*.jpg)", "TIFF (*.tif)"]
         defaultSuffix: "png"
-        onAccepted: controller.exportImage(selectedFile, {
-            "exposure": expSlider.value,
-            "contrast": conSlider.value,
-            "highlights": hiSlider.value,
-            "shadows": shSlider.value,
-            "whites": whSlider.value,
-            "blacks": blSlider.value,
-            "texAmt": texSlider.value,
-            "clarity": claritySlider.value,
-            "dehaze": dehazeSlider.value,
-            "saturation": satSlider.value,
-            "vibrance": vibSlider.value,
-            "hslH": win.hslH, "hslS": win.hslS, "hslL": win.hslL,
-            "sharpenAmt": sharpAmtSlider.value,
-            "sharpenRadius": sharpRadiusSlider.value,
-            "sharpenDetail": sharpDetailSlider.value,
-            "sharpenMask": sharpMaskSlider.value,
-            "vignette": vignetteSlider.value,
-            "grainAmt": grainSlider.value,
-            "grainSize": grainSizeSlider.value,
-            "lutEnabled": simCombo.currentIndex !== 0,
-            "simKey": win.simKeys[simCombo.currentIndex],
-            "lutStrength": simStrengthSlider.value,
-            "curves": curveEditor.allLuts(),
-            "dateStamp": win.dateStamp,
-            "stampText": stampField.text,
-            "outEdge": win.exportEdges[resCombo.currentIndex],
-            "lensCorrection": lensCheck.checked,
-            // 지오메트리(현상 뒤 적용): 플립 -> 90° -> 스트레이튼(회전+채움줌) -> 종횡비 중앙크롭
-            "flipH": flipHBtn.checked,
-            "flipV": flipVBtn.checked,
-            "quarterTurns": win.quarterTurns,
-            "rotateAngle": rotAngleSlider.value,
-            "cropX": win.cropX, "cropY": win.cropY,
-            "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value,
-            "geoScalePct": geoScaleSlider.value
-        })
+        // 렌더 모드: 0=CPU(render_full), 1=GPU(프리뷰 셰이더로 풀해상도 렌더 → 프리뷰=Export)
+        onAccepted: {
+            var p = win.exportParams()
+            if (renderModeCombo.currentIndex === 1) {
+                gpuExportLoader.active = true     // 풀해상도 셰이더 체인 인스턴스화(grab 대기)
+                controller.exportImageGpu(selectedFile, p)
+            } else {
+                controller.exportImage(selectedFile, p)
+            }
+        }
     }
 
     RowLayout {
@@ -735,6 +731,91 @@ ApplicationWindow {
                 cache: false
                 smooth: true
                 source: controller.stampUrl
+            }
+
+            // ── GPU export: 풀해상도를 프리뷰와 **동일한 adjust.frag** 로 렌더(프리뷰=Export) ──
+            //   온디맨드(렌더=GPU 일 때만 active). src 만 풀해상도, 블러 텍스처는 프록시 것 재사용
+            //   (로컬대비/톤마스크 성격을 프리뷰와 동일하게). uniform 바인딩은 pipe 와 반드시 동일.
+            Loader {
+                id: gpuExportLoader
+                active: false
+                sourceComponent: Component { Item {
+                    property bool grabPending: false
+                    function doGrab() {
+                        pipeFull.grabToImage(function(res) {
+                            controller.saveGrab(res.image)
+                            Qt.callLater(function() { gpuExportLoader.active = false })
+                        }, Qt.size(pipeFull.width, pipeFull.height))
+                    }
+                    Image {
+                        id: srcFull; visible: false; cache: false; smooth: true
+                        source: controller.fullUrl
+                        onStatusChanged: if (status === Image.Ready && grabPending) {
+                            grabPending = false; doGrab()
+                        }
+                    }
+                    Connections {
+                        target: controller
+                        function onFullReady() {
+                            if (srcFull.status === Image.Ready) doGrab()
+                            else grabPending = true
+                        }
+                    }
+                    ShaderEffect {
+                        id: pipeFull
+                        width: srcFull.implicitWidth > 0 ? srcFull.implicitWidth : 1
+                        height: srcFull.implicitHeight > 0 ? srcFull.implicitHeight : 1
+                        visible: false
+                        // ⚠️아래 uniform 바인딩은 pipe 와 동일하게 유지해야 함(프리뷰=Export).
+                        property variant src: srcFull
+                        property variant dispSrc: dispSrcTex
+                        property variant lut: lutImage
+                        property variant curve: curveImage
+                        property variant texBlur: texBlurTex
+                        property variant claBlur: claBlurTex
+                        property variant sharpBlur: sharpBlurTex
+                        property variant stampTex: stampImage
+                        property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
+                        property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
+                        property real camM6: win.camM[6]; property real camM7: win.camM[7]; property real camM8: win.camM[8]
+                        property real stampOn: (win.dateStamp && controller.stampText !== "") ? 1.0 : 0.0
+                        property real stampStrength: 0.92
+                        property real exposure: expSlider.value
+                        property real contrast: conSlider.value
+                        property real highlights: hiSlider.value
+                        property real shadows: shSlider.value
+                        property real whites: whSlider.value
+                        property real blacks: blSlider.value
+                        property real texAmt: texSlider.value
+                        property real clarity: claritySlider.value
+                        property real dehaze: dehazeSlider.value
+                        property real saturation: satSlider.value
+                        property real vibrance: vibSlider.value
+                        property vector4d hslHa: Qt.vector4d(win.hslH[0], win.hslH[1], win.hslH[2], win.hslH[3])
+                        property vector4d hslHb: Qt.vector4d(win.hslH[4], win.hslH[5], win.hslH[6], win.hslH[7])
+                        property vector4d hslSa: Qt.vector4d(win.hslS[0], win.hslS[1], win.hslS[2], win.hslS[3])
+                        property vector4d hslSb: Qt.vector4d(win.hslS[4], win.hslS[5], win.hslS[6], win.hslS[7])
+                        property vector4d hslLa: Qt.vector4d(win.hslL[0], win.hslL[1], win.hslL[2], win.hslL[3])
+                        property vector4d hslLb: Qt.vector4d(win.hslL[4], win.hslL[5], win.hslL[6], win.hslL[7])
+                        property real sharpenAmt: sharpAmtSlider.value
+                        property real sharpenDetail: sharpDetailSlider.value
+                        property real sharpenMask: sharpMaskSlider.value
+                        property real texelW: 1.0 / Math.max(1, width)
+                        property real texelH: 1.0 / Math.max(1, height)
+                        property real vignette: vignetteSlider.value
+                        property real grainAmt: grainSlider.value
+                        property real grainSize: grainSizeSlider.value
+                        property real grainAspect: width / Math.max(1, height)
+                        property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
+                        property real wbR: wbGain.x
+                        property real wbG: wbGain.y
+                        property real wbB: wbGain.z
+                        property real lutSize: lutN
+                        property real lutStrength: simStrengthSlider.value
+                        property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
+                        fragmentShader: "shaders/adjust.frag.qsb"
+                    }
+                }}
             }
 
             ColumnLayout {
@@ -1427,6 +1508,18 @@ ApplicationWindow {
                         currentIndex: 0     // 원본
                         model: ["원본 (Full)", "4096", "3840 (4K)",
                                 "2560", "2048", "1920 (FHD)", "1280"]
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Label { text: "렌더"; color: "white"; font.pixelSize: 12 }
+                    ComboBox {
+                        id: renderModeCombo
+                        Layout.fillWidth: true
+                        currentIndex: 0     // 기본 CPU
+                        model: ["CPU", "GPU"]
                     }
                 }
 
