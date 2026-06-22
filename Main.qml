@@ -248,7 +248,10 @@ ApplicationWindow {
         "identity", "provia", "velvia", "astia",
         "classic_chrome", "classic_neg", "nostalgic_neg",
         "pro_neg_hi", "pro_neg_std", "eterna",
-        "reala_ace", "bleach_bypass"
+        "reala_ace", "bleach_bypass",
+        // 흑백: luts/<key>.cube (N=32) 필요
+        "acros", "acros_ye", "acros_r", "acros_g",
+        "monochrome", "sepia"
     ]
 
     function planckXY(T) {
@@ -1493,8 +1496,7 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     currentIndex: 0
                     onActivated: win.refreshHistogram()
-                    // 인덱스 순서가 셰이더 film_sim() 분기와 일치해야 함
-                    // 순서가 위 simKeys 와 정확히 일치해야 함
+                    // 순서가 위 simKeys 와 정확히 일치해야 함(인덱스→simKeys[i]→image://lut/<key>)
                     model: [
                         "None",
                         "Provia / Standard",
@@ -1507,7 +1509,13 @@ ApplicationWindow {
                         "PRO Neg. Std",
                         "Eterna",
                         "Reala Ace",
-                        "Bleach Bypass"
+                        "Bleach Bypass",
+                        "ACROS",
+                        "ACROS + Ye",
+                        "ACROS + R",
+                        "ACROS + G",
+                        "Monochrome",
+                        "Sepia"
                     ]
                 }
 

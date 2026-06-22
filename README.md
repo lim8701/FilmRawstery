@@ -106,7 +106,8 @@ Open a `.RAF` from the left file explorer (double-click). Shaders auto-recompile
 
 ## Credits
 
-- **Film-simulation LUTs** — derived from the *FujifilmCameraProfiles* project (sRGB `.cube`)
+- **Color film-simulation LUTs** — derived from the *FujifilmCameraProfiles* project (sRGB `.cube`)
+- **B&W film-simulation LUTs** (ACROS / Monochrome / Sepia) — [Stuart Sowerby](https://blog.sowerby.me/fuji-film-simulation-profiles/) (Fuji X-Trans III, converted from `.3dl` to N=32 `.cube`)
 - **Date-back font** — [DSEG](https://github.com/keshikan/DSEG) by Keshikan (SIL Open Font License 1.1)
 - **RAW decoding** — [rawpy](https://github.com/letmaik/rawpy) / LibRaw
 - **UI & GPU pipeline** — [Qt for Python (PySide6)](https://doc.qt.io/qtforpython/)
