@@ -47,6 +47,11 @@ ApplicationWindow {
         win.hslL = [0, 0, 0, 0, 0, 0, 0, 0]
     }
 
+    // Edit 패널 섹션 접기 상태(인덱스=표시순서: 0필름 1라이트 2톤커브 3WB 4컬러 5컬러믹서
+    // 6디테일&비네팅 7그레인 8샤프닝 9렌즈 10날짜). 헤더 클릭으로 토글.
+    property var secOpen: [true, true, true, true, true, true, true, true, true, true, true]
+    function toggleSec(i) { var a = secOpen.slice(); a[i] = !a[i]; secOpen = a }
+
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
     property int quarterTurns: 0        // 90° 단위 회전 (⟳ CW +1, ⟲ CCW -1, mod 4)
     // 종횡비 콤보 인덱스 -> 비율(가로/세로). aspectCombo 모델과 순서 일치.
@@ -1317,12 +1322,21 @@ ApplicationWindow {
                             width: panelScroll.width - 32
                             spacing: 12
 
-                // 필름 시뮬레이션 선택
-                Label {
-                    text: "Film Simulation"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                // ── 접이식 섹션: 헤더 클릭으로 내용 토글 ──
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[0] ? "▾  " : "▸  ") + "Film Simulation"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(0) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[0]
+                    Layout.fillWidth: true
+                    spacing: 12
                 ComboBox {
                     id: simCombo
                     Layout.fillWidth: true
@@ -1366,13 +1380,24 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "Light"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[1] ? "▾  " : "▸  ") + "Light"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(1) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[1]
+                    Layout.fillWidth: true
+                    spacing: 12
 
                 Label {
                     text: "Exposure:  " + expSlider.value.toFixed(2)
@@ -1482,13 +1507,24 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "Tone Curve"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[2] ? "▾  " : "▸  ") + "Tone Curve"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(2) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[2]
+                    Layout.fillWidth: true
+                    spacing: 12
                 CurveEditor {
                     id: curveEditor
                     Layout.fillWidth: true
@@ -1497,13 +1533,24 @@ ApplicationWindow {
                     onEdited: { controller.setCurve(lut256()); win.refreshHistogram() }
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "White Balance"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[3] ? "▾  " : "▸  ") + "White Balance"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(3) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[3]
+                    Layout.fillWidth: true
+                    spacing: 12
 
                 Label {
                     text: "Temp:  " + Math.round(tempSlider.value) + " K"
@@ -1553,36 +1600,24 @@ ApplicationWindow {
                     onValueChanged: if (!pressed) wbTimer.restart()
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "Lens Corrections"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
-                }
                 RowLayout {
                     Layout.fillWidth: true
-                    spacing: 6
-                    CheckBox {
-                        id: lensCheck
-                        checked: controller.lensCorrection
-                        onToggled: controller.setLensCorrection(checked)
-                    }
                     Label {
                         Layout.fillWidth: true
-                        text: "X100V 프로파일 (왜곡·주변광량·CA)"
-                        color: "white"; font.pixelSize: 12
-                        verticalAlignment: Text.AlignVCenter
+                        text: (win.secOpen[4] ? "▾  " : "▸  ") + "Color"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
                     }
+                    TapHandler { onTapped: win.toggleSec(4) }
                 }
-
-                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
-
-                Label {
-                    text: "Color"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
-                }
+                ColumnLayout {
+                    visible: win.secOpen[4]
+                    Layout.fillWidth: true
+                    spacing: 12
                 Label { text: "Vibrance:  " + vibSlider.value.toFixed(2); color: "white" }
                 Slider {
                     id: vibSlider
@@ -1610,13 +1645,24 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "Color Mixer"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[5] ? "▾  " : "▸  ") + "Color Mixer"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(5) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[5]
+                    Layout.fillWidth: true
+                    spacing: 12
                 // 8색상대 스와치(클릭=선택). 선택 대역은 흰 테두리.
                 RowLayout {
                     Layout.fillWidth: true
@@ -1680,13 +1726,24 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "Detail & Vignette"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[6] ? "▾  " : "▸  ") + "Detail & Vignette"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(6) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[6]
+                    Layout.fillWidth: true
+                    spacing: 12
                 Label { text: "Texture:  " + texSlider.value.toFixed(2); color: "white" }
                 Slider {
                     id: texSlider
@@ -1743,13 +1800,24 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "Grain"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[7] ? "▾  " : "▸  ") + "Grain"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(7) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[7]
+                    Layout.fillWidth: true
+                    spacing: 12
                 Label {
                     text: "Grain:  " + grainSlider.value.toFixed(2)
                     color: "white"
@@ -1784,13 +1852,24 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "Sharpening"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[8] ? "▾  " : "▸  ") + "Sharpening"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(8) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[8]
+                    Layout.fillWidth: true
+                    spacing: 12
                 Label { text: "Amount:  " + Math.round(sharpAmtSlider.value * 100); color: "white" }
                 Slider {
                     id: sharpAmtSlider
@@ -1844,13 +1923,58 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
-                Label {
-                    text: "Date Stamp"
-                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
-                    font.capitalization: Font.AllUppercase
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[9] ? "▾  " : "▸  ") + "Lens Corrections"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(9) }
                 }
+                ColumnLayout {
+                    visible: win.secOpen[9]
+                    Layout.fillWidth: true
+                    spacing: 12
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    CheckBox {
+                        id: lensCheck
+                        checked: controller.lensCorrection
+                        onToggled: controller.setLensCorrection(checked)
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "X100V 프로파일 (왜곡·주변광량·CA)"
+                        color: "white"; font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[10] ? "▾  " : "▸  ") + "Date Stamp"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(10) }
+                }
+                ColumnLayout {
+                    visible: win.secOpen[10]
+                    Layout.fillWidth: true
+                    spacing: 12
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
@@ -1895,6 +2019,8 @@ ApplicationWindow {
                         win.resetGeometry()
                     }
                 }
+                }   // end Date Stamp section
+
                         }   // end panelCol
                     }       // end Flickable (Edit 페이지)
 
