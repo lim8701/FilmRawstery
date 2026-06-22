@@ -114,6 +114,13 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
             x = zoom(x, (f, f, 1.0), order=1)
         rgb16 = np.clip(x + 0.5, 0.0, 65535.0).astype(np.uint16)
 
+    # ⚠️렌즈 보정(왜곡/주변광량/CA)은 카메라네이티브 16bit 에 **먼저** 적용한다 —
+    #   export(pipeline.render_full)도 rgb16 에 lens.apply 후 자동노출/현상하므로, 같은 단계에서
+    #   같은 데이터로 맞춰야 프리뷰=Export(특히 자동노출 게인이 렌즈 적용 후 통계로 계산됨).
+    #   16bit 라 비네팅 게인 밴딩 없음; 잔여 밴딩은 최종 8bit 양자화의 디더로 억제.
+    if lens_correct:
+        rgb16 = np.clip(lens.apply(rgb16), 0.0, 65535.0).astype(np.uint16)
+
     # 카메라네이티브 선형광 → 이미지별 자동 노출(중앙값 기반 scene-linear 게인) → 헤드룸 인코딩.
     # 톤커브(filmic)는 셰이더/export 가 적용하므로 여기선 베이스라인 노출만 굽고 헤드룸을 남긴다.
     # code = oetf(L/H): scene-linear L 을 H 로 나눠 [0,1] 감마로 인코딩(셰이더가 ×H 복원).
@@ -121,12 +128,6 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
     lin *= auto_exposure_gain(target_median, cam_xyz, ref, as_shot, lin)
     idx = (np.clip(lin * (1.0 / PROXY_HEADROOM), 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
     disp = _lin2srgb_lut()[idx]                          # float32 [0,1] 헤드룸 인코딩(카메라네이티브)
-
-    # ⚠️렌즈 보정(특히 비네팅 반경 게인)을 8bit 에 적용하면 매끄러운 구름/하늘에 동심(방사형)
-    #   양자화 밴딩이 생기고 WB(temp) 조정 시 증폭됨. → float 에서 적용 + 최종 8bit 양자화에
-    #   TPDF 디더(±1 LSB)를 더해 밴딩 제거(프록시 한정, export 는 float 라 무관).
-    if lens_correct:
-        disp = lens.apply(disp)        # X100V 렌즈 프로파일(왜곡/주변광량/CA), float
     dth = _dither(disp.shape)
     rgb = np.clip(disp * 255.0 + 0.5 + dth, 0.0, 255.0).astype(np.uint8)
     rgb = np.ascontiguousarray(rgb)

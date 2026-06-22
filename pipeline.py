@@ -308,7 +308,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
         ref = np.array(raw.daylight_whitebalance)[:3]
         ref = ref / ref[1]
-        as_shot = wb.estimate_cct(cam, ref, raw.camera_whitebalance)
+        as_shot, as_shot_tint = wb.estimate_wb(cam, ref, raw.camera_whitebalance)  # as-shot WB(K,tint)
         target_median = raw_loader._embedded_jpeg_median(raw)   # 이미지별 자동 노출 목표(중앙값)
         # 프록시와 동일: 카메라 네이티브(매트릭스 미적용) + TREF daylight 베이크 + 감마 저장.
         rgb16 = raw.postprocess(user_wb=baked_wb(cam, ref),
@@ -330,9 +330,13 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 카메라네이티브 감마 -> 선형화 -> 자동노출(중앙값) -> WB(카메라공간) -> cam->sRGB 매트릭스
     # -> scene-linear sRGB -> 유저노출(scene-linear) -> filmic(단일 톤커브) -> display sRGB.
     nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
-    nat *= wb.auto_exposure_gain(target_median, cam, ref, as_shot, nat)
-    nat *= wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)
+    nat *= wb.auto_exposure_gain(target_median, cam, ref, as_shot, nat)  # 카메라네이티브(자동노출 후)
     M = cam_to_srgb_matrix(cam).astype(np.float32)
+    # 중성 display 베이스(as-shot WB, 유저노출/desat 없음) — 셰이더 dispSrc/claBlur 와 동일.
+    #   hi/sh 톤영역 마스크는 이 '장면 구조' 휘도로 계산해야 프리뷰=Export(노출 무관 마스크).
+    neutral_disp = wb.filmic((nat * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32))
+                             @ M.T).astype(np.float32)
+    nat = nat * wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)   # 유저 WB(카메라공간)
     linsrgb = (nat @ M.T) * (2.0 ** float(p.get("exposure", 0.0)))   # 노출 = scene-linear 배수
     disp = wb.filmic(linsrgb).astype(np.float32)                     # scene→display[0,1]
     # 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성(흰색).
@@ -368,8 +372,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     sigma_tex = 1.5 * scale     # 프리뷰 텍스처 블러에 대응
     sigma_cla = 7.0 * scale     # 프리뷰 클래리티/디헤이즈/톤영역 마스크 블러에 대응
     c = disp
-    # hi/sh 국소 톤맵 마스크 = 국소 평균 휘도(display 블러 휘도). 셰이더 claBlur 대응.
-    lb = _blur_luma((disp @ LUMA).astype(np.float32), sigma_cla)
+    # hi/sh 국소 톤맵 마스크 = 중성 베이스(neutral_disp)의 국소 평균 휘도. 셰이더 claBlur(중성) 대응.
+    lb = _blur_luma((neutral_disp @ LUMA).astype(np.float32), sigma_cla)
     c = np.maximum(_tone_zones(c, hi, sh, wh, bl, lb), 0.0)
     if tex != 0.0:
         c = _texture(c, tex, sigma_tex)
