@@ -30,6 +30,10 @@ ApplicationWindow {
     property bool showExplorer: true
     Shortcut { sequence: "B"; onActivated: win.showExplorer = !win.showExplorer }
 
+    // 원본 비교(Before/After): true 면 프리뷰가 무편집 현상(dispPre)으로 전환. 버튼/\ 키로 토글.
+    property bool compareOn: false
+    Shortcut { sequence: "\\"; onActivated: win.compareOn = !win.compareOn }
+
     // 우측 활성 패널: 0=Edit, 1=Crop/Rotate/Geometry (우측 끝 세로 셀렉터 바로 전환)
     property int activePanel: 0
 
@@ -993,7 +997,8 @@ ApplicationWindow {
 
                             ShaderEffectSource {
                                 id: pipeView
-                                sourceItem: pipe
+                                // 원본 비교 중에는 무편집 현상(dispPre)을 같은 변환/크롭으로 표시.
+                                sourceItem: win.compareOn ? dispPre : pipe
                                 textureSize: Qt.size(viewport.procW, viewport.procH)
                                 width: viewport.procW
                                 height: viewport.procH
@@ -1244,6 +1249,58 @@ ApplicationWindow {
                         color: "#888"
                         font.pixelSize: 16
                         text: "왼쪽 탐색기에서 RAF 파일을 더블클릭해 여세요"
+                    }
+
+                    // 원본 비교 버튼: 클릭(또는 \ 키)으로 원본↔편집본 토글(좌하단). 크롭 페이지에선 숨김.
+                    Rectangle {
+                        visible: controller.imagePath !== "" && win.activePanel === 0
+                        anchors.left: parent.left
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 12
+                        radius: 6
+                        color: win.compareOn ? "#cc8ab4f8" : "#cc1e1e1e"
+                        border.color: "#55ffffff"; border.width: 1
+                        width: cmpRow.implicitWidth + 20
+                        height: cmpRow.implicitHeight + 14
+                        RowLayout {
+                            id: cmpRow
+                            anchors.centerIn: parent
+                            spacing: 6
+                            Label {
+                                text: win.compareOn ? "원본 보는 중" : "원본 비교"
+                                color: win.compareOn ? "#10243f" : "#e6e6e6"
+                                font.pixelSize: 11; font.bold: true
+                            }
+                            Label {
+                                text: "(\\)"
+                                color: win.compareOn ? "#10243f" : "#9a9a9a"
+                                font.pixelSize: 10
+                            }
+                        }
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: win.compareOn = !win.compareOn
+                        }
+                    }
+
+                    // 원본 표시 배지: 원본 보는 중 상단중앙에 표시.
+                    Rectangle {
+                        visible: win.compareOn
+                        anchors.top: parent.top
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        anchors.topMargin: 12
+                        radius: 6
+                        color: "#cc1e1e1e"
+                        border.color: "#8ab4f8"; border.width: 1
+                        width: cmpBadge.implicitWidth + 20
+                        height: cmpBadge.implicitHeight + 12
+                        Label {
+                            id: cmpBadge
+                            anchors.centerIn: parent
+                            text: "원본 · BEFORE"
+                            color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
+                            font.capitalization: Font.AllUppercase
+                        }
                     }
 
                     // 촬영정보 플로팅 패널 (I 키 토글) — 좌측 뷰 왼쪽 끝에 고정
