@@ -142,6 +142,14 @@ void main() {
     cam *= vec3(ubuf.wbR, ubuf.wbG, ubuf.wbB);
     vec3 rgb = linearToSrgb(applyCamMat(cam));
 
+    // 0.5) 하이라이트 디새추레이션(클리핑 롤오프): 한 채널만 포화돼 생기는 색끼
+    //      (예: 불꽃 코어 청록)를 제거 — 최댓값이 포화에 가까울수록 중성(흰색)으로.
+    //      카메라/라이트룸 하이라이트 거동. 휘도(최댓값) 보존하며 색만 뺀다.
+    {
+        float mx = max(rgb.r, max(rgb.g, rgb.b));
+        rgb = mix(rgb, vec3(mx), smoothstep(0.95, 1.0, mx));
+    }
+
     // 1) 노출 (display 공간). ★1.0 을 넘는 하이라이트를 여기서 클램프하지 않는다 —
     //    헤드룸을 유지해야 뒤의 highlights- 로 다시 끌어내려 디테일을 복원할 수 있다
     //    (클램프하면 모두 1.0 으로 뭉개져 'white hole' 이 평평한 흰판으로 남는다).

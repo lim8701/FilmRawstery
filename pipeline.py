@@ -274,10 +274,14 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     nat = wb.srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
     # 프록시와 동일 이미지별 자동 베이스라인 노출(임베드 JPEG 밝기 매칭, 선형광)
     nat *= raw_loader.solve_baseline_gain(target_mean, cam, ref, as_shot, nat)
+    nat = wb.highlight_rolloff(nat)     # 하이라이트 숄더(프록시와 동일, 블로우아웃 방지)
     nat *= wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)
     M = cam_to_srgb_matrix(cam).astype(np.float32)
     nat = nat @ M.T
     disp = wb.linear_to_srgb(nat).astype(np.float32)   # display sRGB (0..1)
+    # 하이라이트 디새추레이션(셰이더 0.5 블록과 동일): 클리핑 근처 색끼 제거 -> 중성.
+    _mx = disp.max(axis=2, keepdims=True)
+    disp = disp + (_mx - disp) * _smoothstep(0.95, 1.0, _mx)
 
     exp = 2.0 ** float(p.get("exposure", 0.0))
     hi, sh = float(p.get("highlights", 0)), float(p.get("shadows", 0))

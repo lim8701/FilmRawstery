@@ -12,7 +12,7 @@ from scipy.ndimage import zoom
 from PySide6.QtGui import QImage
 
 import lens
-from wb import (baked_wb, cam_to_srgb_matrix, estimate_wb,
+from wb import (baked_wb, cam_to_srgb_matrix, estimate_wb, highlight_rolloff,
                 linear_to_srgb, rel_gain, srgb_to_linear)
 
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
@@ -49,6 +49,11 @@ _SRGB2LIN = None
 _LIN2SRGB = None
 
 
+def _dither(shape):
+    """사각형 디더(±0.5 LSB) — 8bit 양자화 밴딩 제거(확률적 반올림). 시드 고정(재로드 동일)."""
+    return np.random.default_rng(12345).random(shape, dtype=np.float32) - 0.5
+
+
 def _srgb2lin_lut():
     global _SRGB2LIN
     if _SRGB2LIN is None:
@@ -76,7 +81,9 @@ def solve_baseline_gain(target_mean, cam, ref, as_shot, lin_native):
     rel = rel_gain(cam, ref, as_shot, 0.0).astype(np.float32)
     s = lin_native[::8, ::8].reshape(-1, 3)          # 빠른 통계용 서브샘플
     def disp_mean(g):
-        d = linear_to_srgb(np.clip((s * (g * rel)) @ M.T, 0.0, 1.0))
+        # 굽는 순서와 동일: 베이스라인 게인 -> 하이라이트 롤오프 -> WB -> 매트릭스 -> sRGB
+        nat = highlight_rolloff(s * g)
+        d = linear_to_srgb(np.clip((nat * rel) @ M.T, 0.0, 1.0))
         return float((d @ LUMA).mean())
     lo, hi = 0.25, 32.0
     for _ in range(24):
@@ -85,7 +92,19 @@ def solve_baseline_gain(target_mean, cam, ref, as_shot, lin_native):
             lo = g
         else:
             hi = g
-    return math.sqrt(lo * hi)
+    g_mean = math.sqrt(lo * hi)
+    # 하이라이트 보호: 고휘도 장면(밝은 하늘 등)에서 평균매칭 게인이 하이라이트를 과하게
+    # 밀어 블로우아웃(플레어)됨. 밝은 분위(native 최대채널)가 천장을 안 넘게 게인 상한.
+    # 97th 분위 → 화면의 ~3% 이상이 밝아야(=고휘도 장면, 하늘 등) 캡이 걸린다. 모닥불/
+    # 조명 같은 '어두운 배경 위 작은 밝은 피사체'는 분위가 어두워 캡이 안 걸림(밝기 보존).
+    bright = float(np.percentile(s.max(axis=1), 97.0))
+    if bright > 1e-6:
+        g_cap = HL_CEIL / bright
+        return max(min(g_mean, g_cap), g_mean * 0.5)   # 과도한 억제 방지(최대 ~1stop)
+    return g_mean
+
+
+HL_CEIL = 0.68   # 베이스라인 후 밝은 분위(native 선형)가 머무를 천장(롤오프 숄더 안쪽)
 
 
 def load_proxy(path: str, kelvin=None, tint: float = 0.0, max_edge: int = 2560,
@@ -135,11 +154,17 @@ def load_proxy(path: str, kelvin=None, tint: float = 0.0, max_edge: int = 2560,
     # 8bit 양자화 전 선형에서 적용해 섀도우 밴딩 방지. pow 대신 LUT 게더(rgb16=uint16).
     lin = _srgb2lin_lut()[rgb16]                         # (H,W,3) float32 선형
     lin *= solve_baseline_gain(target_mean, cam_xyz, ref, as_shot, lin)
+    lin = highlight_rolloff(lin)                         # 하이라이트 숄더(블로우아웃 방지)
     idx = (np.clip(lin, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
-    rgb = (_lin2srgb_lut()[idx] * 255.0 + 0.5).astype(np.uint8)
+    disp = _lin2srgb_lut()[idx]                          # float32 [0,1] display(카메라네이티브 색)
 
+    # ⚠️렌즈 보정(특히 비네팅 반경 게인)을 8bit 에 적용하면 매끄러운 구름/하늘에 동심(방사형)
+    #   양자화 밴딩이 생기고 WB(temp) 조정 시 증폭됨. → float 에서 적용 + 최종 8bit 양자화에
+    #   TPDF 디더(±1 LSB)를 더해 밴딩 제거(프록시 한정, export 는 float 라 무관).
     if lens_correct:
-        rgb = lens.apply(rgb)          # X100V 렌즈 프로파일(왜곡/주변광량/CA), 색공간 무관
+        disp = lens.apply(disp)        # X100V 렌즈 프로파일(왜곡/주변광량/CA), float
+    dth = _dither(disp.shape)
+    rgb = np.clip(disp * 255.0 + 0.5 + dth, 0.0, 255.0).astype(np.uint8)
     rgb = np.ascontiguousarray(rgb)
     h, w, _ = rgb.shape
     img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()

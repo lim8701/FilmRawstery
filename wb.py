@@ -89,6 +89,25 @@ def linear_to_srgb(c):
     return np.where(c <= 0.0031308, c * 12.92, 1.055 * (c ** (1.0 / 2.4)) - 0.055)
 
 
+HL_KNEE = 0.7   # 하이라이트 롤오프 시작(선형). 이 위는 1.0 으로 부드럽게 점근 압축.
+
+
+def highlight_rolloff(lin, knee=HL_KNEE):
+    """선형광 하이라이트(>knee)를 1.0 으로 부드럽게 점근 압축(C1 연속, 채널별).
+
+    베이스라인 게인이 고휘도 장면을 선형으로 밀면 하이라이트가 프록시 1.0 에서 하드클립
+    되어 블로우아웃·과채도(플레어)로 보인다. 카메라 S커브 숄더처럼 끝단을 눌러 디테일·
+    그라데이션을 보존하고, 채널별 압축이라 밝을수록 흰색으로 수렴(과채도 완화).
+    knee 에서 기울기 1(연속), x→∞ 에서 1.0 점근."""
+    lin = np.asarray(lin, np.float32)
+    out = lin.copy()
+    hi = lin > knee
+    if np.any(hi):
+        e = lin[hi] - knee
+        out[hi] = 1.0 - (1.0 - knee) * np.exp(-e / (1.0 - knee))
+    return out
+
+
 def rel_gain(cam_xyz, daylight_ref, kelvin, tint=0.0):
     """TREF 베이크 대비 상대 WB 게인(카메라공간, green 정규화). 셰이더 wbPreview 와 동일."""
     t = np.asarray(compute_user_wb(cam_xyz, daylight_ref, kelvin, tint)[:3], float)
