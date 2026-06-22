@@ -289,9 +289,11 @@ ApplicationWindow {
     // 카메라 네이티브 -> 선형 sRGB 매트릭스(행우선 9개). 로드 전엔 identity.
     readonly property var camM: (controller.camToSrgb && controller.camToSrgb.length >= 9)
                                 ? controller.camToSrgb : [1,0,0, 0,1,0, 0,0,1]
-    // dispSrc(블러 base)용 as-shot WB 상대게인(TREF 대비). bakedKelvin=TREF 이므로
-    // wbPreview(asShot,0) = userWb(asShot)/userWb(TREF) 가 된다.
-    readonly property vector3d asShotRelGain: win.wbPreview(controller.asShotKelvin, 0)
+    // dispSrc(블러 base + 원본 비교)용 as-shot WB 상대게인(TREF 대비).
+    // ⚠️as-shot tint 도 포함해야 함 — pipe 의 기본 WB(tempSlider=asShotKelvin,
+    //   tintSlider=asShotTint)와 일치(편집 없을 때 원본=편집본). off-locus 광원(tint≠0)에서
+    //   tint=0 으로 두면 색끼 차이 발생.
+    readonly property vector3d asShotRelGain: win.wbPreview(controller.asShotKelvin, controller.asShotTint)
 
     // 슬라이더 더블클릭 리셋: press 중에는 Slider 가 value 를 커서 위치로 덮어쓰므로
     // press 시점엔 '더블 여부'만 판정하고, 실제 리셋은 release 때 수행한다(아래 슬라이더들).
