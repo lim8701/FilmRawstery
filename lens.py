@@ -20,9 +20,16 @@ X100V = {
 }
 
 
-def apply(arr, p=X100V):
-    """arr (H,W,3) uint8/uint16/float → 보정본(같은 dtype). 정규화 반경 기반."""
-    h, w = arr.shape[:2]
+# 리맵 좌표는 해상도(+프로파일)에만 의존 → 같은 크기 반복 호출 시 1회만 계산해 캐시.
+# (프록시는 항상 2560 고정, export 는 출력해상도별로 캐시. map_coordinates 샘플링만 매번.)
+_COORD_CACHE = {}
+
+
+def _coords_for(h, w, p):
+    key = (h, w, p["k1"], p["k2"], p["ca_r"], p["ca_b"], p["vig"])
+    cached = _COORD_CACHE.get(key)
+    if cached is not None:
+        return cached
     cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
     norm2 = cx * cx + cy * cy
     ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
@@ -30,17 +37,24 @@ def apply(arr, p=X100V):
     dy = ys - cy
     rn2 = (dx * dx + dy * dy) / norm2                 # 0(중심)..1(코너)
     s = 1.0 + p["k1"] * rn2 + p["k2"] * rn2 * rn2     # 왜곡 리맵 배율
+    ca = (1.0 + p["ca_r"], 1.0, 1.0 + p["ca_b"])      # R, G, B 채널 배율(CA)
+    coords3 = [[cy + dy * (s * ca[ch]), cx + dx * (s * ca[ch])] for ch in range(3)]
+    vgain = (1.0 + p["vig"] * rn2)[..., None] if p["vig"] != 0.0 else None
+    _COORD_CACHE[key] = (coords3, vgain)
+    return _COORD_CACHE[key]
+
+
+def apply(arr, p=X100V):
+    """arr (H,W,3) uint8/uint16/float → 보정본(같은 dtype). 정규화 반경 기반."""
+    h, w = arr.shape[:2]
+    coords3, gain = _coords_for(h, w, p)
 
     out = np.empty_like(arr)
-    ca = (1.0 + p["ca_r"], 1.0, 1.0 + p["ca_b"])      # R, G, B 채널 배율(CA)
     for ch in range(3):
-        sc = s * ca[ch]
-        coords = [cy + dy * sc, cx + dx * sc]          # 소스 샘플 좌표
-        out[..., ch] = map_coordinates(arr[..., ch], coords, order=1, mode="nearest")
+        out[..., ch] = map_coordinates(arr[..., ch], coords3[ch], order=1, mode="nearest")
 
     # 주변광량 보정(코너 밝힘)
-    if p["vig"] != 0.0:
-        gain = (1.0 + p["vig"] * rn2)[..., None]
+    if gain is not None:
         o = out.astype(np.float32) * gain
         if np.issubdtype(arr.dtype, np.integer):
             o = np.clip(o, 0, np.iinfo(arr.dtype).max)

@@ -331,6 +331,7 @@ class Controller(QObject):
         self._kelvin = None     # None = as-shot 사용
         self._tint = 0.0
         self._asshot = 5500
+        self._asshot_tint = 0.0  # as-shot 추정 tint(off-locus 광원 대응)
         self._cam = []          # cam_xyz 3x3 평탄화 (9개)
         self._ref = [1.0, 1.0, 1.0]
         self._cam2srgb = []     # 카메라네이티브->선형 sRGB 매트릭스 평탄화 (9개)
@@ -758,14 +759,16 @@ class Controller(QObject):
         self.busyChanged.emit()
         if res is None:
             return
-        img, as_shot, cam, ref, cam2srgb = res
+        img, as_shot, as_shot_tint, cam, ref, cam2srgb = res
         if self._kelvin is None:
-            self._kelvin = as_shot       # as-shot 으로 디코딩됨 -> 현재값 동기화
+            self._kelvin = as_shot          # as-shot 으로 디코딩됨 -> 현재값 동기화
+            self._tint = as_shot_tint       # as-shot tint 도 함께 동기화(새 파일)
         self._cam = cam
         self._ref = ref
         self._cam2srgb = cam2srgb
-        if as_shot != self._asshot:
+        if as_shot != self._asshot or as_shot_tint != self._asshot_tint:
             self._asshot = as_shot
+            self._asshot_tint = as_shot_tint
             self.asShotKelvinChanged.emit()
         self._provider.set_image(img)
         self._counter += 1
@@ -788,6 +791,9 @@ class Controller(QObject):
     def _get_asshot(self) -> int:
         return self._asshot
 
+    def _get_asshot_tint(self) -> float:
+        return self._asshot_tint
+
     def _get_cam(self) -> list:
         return self._cam
 
@@ -806,6 +812,7 @@ class Controller(QObject):
     imageUrl = Property(str, _get_url, notify=imageChanged)
     imagePath = Property(str, _get_path, notify=imageChanged)
     asShotKelvin = Property(int, _get_asshot, notify=asShotKelvinChanged)
+    asShotTint = Property(float, _get_asshot_tint, notify=asShotKelvinChanged)
     camMatrix = Property("QVariantList", _get_cam, notify=wbBaked)
     daylightRef = Property("QVariantList", _get_ref, notify=wbBaked)
     camToSrgb = Property("QVariantList", _get_cam2srgb, notify=wbBaked)

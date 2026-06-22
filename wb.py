@@ -99,13 +99,47 @@ def rel_gain(cam_xyz, daylight_ref, kelvin, tint=0.0):
 
 
 def estimate_cct(cam_xyz, daylight_ref, camera_wb) -> int:
-    """카메라 as-shot WB 배수에 가장 가까운 Kelvin 을 탐색해 반환."""
+    """카메라 as-shot WB 배수에 가장 가까운 Kelvin 을 탐색해 반환(tint 무시, 호환용)."""
+    return estimate_wb(cam_xyz, daylight_ref, camera_wb)[0]
+
+
+def estimate_wb(cam_xyz, daylight_ref, camera_wb):
+    """카메라 as-shot WB 배수에 맞는 (Kelvin, tint) 추정.
+
+    Kelvin 1자유도(R:B 축)만으론 텅스텐/불빛처럼 데이라이트 궤적을 벗어난(off-locus)
+    광원의 R/G·B/G 2자유도를 못 맞춘다. → Kelvin 으로 R:B 비를 맞추고, tint(green 축)로
+    잔여 green 레벨을 맞춰 camera_whitebalance 를 충실히 재현(모닥불 등 정확).
+    tint: + 마젠타(녹↓) / - 그린(녹↑), compute_user_wb 와 동일 정의.
+    """
     cw = np.asarray(camera_wb, float)[:3]
-    cw = cw / cw[1]
-    best_t, best_d = TREF, 1e18
-    for T in range(2000, 12001, 50):
-        m = np.asarray(compute_user_wb(cam_xyz, daylight_ref, T)[:3])
-        d = float(np.sum((m - cw) ** 2))
-        if d < best_d:
-            best_t, best_d = T, d
-    return best_t
+    cw = cw / cw[1]                         # green 정규화 -> (R/G, 1, B/G)
+    target_rb = cw[0] / cw[2]              # R:B 비 (= 따뜻-차가움 축)
+    Ts, ms = _wb_table(cam_xyz, daylight_ref)   # T별 green-정규화 user_wb (cam 고정이라 캐시)
+    i = int(np.argmin(np.abs(ms[:, 0] / ms[:, 2] - target_rb)))
+    best_t = int(Ts[i])
+    m = ms[i]
+    # 선택된 Kelvin 의 green-정규화 배수에서 tint 산출:
+    #   user_wb green = (1-0.3·tint), R,B 불변 → (1-0.3·tint)=mR/cwR=mB/cwB(평균으로 견고).
+    g = 0.5 * (m[0] / cw[0] + m[2] / cw[2])
+    tint = float(max(-1.5, min(1.5, (1.0 - g) / 0.3)))
+    return best_t, tint
+
+
+_WB_TABLE_CACHE = {}
+
+
+def _wb_table(cam_xyz, daylight_ref):
+    """T(2000..12000) -> green-정규화 user_wb(tint=0) 테이블. cam_xyz/ref 고정이라 1회 구축·캐시."""
+    cam_xyz = np.asarray(cam_xyz, float)
+    daylight_ref = np.asarray(daylight_ref, float)
+    key = (cam_xyz.tobytes(), daylight_ref.tobytes())
+    cached = _WB_TABLE_CACHE.get(key)
+    if cached is None:
+        Ts = np.arange(2000, 12001, 25)
+        ms = np.empty((len(Ts), 3))
+        for j, T in enumerate(Ts):
+            m = np.asarray(compute_user_wb(cam_xyz, daylight_ref, int(T), 0.0)[:3])
+            ms[j] = m / m[1]
+        _WB_TABLE_CACHE[key] = (Ts, ms)
+        cached = _WB_TABLE_CACHE[key]
+    return cached

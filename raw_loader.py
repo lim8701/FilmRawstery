@@ -8,11 +8,11 @@ import math
 
 import numpy as np
 import rawpy
-from PySide6.QtCore import Qt
+from scipy.ndimage import zoom
 from PySide6.QtGui import QImage
 
 import lens
-from wb import (baked_wb, cam_to_srgb_matrix, estimate_cct,
+from wb import (baked_wb, cam_to_srgb_matrix, estimate_wb,
                 linear_to_srgb, rel_gain, srgb_to_linear)
 
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
@@ -42,6 +42,25 @@ def _embedded_jpeg_mean(raw):
         return float((a @ LUMA).mean())
     except Exception:
         return None
+
+
+# 감마 변환 LUT(pow 대신 게더). wb 의 정확 함수로 1회 구축 → 값 동일, 속도만 향상.
+_SRGB2LIN = None
+_LIN2SRGB = None
+
+
+def _srgb2lin_lut():
+    global _SRGB2LIN
+    if _SRGB2LIN is None:
+        _SRGB2LIN = srgb_to_linear(np.arange(65536, dtype=np.float32) / 65535.0).astype(np.float32)
+    return _SRGB2LIN
+
+
+def _lin2srgb_lut():
+    global _LIN2SRGB
+    if _LIN2SRGB is None:
+        _LIN2SRGB = linear_to_srgb(np.arange(65536, dtype=np.float32) / 65535.0).astype(np.float32)
+    return _LIN2SRGB
 
 
 def solve_baseline_gain(target_mean, cam, ref, as_shot, lin_native):
@@ -82,37 +101,48 @@ def load_proxy(path: str, kelvin=None, tint: float = 0.0, max_edge: int = 2560,
         cam_xyz = np.array(raw.rgb_xyz_matrix)[:3, :3]
         ref = np.array(raw.daylight_whitebalance)[:3]
         ref = ref / ref[1]
-        as_shot = estimate_cct(cam_xyz, ref, raw.camera_whitebalance)
+        as_shot, as_shot_tint = estimate_wb(cam_xyz, ref, raw.camera_whitebalance)
         target_mean = _embedded_jpeg_mean(raw)   # 이미지별 자동 노출 목표(카메라 JPEG 밝기)
 
         rgb16 = raw.postprocess(
             user_wb=baked_wb(cam_xyz, ref),     # TREF daylight 베이크(고정)
             output_color=rawpy.ColorSpace.raw,  # 카메라 네이티브(매트릭스 미적용)
-            half_size=True,                     # 빠른 디코딩(프록시 용도)
+            # ⚠️X-Trans 센서는 half_size(베이어 2×2 비닝 가정)에서 격자/색노이즈 아티팩트가
+            #   생긴다. full 디코딩 + 빠른 LINEAR 디모자이크(~1s) 후 max_edge 로 축소.
+            #   (export(pipeline)는 기본 디모자이크로 풀해상도 현상 — 동일하게 격자 없음.)
+            demosaic_algorithm=rawpy.DemosaicAlgorithm.LINEAR,
             output_bps=16,                      # 게인/감마를 numpy 로 적용(8bit 양자화 전)
             no_auto_bright=True,                # 자동 밝기 보정 OFF(상대노출 보존)
             gamma=(2.4, 12.92),                 # 감마 인코딩
             highlight_mode=rawpy.HighlightMode.Clip,
         )
 
+    # full 디코딩(X-Trans 격자 회피)이라 무거운 numpy(베이스라인/렌즈/감마) 전에 먼저
+    # max_edge 로 축소 → 축소본에서 처리(반응성 유지). 정수 2× 박스평균(빠른 AA) 반복 후
+    # 남은 분수배만 가벼운 bilinear zoom(가우시안 full-res AA 보다 ~5배 빠름).
+    if max(rgb16.shape[:2]) > max_edge:
+        x = rgb16.astype(np.float32)
+        while max(x.shape[0] // 2, x.shape[1] // 2) >= max_edge and min(x.shape[:2]) >= 2:
+            hh, ww = (x.shape[0] // 2) * 2, (x.shape[1] // 2) * 2
+            x = (x[0:hh:2, 0:ww:2] + x[1:hh:2, 0:ww:2]
+                 + x[0:hh:2, 1:ww:2] + x[1:hh:2, 1:ww:2]) * 0.25
+        f = max_edge / float(max(x.shape[:2]))
+        if f < 1.0:
+            x = zoom(x, (f, f, 1.0), order=1)
+        rgb16 = np.clip(x + 0.5, 0.0, 65535.0).astype(np.uint16)
+
     # 베이스라인 노출: 카메라 네이티브 선형광에 이미지별 자동 게인 곱 → JPEG 수준 밝기.
-    # 8bit 양자화 전 선형에서 적용해 섀도우 밴딩 방지.
-    lin = srgb_to_linear(rgb16.astype(np.float32) / 65535.0)
+    # 8bit 양자화 전 선형에서 적용해 섀도우 밴딩 방지. pow 대신 LUT 게더(rgb16=uint16).
+    lin = _srgb2lin_lut()[rgb16]                         # (H,W,3) float32 선형
     lin *= solve_baseline_gain(target_mean, cam_xyz, ref, as_shot, lin)
-    rgb = (np.clip(linear_to_srgb(lin), 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8)
+    idx = (np.clip(lin, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
+    rgb = (_lin2srgb_lut()[idx] * 255.0 + 0.5).astype(np.uint8)
 
     if lens_correct:
         rgb = lens.apply(rgb)          # X100V 렌즈 프로파일(왜곡/주변광량/CA), 색공간 무관
     rgb = np.ascontiguousarray(rgb)
     h, w, _ = rgb.shape
     img = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
-
-    if max(w, h) > max_edge:
-        img = img.scaled(
-            max_edge, max_edge,
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
     cam2srgb = cam_to_srgb_matrix(cam_xyz)
-    return (img, int(as_shot), cam_xyz.flatten().tolist(), ref.tolist(),
-            cam2srgb.flatten().tolist())
+    return (img, int(as_shot), float(as_shot_tint), cam_xyz.flatten().tolist(),
+            ref.tolist(), cam2srgb.flatten().tolist())

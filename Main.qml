@@ -200,7 +200,7 @@ ApplicationWindow {
         target: controller
         function onAsShotKelvinChanged() {
             tempSlider.value = controller.asShotKelvin
-            tintSlider.value = 0.0
+            tintSlider.value = controller.asShotTint   // off-locus(불빛 등) as-shot tint 반영
         }
         // 로드/WB 커밋(재디코딩)으로 프록시가 갱신되면 조절 반영 히스토그램 재계산.
         function onImageChanged() { win.refreshHistogram() }
@@ -1227,7 +1227,7 @@ ApplicationWindow {
                             grainSlider.value = 0.0
                             grainSizeSlider.value = 0.5
                             tempSlider.value = controller.asShotKelvin
-                            tintSlider.value = 0.0
+                            tintSlider.value = controller.asShotTint
                             simCombo.currentIndex = 0
                             simStrengthSlider.value = 1.0
                             curveEditor.reset()
@@ -1515,7 +1515,7 @@ ApplicationWindow {
                 Slider {
                     id: tintSlider
                     Layout.fillWidth: true
-                    from: -1.0; to: 1.0; value: 0.0
+                    from: -1.5; to: 1.5; value: 0.0    // as-shot 추정 tint(최대 ±1.5) 수용
                     property real defaultValue: 0.0
                     property real _lastPressMs: 0
                     property bool _pendingReset: false
