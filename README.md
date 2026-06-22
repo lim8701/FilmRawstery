@@ -1,5 +1,10 @@
 # CamRawEditor
 
+![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
+![PySide6](https://img.shields.io/badge/PySide6-Qt-41CD52?logo=qt&logoColor=white)
+![RAW](https://img.shields.io/badge/RAW-Fuji%20X100V%20(.RAF)-EB0A1E)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-555)
+
 A GPU-accelerated RAW developer and film-simulation editor for the **Fujifilm X100V** (`.RAF`), built with **PySide6 (QML) + GLSL shaders**.
 
 Edit interactively on a real-time, shader-driven preview, then export at full resolution through a numpy pipeline that mirrors the shader exactly — *what you see is what you get*.
@@ -102,8 +107,10 @@ Open a `.RAF` from the left file explorer (double-click). Shaders auto-recompile
 
 ---
 
-## Notes & limitations
+## Credits
 
-- Highlights clipped at the sensor cannot be fully reconstructed (only non-clipped headroom is rolled off).
-- TIFF export is 8-bit (limited by `QImage`).
-- WB drag preview is a display-space approximation; the exact value is snapped on release via re-decode.
+- **Film-simulation LUTs** — derived from the *FujifilmCameraProfiles* project (sRGB `.cube`)
+- **Date-back font** — [DSEG](https://github.com/keshikan/DSEG) by Keshikan (SIL Open Font License 1.1)
+- **RAW decoding** — [rawpy](https://github.com/letmaik/rawpy) / LibRaw
+- **UI & GPU pipeline** — [Qt for Python (PySide6)](https://doc.qt.io/qtforpython/)
+- Plus [NumPy](https://numpy.org/), [SciPy](https://scipy.org/), and [ExifRead](https://github.com/ianare/exif-py)
