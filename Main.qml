@@ -806,6 +806,11 @@ ApplicationWindow {
                             height: viewport.canvasDispH
                             x: viewport.cropEdit ? 0 : -win.cropX * viewport.canvasDispW
                             y: viewport.cropEdit ? 0 : -win.cropY * viewport.canvasDispH
+                            // 회전/원근으로 변환된 텍스처 가장자리 안티엘리어싱:
+                            // 자식(transform 적용된 pipeView)을 멀티샘플 FBO 에 렌더.
+                            layer.enabled: true
+                            layer.smooth: true
+                            layer.samples: 4
 
                             ShaderEffectSource {
                                 id: pipeView
