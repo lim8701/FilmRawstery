@@ -7,7 +7,17 @@ import QtQuick
 //   - 포인트 더블클릭: 삭제 (양 끝점 제외)
 Item {
     id: root
-    property var points: [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}]   // 정규화, x 오름차순
+    // 채널별 톤커브: 0=RGB(마스터) 1=R 2=G 3=B. 채널마다 컨트롤포인트를 따로 보관하고
+    // points 는 현재 channel 의 편집 대상(전환 시 swap, changed() 시 channelPoints 로 동기화).
+    property int channel: 0
+    property var channelPoints: [
+        [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}],
+        [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}],
+        [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}],
+        [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}]
+    ]
+    property var points: channelPoints[0]   // 정규화, x 오름차순
+    onChannelChanged: { points = channelPoints[channel]; view.requestPaint() }
     readonly property real hitR: 0.045    // 포인트 적중 반경(정규화)
     signal edited()                        // 커브 변경 알림
     property var histogram: []             // 배경 히스토그램(256-bin, 0..1) — 주인이 바인딩
@@ -15,9 +25,10 @@ Item {
 
     function clamp01(v) { return Math.max(0, Math.min(1, v)) }
 
+    function evalAt(x) { return evalArr(points, x) }
     // 컨트롤 포인트를 통과하는 cubic Hermite (Catmull-Rom 탄젠트)
-    function evalAt(x) {
-        var p = points, n = p.length
+    function evalArr(p, x) {
+        var n = p.length
         if (x <= p[0].x) return p[0].y
         if (x >= p[n - 1].x) return p[n - 1].y
         var k = 0
@@ -34,12 +45,15 @@ Item {
              + (-2*s3 + 3*s2)*p2.y + (s3 - s2)*m2
     }
 
-    // 256개 커브 출력값(0..1) — 컨트롤러로 넘겨 LUT 텍스처 생성에 사용
-    function lut256() {
+    // 특정 채널의 256개 커브 출력값(0..1)
+    function lut256ch(ch) {
+        var p = channelPoints[ch]
         var a = []
-        for (var i = 0; i < 256; i++) a.push(clamp01(evalAt(i / 255)))
+        for (var i = 0; i < 256; i++) a.push(clamp01(evalArr(p, i / 255)))
         return a
     }
+    // 4채널 커브 [master, r, g, b] — 컨트롤러로 넘겨 합성 LUT 텍스처 생성에 사용
+    function allLuts() { return [lut256ch(0), lut256ch(1), lut256ch(2), lut256ch(3)] }
 
     function nearest(nx, ny) {
         var best = -1, bd = hitR * hitR
@@ -71,8 +85,21 @@ Item {
         if (i <= 0 || i >= points.length - 1) return
         var arr = points.slice(); arr.splice(i, 1); points = arr; changed()
     }
+    // 현재 채널만 초기화
     function reset() { points = [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}]; changed() }
-    function changed() { view.requestPaint(); edited() }
+    // 4채널 모두 초기화(전역 Reset 용)
+    function resetAll() {
+        channelPoints = [
+            [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}], [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}],
+            [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}], [{x: 0.0, y: 0.0}, {x: 1.0, y: 1.0}]
+        ]
+        points = channelPoints[channel]; view.requestPaint(); edited()
+    }
+    // 편집된 현재 채널 포인트를 channelPoints 로 동기화 후 알림
+    function changed() {
+        var cp = channelPoints.slice(); cp[channel] = points; channelPoints = cp
+        view.requestPaint(); edited()
+    }
 
     // --- 보이는 에디터 ---
     Rectangle { anchors.fill: parent; color: "#1e1e1e"; border.color: "#444" }
@@ -101,7 +128,9 @@ Item {
             ctx.fillStyle = "#8a8a8a"; ctx.font = "9px sans-serif"; ctx.textAlign = "center"
             var zlabels = ["Shadows", "Darks", "Lights", "Highlights"]
             for (var z = 0; z < 4; z++) ctx.fillText(zlabels[z], W*(z+0.5)/4, H - 4)
-            ctx.strokeStyle = "#e8e8e8"; ctx.lineWidth = 2; ctx.beginPath()
+            var lineCol = ["#e8e8e8", "#ff6b6b", "#5fd16a", "#5b9cff"][root.channel]
+            var ptCol = ["#ffcc33", "#ff8a8a", "#9be8a0", "#9bc0ff"][root.channel]
+            ctx.strokeStyle = lineCol; ctx.lineWidth = 2; ctx.beginPath()
             for (var px = 0; px <= W; px += 2) {
                 var py = (1 - root.evalAt(px / W)) * H
                 if (px === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py)
@@ -109,7 +138,7 @@ Item {
             ctx.stroke()
             for (var i = 0; i < root.points.length; i++) {
                 var cx = root.points[i].x * W, cy = (1 - root.points[i].y) * H
-                ctx.fillStyle = "#ffcc33"; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 6.2832); ctx.fill()
+                ctx.fillStyle = ptCol; ctx.beginPath(); ctx.arc(cx, cy, 5, 0, 6.2832); ctx.fill()
                 ctx.strokeStyle = "#000"; ctx.lineWidth = 1; ctx.stroke()
             }
         }

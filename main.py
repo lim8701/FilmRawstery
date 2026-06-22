@@ -114,26 +114,28 @@ class LutProvider(QQuickImageProvider):
 class CurveProvider(QQuickImageProvider):
     """톤 커브 1D LUT(256x1 RGB)를 'image://curve/...' 로 제공.
 
-    R=G=B=커브 출력. 셰이더에서 채널값으로 샘플링(linear)해 톤커브 적용.
+    R/G/B 열에 채널별 합성 커브(마스터→채널 적용)를 담는다. 셰이더가 입력 채널값으로
+    해당 채널(.r/.g/.b)을 샘플링해 마스터+채널 톤커브를 합성 적용한다.
     """
 
     def __init__(self):
         super().__init__(QQuickImageProvider.ImageType.Image)
-        self._img = self._make([i / 255.0 for i in range(256)])  # identity
+        import numpy as np
+        ident = np.linspace(0.0, 1.0, 256, dtype=np.float32)
+        self._img = self._make(np.stack([ident, ident, ident], axis=1))  # identity
 
     @staticmethod
-    def _make(lut) -> QImage:
+    def _make(combined) -> QImage:
         import numpy as np
-        v = np.clip(np.rint(np.asarray(lut, float) * 255.0), 0, 255).astype(np.uint8)
-        if v.shape[0] != 256:
-            v = np.linspace(0, 255, 256).astype(np.uint8)
-        arr = np.zeros((1, 256, 3), np.uint8)
-        arr[0, :, 0] = v; arr[0, :, 1] = v; arr[0, :, 2] = v
-        arr = np.ascontiguousarray(arr)
+        v = np.clip(np.rint(np.asarray(combined, float) * 255.0), 0, 255).astype(np.uint8)
+        if v.shape != (256, 3):
+            ident = np.linspace(0, 255, 256).astype(np.uint8)
+            v = np.stack([ident, ident, ident], axis=1)
+        arr = np.ascontiguousarray(v.reshape(1, 256, 3))
         return QImage(arr.data, 256, 1, 256 * 3, QImage.Format.Format_RGB888).copy()
 
-    def set_lut(self, lut) -> None:
-        self._img = self._make(lut)
+    def set_lut(self, combined) -> None:
+        self._img = self._make(combined)
 
     def requestImage(self, image_id, size, requested_size):  # noqa: N802
         return self._img
@@ -434,9 +436,12 @@ class Controller(QObject):
         self.likesChanged.emit()
 
     @Slot("QVariantList")
-    def setCurve(self, lut) -> None:  # noqa: N802 (QML 슬롯)
-        """QML 이 계산한 256개 커브 값(0..1)으로 LUT 텍스처 갱신."""
-        self._curve_provider.set_lut(lut)
+    def setCurve(self, curves) -> None:  # noqa: N802 (QML 슬롯)
+        """QML 이 계산한 4개 채널 커브([master, r, g, b], 각 256값)로 LUT 텍스처 갱신.
+        마스터→채널 합성을 256×3 LUT 로 구워 R/G/B 열에 저장."""
+        import pipeline
+        m, r, g, b = curves[0], curves[1], curves[2], curves[3]
+        self._curve_provider.set_lut(pipeline.compose_curves(m, r, g, b))
         self._curve_counter += 1
         self._curve_url = f"image://curve/c?v={self._curve_counter}"
         self.curveChanged.emit()
@@ -458,9 +463,11 @@ class Controller(QObject):
             lut_arr, lut_n = None, 0
             if params.get("lutEnabled", False):
                 lut_arr, lut_n = load_cube(str(LUTS_DIR / f"{params.get('simKey','identity')}.cube"))
-            curve = list(params.get("curve", [i / 255.0 for i in range(256)]))
+            ident = [i / 255.0 for i in range(256)]
+            curves = params.get("curves") or [ident, ident, ident, ident]
+            curve_rgb = pipeline.compose_curves(*curves)
             arr = pipeline.render_full(
-                self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve)
+                self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb)
             ok = pipeline.save_image(arr, path)
             msg = f"저장됨: {path}" if ok else f"저장 실패: {path}"
         except Exception as exc:
@@ -577,12 +584,12 @@ class Controller(QObject):
                 st = float(params.get("lutStrength", 1.0))
                 c = c * (1.0 - st) + looked * st
         c = np.clip((c - 0.5) * float(params.get("contrast", 1.0)) + 0.5, 0.0, 1.0)
-        curve = params.get("curve", None)
-        if curve and len(curve) >= 2:
-            xs = np.linspace(0.0, 1.0, len(curve))
-            cl = np.asarray(curve, dtype=np.float32)
+        curves = params.get("curves", None)
+        if curves and len(curves) == 4:
+            crgb = pipeline.compose_curves(*curves)
+            xs = np.linspace(0.0, 1.0, 256)
             for ch in range(3):
-                c[..., ch] = np.interp(c[..., ch], xs, cl)
+                c[..., ch] = np.interp(c[..., ch], xs, crgb[:, ch])
         self._histogram = self._hist_of(c)
         self.histogramChanged.emit()
 

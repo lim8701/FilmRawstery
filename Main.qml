@@ -210,7 +210,7 @@ ApplicationWindow {
             "lutEnabled": simCombo.currentIndex !== 0,
             "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value,
-            "curve": curveEditor.lut256()
+            "curves": curveEditor.allLuts()
         }
     }
 
@@ -286,7 +286,7 @@ ApplicationWindow {
             "lutEnabled": simCombo.currentIndex !== 0,
             "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value,
-            "curve": curveEditor.lut256(),
+            "curves": curveEditor.allLuts(),
             "dateStamp": win.dateStamp,
             "stampText": stampField.text,
             "outEdge": win.exportEdges[resCombo.currentIndex],
@@ -1258,7 +1258,7 @@ ApplicationWindow {
                             tintSlider.value = controller.asShotTint
                             simCombo.currentIndex = 0
                             simStrengthSlider.value = 1.0
-                            curveEditor.reset()
+                            curveEditor.resetAll()
                         }
                     }
                 }
@@ -1525,12 +1525,36 @@ ApplicationWindow {
                     visible: win.secOpen[2]
                     Layout.fillWidth: true
                     spacing: 12
+                // 채널 선택: RGB(마스터) / R / G / B
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 4
+                    Repeater {
+                        model: [{t: "RGB", c: "#e8e8e8"}, {t: "R", c: "#ff6b6b"},
+                                {t: "G", c: "#5fd16a"}, {t: "B", c: "#5b9cff"}]
+                        delegate: Rectangle {
+                            required property int index
+                            required property var modelData
+                            Layout.fillWidth: true
+                            implicitHeight: 26
+                            radius: 4
+                            color: curveEditor.channel === index ? "#3a3a3a" : "#2a2a2a"
+                            border.color: curveEditor.channel === index ? modelData.c : "#444"
+                            Text {
+                                anchors.centerIn: parent
+                                text: modelData.t; color: modelData.c
+                                font.pixelSize: 12; font.bold: curveEditor.channel === index
+                            }
+                            TapHandler { onTapped: curveEditor.channel = index }
+                        }
+                    }
+                }
                 CurveEditor {
                     id: curveEditor
                     Layout.fillWidth: true
                     Layout.preferredHeight: 240     // 고정 높이(너비에서 분리: 레이아웃 루프 방지)
                     histogram: controller.histogram
-                    onEdited: { controller.setCurve(lut256()); win.refreshHistogram() }
+                    onEdited: { controller.setCurve(allLuts()); win.refreshHistogram() }
                 }
 
                 }

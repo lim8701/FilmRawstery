@@ -287,7 +287,21 @@ def _apply_geometry(arr, p):
     return np.ascontiguousarray(arr)
 
 
-def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
+def compose_curves(master, r, g, b):
+    """채널별 톤커브를 256×3 LUT 로 합성: out_C = channelCurve_C(masterCurve(in_C)).
+
+    master/r/g/b 는 각각 256개 출력값(0..1) — 마스터 커브를 먼저 적용하고 그 결과에
+    채널별(R/G/B) 커브를 적용한 합성 LUT(R/G/B 열)를 만든다. 셰이더/export 가 채널값으로
+    이 LUT 의 해당 채널을 샘플링하면 두 커브가 합성 적용된다."""
+    xs = np.linspace(0.0, 1.0, 256)
+    m = np.asarray(master, dtype=np.float32)
+    out = np.empty((256, 3), dtype=np.float32)
+    for i, ch in enumerate((r, g, b)):
+        out[:, i] = np.interp(m, xs, np.asarray(ch, dtype=np.float32))
+    return out
+
+
+def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
                 proxy_edge=2560, strip=256):
     """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) uint8 RGB 로 반환."""
     with rawpy.imread(path) as raw:
@@ -389,8 +403,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
 
     # --- LUT/대비/커브/비네팅 (메모리 큰 LUT 는 스트립) ---
     out = np.empty((h, w, 3), dtype=np.uint8)
-    xs = np.linspace(0.0, 1.0, len(curve_lut))
-    cl = np.asarray(curve_lut, dtype=np.float32)
+    xs = np.linspace(0.0, 1.0, 256)
+    crgb = np.asarray(curve_rgb, dtype=np.float32)   # (256,3) 합성 채널 커브
     for y in range(0, h, strip):
         blk = c[y:y + strip]
         if lut_arr is not None:
@@ -401,7 +415,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
         blk = _hsl_mixer(blk, hsl_h, hsl_s, hsl_l)                     # HSL 컬러 믹서
         blk = np.clip((blk - 0.5) * con + 0.5, 0.0, 1.0)
         for ch in range(3):
-            blk[..., ch] = np.interp(blk[..., ch], xs, cl)
+            blk[..., ch] = np.interp(blk[..., ch], xs, crgb[:, ch])
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * 255.0).astype(np.uint8)

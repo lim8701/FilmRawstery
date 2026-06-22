@@ -276,10 +276,10 @@ void main() {
     // 8) 대비
     rgb = clamp((rgb - 0.5) * ubuf.contrast + 0.5, 0.0, 1.0);
 
-    // 9) 톤 커브 (RGB 공통)
+    // 9) 톤 커브 (채널별: LUT R/G/B 열에 마스터→채널 합성 커브가 구워져 있음)
     rgb.r = texture(curve, vec2(rgb.r, 0.5)).r;
-    rgb.g = texture(curve, vec2(rgb.g, 0.5)).r;
-    rgb.b = texture(curve, vec2(rgb.b, 0.5)).r;
+    rgb.g = texture(curve, vec2(rgb.g, 0.5)).g;
+    rgb.b = texture(curve, vec2(rgb.b, 0.5)).b;
 
     // 10) 비네팅 (방사형)
     if (ubuf.vignette != 0.0) {
