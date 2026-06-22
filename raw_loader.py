@@ -107,14 +107,13 @@ def solve_baseline_gain(target_mean, cam, ref, as_shot, lin_native):
 HL_CEIL = 0.68   # 베이스라인 후 밝은 분위(native 선형)가 머무를 천장(롤오프 숄더 안쪽)
 
 
-def load_proxy(path: str, kelvin=None, tint: float = 0.0, max_edge: int = 2560,
-               lens_correct: bool = True):
-    """RAF 를 디코딩해 (QImage, as_shot, cam_xyz(9), ref(3), cam2srgb(9)) 반환.
+def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
+    """RAF 를 디코딩해 (QImage, as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9)) 반환.
 
     WB 는 더 이상 디코딩에 베이크하지 않는다(셰이더가 카메라공간에서 실시간 적용).
     프록시는 **카메라 네이티브 RGB**(매트릭스 미적용)를 TREF(daylight) WB 만 베이크해
     감마 인코딩(8bit)으로 저장. 셰이더가 [선형화→WB 상대게인→cam2srgb 매트릭스→sRGB]
-    로 변환한다. kelvin/tint 인자는 호출부 호환용으로 유지하되 미사용.
+    로 변환한다.
     """
     with rawpy.imread(path) as raw:
         cam_xyz = np.array(raw.rgb_xyz_matrix)[:3, :3]

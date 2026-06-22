@@ -739,12 +739,12 @@ class Controller(QObject):
         if not self._busy:
             self._busy = True
             self.busyChanged.emit()
-        args = (seq, self._path, self._kelvin, self._tint, self._lens)
+        args = (seq, self._path, self._lens)
         threading.Thread(target=self._render_worker, args=args, daemon=True).start()
 
-    def _render_worker(self, seq, path, kelvin, tint, lens_on) -> None:
+    def _render_worker(self, seq, path, lens_on) -> None:
         try:
-            res = load_proxy(path, kelvin=kelvin, tint=tint, lens_correct=lens_on)
+            res = load_proxy(path, lens_correct=lens_on)
         except Exception as exc:
             print(f"[load] 실패: {exc}")
             res = None

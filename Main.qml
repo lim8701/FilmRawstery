@@ -623,9 +623,6 @@ ApplicationWindow {
                     // 처리 해상도 = 프록시 native (모니터 해상도와 무관하게 GPU 부하 고정)
                     property real procW: srcImage.implicitWidth > 0 ? srcImage.implicitWidth : 1
                     property real procH: srcImage.implicitHeight > 0 ? srcImage.implicitHeight : 1
-                    property real ar: procW / procH
-                    property real fitW: Math.min(availW, availH * ar)
-                    property real fitH: fitW / ar
                     property real claW: Math.max(1, Math.round(procW / 4))   // 클래리티 블러 다운샘플
                     property real claH: Math.max(1, Math.round(procH / 4))
 
