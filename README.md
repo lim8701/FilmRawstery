@@ -47,9 +47,6 @@ Built-in X100V profile: distortion, vignetting, and chromatic aberration.
 - **Live histogram** reflecting current adjustments
 - **Full-resolution export** to JPEG / PNG / TIFF (background-threaded, UI stays responsive)
 
-### Shortcuts
-`\` before/after · `I` shooting info · `D` date stamp · `B` file explorer · `L` likes-only
-
 ---
 
 ## How it works
