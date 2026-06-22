@@ -106,6 +106,49 @@ def _presence(c, sat, vib):
     return c
 
 
+def _rgb2hsv(rgb):
+    mx = rgb.max(-1); mn = rgb.min(-1); d = mx - mn
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    h = np.zeros_like(mx)
+    nz = d > 1e-10
+    im = (mx == r) & nz; h[im] = ((g[im] - b[im]) / d[im]) % 6.0
+    im = (mx == g) & nz; h[im] = (b[im] - r[im]) / d[im] + 2.0
+    im = (mx == b) & nz; h[im] = (r[im] - g[im]) / d[im] + 4.0
+    h = (h / 6.0) % 1.0
+    s = np.where(mx > 1e-10, d / np.maximum(mx, 1e-10), 0.0)
+    return np.stack([h, s, mx], -1).astype(np.float32)
+
+
+def _hsv2rgb(hsv):
+    h = (hsv[..., 0] % 1.0) * 6.0
+    s, v = hsv[..., 1], hsv[..., 2]
+    i = np.floor(h).astype(np.intp) % 6
+    f = h - np.floor(h)
+    p = v * (1.0 - s); q = v * (1.0 - f * s); t = v * (1.0 - (1.0 - f) * s)
+    r = np.choose(i, [v, q, p, p, t, v])
+    g = np.choose(i, [t, v, v, q, p, p])
+    b = np.choose(i, [p, p, t, v, v, q])
+    return np.stack([r, g, b], -1).astype(np.float32)
+
+
+def _hsl_mixer(c, hsl_h, hsl_s, hsl_l):
+    """HSL 컬러 믹서 (셰이더 hslMixer 와 동일): 픽셀 hue 로 8색상대(45°) 삼각 가중합 → 적용."""
+    H = np.asarray(hsl_h, np.float32); S = np.asarray(hsl_s, np.float32); L = np.asarray(hsl_l, np.float32)
+    if not (H.any() or S.any() or L.any()):
+        return c
+    hsv = _rgb2hsv(np.clip(c, 0.0, 1.0))
+    h = hsv[..., 0]
+    centers = (np.arange(8, dtype=np.float32)) / 8.0
+    d = np.abs(((h[..., None] - centers + 0.5) % 1.0) - 0.5)
+    w = np.maximum(0.0, 1.0 - d * 8.0)              # (...,8) 단위분할 가중치
+    eff_h = w @ H; eff_s = w @ S; eff_l = w @ L
+    sat_w = hsv[..., 1]
+    hsv[..., 0] = (hsv[..., 0] + eff_h * (30.0 / 360.0) * sat_w) % 1.0
+    hsv[..., 1] = np.clip(hsv[..., 1] * (1.0 + eff_s), 0.0, 1.0)
+    hsv[..., 2] = np.clip(hsv[..., 2] * (1.0 + eff_l * 0.5), 0.0, 1.0)
+    return _hsv2rgb(hsv)
+
+
 def _apply_lut3d(c, lut, n):
     x = np.clip(c, 0.0, 1.0) * (n - 1)
     b0 = np.floor(x).astype(np.intp)
@@ -299,6 +342,9 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
     sharp_radius = float(p.get("sharpenRadius", 1.0))
     sharp_detail = float(p.get("sharpenDetail", 0.25))
     sharp_mask = float(p.get("sharpenMask", 0.0))
+    hsl_h = p.get("hslH", [0.0] * 8)   # HSL 컬러 믹서 8색상대 (색상/채도/휘도)
+    hsl_s = p.get("hslS", [0.0] * 8)
+    hsl_l = p.get("hslL", [0.0] * 8)
     stamp_text = str(p.get("stampText", "") or "")
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
 
@@ -352,6 +398,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_lut,
             blk = blk * (1.0 - lut_strength) + looked * lut_strength   # 강도 블렌딩
         if sat != 0.0 or vib != 0.0:
             blk = _presence(blk, sat, vib)                             # 바이브런스/채도
+        blk = _hsl_mixer(blk, hsl_h, hsl_s, hsl_l)                     # HSL 컬러 믹서
         blk = np.clip((blk - 0.5) * con + 0.5, 0.0, 1.0)
         for ch in range(3):
             blk[..., ch] = np.interp(blk[..., ch], xs, cl)

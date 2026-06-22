@@ -41,6 +41,10 @@ layout(std140, binding = 0) uniform buf {
     float camM0; float camM1; float camM2;
     float camM3; float camM4; float camM5;
     float camM6; float camM7; float camM8;
+    // HSL 컬러 믹서: 8색상대(45° 균등) × 색상/채도/휘도 조정(-1..1). a=대역0..3, b=대역4..7.
+    vec4 hslHa; vec4 hslHb;
+    vec4 hslSa; vec4 hslSb;
+    vec4 hslLa; vec4 hslLb;
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -80,6 +84,43 @@ vec3 filmic(vec3 x) {
     vec3 rolled = 1.0 - (1.0 - HL_KNEE) * exp(-hi / (1.0 - HL_KNEE));
     vec3 shoulder = mix(x, rolled, step(vec3(HL_KNEE), x));
     return linearToSrgb(shoulder);
+}
+
+// HSV <-> RGB (Sam Hocevar). hue 0..1.
+vec3 rgb2hsv(vec3 c) {
+    vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+    vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+    vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+    float d = q.x - min(q.w, q.y);
+    float e = 1.0e-10;
+    return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+vec3 hsv2rgb(vec3 c) {
+    vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+    vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+    return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+// HSL 컬러 믹서: 픽셀 hue 로 8색상대(45° 균등) 삼각 가중치 → 각 대역 조정의 가중합 적용.
+// hueShift ±30°, sat/lum 은 채도·명도 배수. 가중치 합=1(균등 삼각 → 단위분할).
+vec3 hslMixer(vec3 rgb) {
+    if (ubuf.hslHa == vec4(0.0) && ubuf.hslHb == vec4(0.0)
+        && ubuf.hslSa == vec4(0.0) && ubuf.hslSb == vec4(0.0)
+        && ubuf.hslLa == vec4(0.0) && ubuf.hslLb == vec4(0.0)) return rgb;
+    vec3 hsv = rgb2hsv(rgb);
+    float h = hsv.x;
+    // 8 대역 중심 c=i/8 의 삼각 가중치(wrap)
+    vec4 ca = vec4(0.0, 1.0, 2.0, 3.0) / 8.0;
+    vec4 cb = vec4(4.0, 5.0, 6.0, 7.0) / 8.0;
+    vec4 wa = max(vec4(0.0), 1.0 - abs(fract(h - ca + 0.5) - 0.5) * 8.0);
+    vec4 wb = max(vec4(0.0), 1.0 - abs(fract(h - cb + 0.5) - 0.5) * 8.0);
+    float effH = dot(wa, ubuf.hslHa) + dot(wb, ubuf.hslHb);
+    float effS = dot(wa, ubuf.hslSa) + dot(wb, ubuf.hslSb);
+    float effL = dot(wa, ubuf.hslLa) + dot(wb, ubuf.hslLb);
+    float satW = hsv.y;   // 무채색(회색)엔 색상/채도 조정 영향 최소화
+    hsv.x = fract(hsv.x + effH * (30.0 / 360.0) * satW);
+    hsv.y = clamp(hsv.y * (1.0 + effS), 0.0, 1.0);
+    hsv.z = clamp(hsv.z * (1.0 + effL * 0.5), 0.0, 1.0);
+    return hsv2rgb(hsv);
 }
 
 // 의사난수 해시 + value noise (필름 그레인용, 절차적·결정적)
@@ -228,6 +269,9 @@ void main() {
         float l = dot(rgb, LUMA);
         rgb = clamp(mix(vec3(l), rgb, 1.0 + ubuf.saturation), 0.0, 1.0);
     }
+
+    // 7.6) HSL 컬러 믹서 (색상대별 색상/채도/휘도) — 필름시뮬/채도 뒤, 대비 앞
+    rgb = clamp(hslMixer(rgb), 0.0, 1.0);
 
     // 8) 대비
     rgb = clamp((rgb - 0.5) * ubuf.contrast + 0.5, 0.0, 1.0);

@@ -33,6 +33,20 @@ ApplicationWindow {
     // 우측 활성 패널: 0=Edit, 1=Crop/Rotate/Geometry (우측 끝 세로 셀렉터 바로 전환)
     property int activePanel: 0
 
+    // HSL 컬러 믹서: 8색상대(45° 균등) × 색상/채도/휘도 조정값(-1..1), 선택 대역 hslBand.
+    property var hslH: [0, 0, 0, 0, 0, 0, 0, 0]
+    property var hslS: [0, 0, 0, 0, 0, 0, 0, 0]
+    property var hslL: [0, 0, 0, 0, 0, 0, 0, 0]
+    property int hslBand: 0
+    function setHslBandValue(arr, v) {     // arr: "hslH"|"hslS"|"hslL" — 선택 대역값 갱신
+        var a = win[arr].slice(); a[win.hslBand] = v; win[arr] = a
+    }
+    function resetHsl() {
+        win.hslH = [0, 0, 0, 0, 0, 0, 0, 0]
+        win.hslS = [0, 0, 0, 0, 0, 0, 0, 0]
+        win.hslL = [0, 0, 0, 0, 0, 0, 0, 0]
+    }
+
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
     property int quarterTurns: 0        // 90° 단위 회전 (⟳ CW +1, ⟲ CCW -1, mod 4)
     // 종횡비 콤보 인덱스 -> 비율(가로/세로). aspectCombo 모델과 순서 일치.
@@ -256,6 +270,7 @@ ApplicationWindow {
             "dehaze": dehazeSlider.value,
             "saturation": satSlider.value,
             "vibrance": vibSlider.value,
+            "hslH": win.hslH, "hslS": win.hslS, "hslL": win.hslL,
             "sharpenAmt": sharpAmtSlider.value,
             "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value,
@@ -798,6 +813,13 @@ ApplicationWindow {
                         property real dehaze: dehazeSlider.value
                         property real saturation: satSlider.value
                         property real vibrance: vibSlider.value
+                        // HSL 컬러 믹서 (8색상대 → vec4 ×2씩: a=0..3, b=4..7)
+                        property vector4d hslHa: Qt.vector4d(win.hslH[0], win.hslH[1], win.hslH[2], win.hslH[3])
+                        property vector4d hslHb: Qt.vector4d(win.hslH[4], win.hslH[5], win.hslH[6], win.hslH[7])
+                        property vector4d hslSa: Qt.vector4d(win.hslS[0], win.hslS[1], win.hslS[2], win.hslS[3])
+                        property vector4d hslSb: Qt.vector4d(win.hslS[4], win.hslS[5], win.hslS[6], win.hslS[7])
+                        property vector4d hslLa: Qt.vector4d(win.hslL[0], win.hslL[1], win.hslL[2], win.hslL[3])
+                        property vector4d hslLb: Qt.vector4d(win.hslL[4], win.hslL[5], win.hslL[6], win.hslL[7])
                         property real sharpenAmt: sharpAmtSlider.value
                         property real sharpenDetail: sharpDetailSlider.value
                         property real sharpenMask: sharpMaskSlider.value
@@ -1216,6 +1238,10 @@ ApplicationWindow {
                             dehazeSlider.value = 0.0
                             satSlider.value = 0.0
                             vibSlider.value = 0.0
+                            win.resetHsl()
+                            hslHueSlider.value = 0.0
+                            hslSatSlider.value = 0.0
+                            hslLumSlider.value = 0.0
                             sharpAmtSlider.value = 0.0
                             sharpRadiusSlider.value = 1.0
                             sharpDetailSlider.value = 0.25
@@ -1581,6 +1607,76 @@ ApplicationWindow {
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(satSlider)
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                Label {
+                    text: "Color Mixer"
+                    color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                    font.capitalization: Font.AllUppercase
+                }
+                // 8색상대 스와치(클릭=선택). 선택 대역은 흰 테두리.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 3
+                    Repeater {
+                        model: 8
+                        delegate: Rectangle {
+                            Layout.fillWidth: true
+                            implicitHeight: 22
+                            radius: 3
+                            color: Qt.hsva(index / 8.0, 0.85, 0.95, 1.0)
+                            border.width: win.hslBand === index ? 2 : 0
+                            border.color: "#ffffff"
+                            MouseArea { anchors.fill: parent; onClicked: win.hslBand = index }
+                        }
+                    }
+                }
+                Label { text: "Hue:  " + Math.round(win.hslH[win.hslBand] * 100); color: "white" }
+                Slider {
+                    id: hslHueSlider
+                    Layout.fillWidth: true
+                    from: -1.0; to: 1.0
+                    Component.onCompleted: value = win.hslH[win.hslBand]
+                    Connections { target: win; function onHslBandChanged() { hslHueSlider.value = win.hslH[win.hslBand] } }
+                    onMoved: win.setHslBandValue("hslH", value)
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(hslHueSlider)
+                        else if (_pendingReset) { value = 0.0; win.setHslBandValue("hslH", 0.0); _pendingReset = false }
+                    }
+                }
+                Label { text: "Saturation:  " + Math.round(win.hslS[win.hslBand] * 100); color: "white" }
+                Slider {
+                    id: hslSatSlider
+                    Layout.fillWidth: true
+                    from: -1.0; to: 1.0
+                    Component.onCompleted: value = win.hslS[win.hslBand]
+                    Connections { target: win; function onHslBandChanged() { hslSatSlider.value = win.hslS[win.hslBand] } }
+                    onMoved: win.setHslBandValue("hslS", value)
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(hslSatSlider)
+                        else if (_pendingReset) { value = 0.0; win.setHslBandValue("hslS", 0.0); _pendingReset = false }
+                    }
+                }
+                Label { text: "Luminance:  " + Math.round(win.hslL[win.hslBand] * 100); color: "white" }
+                Slider {
+                    id: hslLumSlider
+                    Layout.fillWidth: true
+                    from: -1.0; to: 1.0
+                    Component.onCompleted: value = win.hslL[win.hslBand]
+                    Connections { target: win; function onHslBandChanged() { hslLumSlider.value = win.hslL[win.hslBand] } }
+                    onMoved: win.setHslBandValue("hslL", value)
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(hslLumSlider)
+                        else if (_pendingReset) { value = 0.0; win.setHslBandValue("hslL", 0.0); _pendingReset = false }
                     }
                 }
 
