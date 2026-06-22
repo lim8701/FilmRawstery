@@ -104,6 +104,119 @@ ApplicationWindow {
         geoScaleSlider.value = 100
     }
 
+    // === RAF별 편집 자동 저장/복원 (사이드카 .camrawedits/<파일명>.json) ===
+    property bool _applying: false       // 복원 중 — 자동저장/WB 재디코딩 억제
+    function _hasSavedEdits() { var e = controller.editsForCurrent(); return e && e.v !== undefined }
+
+    // 저장 페이로드(원시 컨트롤 값) — 저장/복원의 단일 진실원.
+    function editParams() {
+        return {
+            "v": 1,
+            "exposure": expSlider.value, "contrast": conSlider.value,
+            "highlights": hiSlider.value, "shadows": shSlider.value,
+            "whites": whSlider.value, "blacks": blSlider.value,
+            "temp": tempSlider.value, "tint": tintSlider.value,
+            "simIndex": simCombo.currentIndex, "simStrength": simStrengthSlider.value,
+            "texture": texSlider.value, "clarity": claritySlider.value, "dehaze": dehazeSlider.value,
+            "vibrance": vibSlider.value, "saturation": satSlider.value,
+            "hslH": win.hslH, "hslS": win.hslS, "hslL": win.hslL,
+            "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
+            "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
+            "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
+            "lensCorrection": lensCheck.checked, "dateStamp": win.dateStamp, "stampText": stampField.text,
+            "curves": curveEditor.channelPoints,
+            "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
+            "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
+            "aspectIndex": aspectCombo.currentIndex, "cropLandscape": cropLandscapeBtn.checked,
+            "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value
+        }
+    }
+    function _ev(p, k, d) { return p[k] !== undefined ? p[k] : d }
+
+    // 저장된 편집을 컨트롤에 복원. 반드시 _applying 가드 안에서 호출(자동저장/WB 재디코딩 방지).
+    function applyEdits(p) {
+        expSlider.value = _ev(p, "exposure", 0.0); conSlider.value = _ev(p, "contrast", 1.0)
+        hiSlider.value = _ev(p, "highlights", 0.0); shSlider.value = _ev(p, "shadows", 0.0)
+        whSlider.value = _ev(p, "whites", 0.0); blSlider.value = _ev(p, "blacks", 0.0)
+        tempSlider.value = _ev(p, "temp", controller.asShotKelvin)
+        tintSlider.value = _ev(p, "tint", controller.asShotTint)
+        simCombo.currentIndex = _ev(p, "simIndex", 0); simStrengthSlider.value = _ev(p, "simStrength", 1.0)
+        texSlider.value = _ev(p, "texture", 0.0); claritySlider.value = _ev(p, "clarity", 0.0)
+        dehazeSlider.value = _ev(p, "dehaze", 0.0)
+        vibSlider.value = _ev(p, "vibrance", 0.0); satSlider.value = _ev(p, "saturation", 0.0)
+        win.hslH = _ev(p, "hslH", [0,0,0,0,0,0,0,0]).slice()
+        win.hslS = _ev(p, "hslS", [0,0,0,0,0,0,0,0]).slice()
+        win.hslL = _ev(p, "hslL", [0,0,0,0,0,0,0,0]).slice()
+        hslHueSlider.value = win.hslH[win.hslBand]
+        hslSatSlider.value = win.hslS[win.hslBand]
+        hslLumSlider.value = win.hslL[win.hslBand]
+        vignetteSlider.value = _ev(p, "vignette", 0.0)
+        grainSlider.value = _ev(p, "grainAmt", 0.0); grainSizeSlider.value = _ev(p, "grainSize", 0.5)
+        sharpAmtSlider.value = _ev(p, "sharpenAmt", 0.0); sharpRadiusSlider.value = _ev(p, "sharpenRadius", 1.0)
+        sharpDetailSlider.value = _ev(p, "sharpenDetail", 0.25); sharpMaskSlider.value = _ev(p, "sharpenMask", 0.0)
+        win.dateStamp = _ev(p, "dateStamp", false)
+        stampField.text = _ev(p, "stampText", controller.stampText)
+        controller.setLensCorrection(_ev(p, "lensCorrection", true))
+        var cp = _ev(p, "curves", null)
+        if (cp) { curveEditor.setChannelPoints(cp); controller.setCurve(curveEditor.allLuts()) }
+        else curveEditor.resetAll()
+        win.quarterTurns = _ev(p, "quarterTurns", 0); rotAngleSlider.value = _ev(p, "rotateAngle", 0.0)
+        flipHBtn.checked = _ev(p, "flipH", false); flipVBtn.checked = _ev(p, "flipV", false)
+        var land = _ev(p, "cropLandscape", true)
+        cropLandscapeBtn.checked = land; cropPortraitBtn.checked = !land
+        aspectCombo.currentIndex = _ev(p, "aspectIndex", 0)
+        win.setCropRect(_ev(p,"cropX",0.0), _ev(p,"cropY",0.0), _ev(p,"cropW",1.0), _ev(p,"cropH",1.0))
+        geoVSlider.value = _ev(p, "geoV", 0); geoHSlider.value = _ev(p, "geoH", 0)
+        geoScaleSlider.value = _ev(p, "geoScale", 100)
+    }
+
+    // 전체 초기화(편집 + 지오메트리). 수동 Reset 버튼 & 저장본 없는 파일 로드에서 호출.
+    function resetAllEdits() {
+        expSlider.value = 0.0; conSlider.value = 1.0
+        hiSlider.value = 0.0; shSlider.value = 0.0; whSlider.value = 0.0; blSlider.value = 0.0
+        texSlider.value = 0.0; claritySlider.value = 0.0; dehazeSlider.value = 0.0
+        satSlider.value = 0.0; vibSlider.value = 0.0
+        win.resetHsl(); hslHueSlider.value = 0.0; hslSatSlider.value = 0.0; hslLumSlider.value = 0.0
+        sharpAmtSlider.value = 0.0; sharpRadiusSlider.value = 1.0
+        sharpDetailSlider.value = 0.25; sharpMaskSlider.value = 0.0
+        vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
+        tempSlider.value = controller.asShotKelvin; tintSlider.value = controller.asShotTint
+        simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
+        curveEditor.resetAll()
+        win.resetGeometry()
+    }
+
+    // 자동저장: 편집 변화를 단일 바인딩(editSaveWatch)으로 감지 → 디바운스 후 1회 저장.
+    function scheduleSave() {
+        if (win._applying || controller.imagePath === "") return
+        editSaveTimer.restart()
+    }
+    Timer {
+        id: editSaveTimer
+        interval: 500
+        onTriggered: if (!win._applying && controller.imagePath !== "")
+                         controller.saveEdits(win.editParams())
+    }
+    // 모든 편집 컨트롤 값을 참조 → 무엇이든 바뀌면 바인딩 재평가 → onChanged 로 저장 예약.
+    property var editSaveWatch: [
+        expSlider.value, conSlider.value, hiSlider.value, shSlider.value, whSlider.value, blSlider.value,
+        tempSlider.value, tintSlider.value, simCombo.currentIndex, simStrengthSlider.value,
+        texSlider.value, claritySlider.value, dehazeSlider.value, vibSlider.value, satSlider.value,
+        win.hslH, win.hslS, win.hslL,
+        vignetteSlider.value, grainSlider.value, grainSizeSlider.value,
+        sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
+        lensCheck.checked, win.dateStamp, stampField.text, curveEditor.channelPoints,
+        win.quarterTurns, rotAngleSlider.value, flipHBtn.checked, flipVBtn.checked,
+        aspectCombo.currentIndex, cropLandscapeBtn.checked,
+        win.cropX, win.cropY, win.cropW, win.cropH,
+        geoVSlider.value, geoHSlider.value, geoScaleSlider.value
+    ]
+    onEditSaveWatchChanged: win.scheduleSave()
+
+    // 앱 종료 시 현재 파일 편집 플러시 저장.
+    onClosing: if (controller.imagePath !== "") controller.saveEdits(win.editParams())
+
     // 탐색기 "좋아요만 보기" 필터 (L 키로 토글)
     property bool showLikedOnly: false
     Shortcut { sequence: "L"; onActivated: win.showLikedOnly = !win.showLikedOnly }
@@ -218,11 +331,18 @@ ApplicationWindow {
     Connections {
         target: controller
         function onAsShotKelvinChanged() {
+            // 저장된 편집이 있는 파일은 복원될 WB 를 유지(as-shot 으로 덮어쓰지 않음).
+            if (win._hasSavedEdits()) return
             tempSlider.value = controller.asShotKelvin
             tintSlider.value = controller.asShotTint   // off-locus(불빛 등) as-shot tint 반영
         }
         // 로드/WB 커밋(재디코딩)으로 프록시가 갱신되면 조절 반영 히스토그램 재계산.
         function onImageChanged() { win.refreshHistogram() }
+        // 이미지 전환 직전: 이전 파일(controller._path 아직 이전값)로 편집 플러시 저장.
+        function onFlushEdits() {
+            editSaveTimer.stop()
+            if (controller.imagePath !== "") controller.saveEdits(win.editParams())
+        }
     }
 
     FolderDialog {
@@ -1230,36 +1350,8 @@ ApplicationWindow {
                         padding: 0
                         font.pixelSize: 14
                         ToolTip.visible: hovered
-                        ToolTip.text: "Reset (조절 초기화)"
-                        onClicked: {
-                            expSlider.value = 0.0
-                            conSlider.value = 1.0
-                            hiSlider.value = 0.0
-                            shSlider.value = 0.0
-                            whSlider.value = 0.0
-                            blSlider.value = 0.0
-                            texSlider.value = 0.0
-                            claritySlider.value = 0.0
-                            dehazeSlider.value = 0.0
-                            satSlider.value = 0.0
-                            vibSlider.value = 0.0
-                            win.resetHsl()
-                            hslHueSlider.value = 0.0
-                            hslSatSlider.value = 0.0
-                            hslLumSlider.value = 0.0
-                            sharpAmtSlider.value = 0.0
-                            sharpRadiusSlider.value = 1.0
-                            sharpDetailSlider.value = 0.25
-                            sharpMaskSlider.value = 0.0
-                            vignetteSlider.value = 0.0
-                            grainSlider.value = 0.0
-                            grainSizeSlider.value = 0.5
-                            tempSlider.value = controller.asShotKelvin
-                            tintSlider.value = controller.asShotTint
-                            simCombo.currentIndex = 0
-                            simStrengthSlider.value = 1.0
-                            curveEditor.resetAll()
-                        }
+                        ToolTip.text: "Reset (조절 초기화 — 지오메트리 포함)"
+                        onClicked: win.resetAllEdits()   // 모든 편집 + 회전/크롭/지오메트리 초기화
                     }
                 }
 
@@ -1599,7 +1691,7 @@ ApplicationWindow {
                             controller.setWb(tempSlider.value, tintSlider.value)
                         }
                     }
-                    onValueChanged: if (!pressed) wbTimer.restart()
+                    onValueChanged: if (!pressed && !win._applying) wbTimer.restart()
                 }
 
                 Label {
@@ -1621,7 +1713,7 @@ ApplicationWindow {
                             controller.setWb(tempSlider.value, tintSlider.value)
                         }
                     }
-                    onValueChanged: if (!pressed) wbTimer.restart()
+                    onValueChanged: if (!pressed && !win._applying) wbTimer.restart()
                 }
 
                 }
@@ -2036,11 +2128,20 @@ ApplicationWindow {
                 }
                 Connections {
                     target: controller
-                    // 새 파일 로드 시: 입력필드를 EXIF 날짜로 동기화 + 회전/크롭/지오메트리 초기화.
-                    // (stampReset 은 새 파일 로드 시점에만 발생 — imageChanged 는 WB 커밋에도 발생해 부적합)
-                    function onStampReset() {
-                        stampField.text = controller.stampText
-                        win.resetGeometry()
+                    // 새 파일 디코딩 완료 후 편집 복원/초기화(controller 가 fresh-load 1회만 발화).
+                    function onEditsReady() {
+                        // 새 파일 *디코딩 완료* 후: 저장된 편집이 있으면 복원, 없으면 기본값으로 초기화.
+                        // (디코딩 전 트리거 금지 — 이전 이미지에 새 편집이 잘못 반영되는 것 방지)
+                        win._applying = true
+                        var e = controller.editsForCurrent()
+                        if (e && e.v !== undefined) {
+                            win.applyEdits(e)
+                        } else {
+                            win.resetAllEdits()
+                            stampField.text = controller.stampText
+                        }
+                        win._applying = false
+                        win.refreshHistogram()
                     }
                 }
                 }   // end Date Stamp section

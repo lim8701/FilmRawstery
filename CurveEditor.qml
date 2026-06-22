@@ -55,6 +55,13 @@ Item {
     // 4채널 커브 [master, r, g, b] — 컨트롤러로 넘겨 합성 LUT 텍스처 생성에 사용
     function allLuts() { return [lut256ch(0), lut256ch(1), lut256ch(2), lut256ch(3)] }
 
+    // 저장된 편집 복원용: 4채널 컨트롤포인트를 통째로 설정(주인이 setCurve 호출). edited() 미발화.
+    function setChannelPoints(arr) {
+        channelPoints = arr
+        points = channelPoints[channel]
+        view.requestPaint()
+    }
+
     function nearest(nx, ny) {
         var best = -1, bd = hitR * hitR
         for (var i = 0; i < points.length; i++) {

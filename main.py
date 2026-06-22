@@ -314,12 +314,13 @@ class Controller(QObject):
     exportStatusChanged = Signal()
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
     stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
-    stampReset = Signal()       # 새 파일 로드 -> 입력필드를 EXIF 기본값으로 되돌림
+    editsReady = Signal()       # 새 파일 디코딩 완료 -> QML 이 저장 편집 복원(또는 기본값 리셋)
     histogramChanged = Signal()  # 톤커브 배경 히스토그램 갱신 알림
     lensChanged = Signal()       # 렌즈 보정 on/off 변경 알림
     busyChanged = Signal()       # 디코딩(렌즈 보정 포함) 진행 중 표시
     folderChanged = Signal()     # 좌측 file explorer 현재 폴더/파일목록 갱신 알림
     likesChanged = Signal()      # 좋아요(셀렉트) 상태 변경 알림 (썸네일 하트 반영용)
+    flushEdits = Signal()        # 이미지 전환 직전: QML 이 *이전* 파일로 편집 저장(플러시)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
@@ -360,6 +361,9 @@ class Controller(QObject):
         self._likes = set()         # 현재 폴더에서 좋아요된 파일명 집합
         self._likes_folder = ""     # _likes 가 속한 폴더(저장 대상 경로)
         self._like_rev = 0          # 좋아요 변경 리비전(QML 바인딩 재평가용)
+        self._pending_edits = {}    # 현재 파일의 사이드카 편집(로드 시 1회 읽어 둠, editsForCurrent 반환용)
+        self._ui_path = ""          # UI 가 현재 반영 중인 파일(=복원 완료된 파일). 저장은 이 경로 기준.
+        self._fresh_load = False    # 새 파일 로드의 첫 디코딩 대기 중(완료 시 editsReady 발화)
         self._renderReady.connect(self._on_render_ready)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
@@ -434,6 +438,51 @@ class Controller(QObject):
         self._save_likes(folder, self._likes)
         self._like_rev += 1
         self.likesChanged.emit()
+
+    # ---------- RAF별 편집 영속화: 폴더/.camrawedits/<파일명>.json (이미지당 사이드카) ----------
+    @staticmethod
+    def _edits_dir(folder: str) -> Path:
+        return Path(folder) / ".camrawedits"
+
+    @staticmethod
+    def _edits_path(folder: str, name: str) -> Path:
+        return Controller._edits_dir(folder) / f"{name}.json"
+
+    @staticmethod
+    def _read_edits(path: str) -> dict:
+        """RAF 경로의 사이드카 편집 dict 를 읽음(없거나 오류면 빈 dict)."""
+        try:
+            p = Path(path)
+            ep = Controller._edits_path(str(p.parent), p.name)
+            if not ep.is_file():
+                return {}
+            with open(ep, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    @Slot("QVariantMap")
+    def saveEdits(self, params) -> None:  # noqa: N802 (QML 슬롯)
+        """UI 가 반영 중인 파일(_ui_path)의 편집을 사이드카 JSON 으로 저장. 크래시 안전.
+        ⚠️ self._path 가 아니라 _ui_path 기준 — 새 파일 로드 중에는 _path 가 이미 바뀌었지만
+        UI/editParams 는 아직 이전(반영 완료된) 파일을 나타내므로, 엉뚱한 파일에 덮어쓰기 방지."""
+        if not self._ui_path:
+            return
+        try:
+            p = Path(self._ui_path)
+            d = self._edits_dir(str(p.parent))
+            d.mkdir(parents=True, exist_ok=True)
+            data = {k: params[k] for k in params}   # QVariantMap -> dict
+            with open(d / f"{p.name}.json", "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            self._pending_edits = data               # 현재 파일 캐시 동기화
+        except Exception as exc:
+            print(f"[edits] 저장 실패: {exc}")
+
+    @Slot(result="QVariantMap")
+    def editsForCurrent(self):  # noqa: N802 (QML 슬롯)
+        """현재 파일의 저장된 편집 dict 반환(없으면 빈 dict). _load 에서 읽어둔 캐시 사용."""
+        return self._pending_edits
 
     @Slot("QVariantList")
     def setCurve(self, curves) -> None:  # noqa: N802 (QML 슬롯)
@@ -609,9 +658,22 @@ class Controller(QObject):
             self._load(path)
 
     def _load(self, path: str) -> None:
+        # 이미지 전환 직전: QML 이 *이전* 파일(self._path 아직 이전값)로 편집을 플러시 저장.
+        if self._path and self._path != path:
+            self.flushEdits.emit()
         self._path = path
-        self._kelvin = None     # 새 파일은 as-shot 색온도로 시작
-        self._tint = 0.0
+        self._fresh_load = True   # 디코딩 완료(_on_render_ready) 시 editsReady 1회 발화 → 복원
+        # 이 파일의 사이드카 편집을 1회 읽어 둠(QML editsForCurrent 가 반환).
+        self._pending_edits = self._read_edits(path)
+        # 저장된 WB(temp/tint)가 있으면 절대값으로 선설정 → 초기 렌더가 저장 WB 로 디코딩
+        # (없으면 as-shot 으로 시작). setWb 재디코딩 이중작업 회피.
+        e = self._pending_edits
+        if e.get("temp") is not None:
+            self._kelvin = float(e["temp"])
+            self._tint = float(e.get("tint", 0.0))
+        else:
+            self._kelvin = None     # 새 파일은 as-shot 색온도로 시작
+            self._tint = 0.0
         # 촬영정보는 경로에만 의존 -> 로드 시 1회 읽음(WB 변경 재디코딩과 무관)
         self._exif_fields, self._exif_summary = read_shooting_info(path)
         date_val = next((f["value"] for f in self._exif_fields
@@ -623,7 +685,8 @@ class Controller(QObject):
         if parent != self._folder:
             self._scan_folder(parent)
         self._render()
-        self.stampReset.emit()   # 입력필드를 새 파일의 EXIF 날짜로 동기화
+        # 복원(편집 반영)은 디코딩 완료 후 _on_render_ready 에서 editsReady 로 트리거한다
+        # (로드 진행 중 이전 이미지에 새 파일 편집이 잘못 반영되는 것 방지).
 
     # ---------- 좌측 File Explorer (폴더/파일 모델) ----------
     def _scan_folder(self, folder: str, force: bool = True) -> None:
@@ -638,7 +701,9 @@ class Controller(QObject):
             entries = list(p.iterdir())
         except Exception:
             entries = []
-        dirs = sorted((e for e in entries if e.is_dir()), key=lambda e: e.name.lower())
+        # 점으로 시작하는 폴더(.camrawedits 등)는 탐색기에 노출하지 않음
+        dirs = sorted((e for e in entries if e.is_dir() and not e.name.startswith(".")),
+                      key=lambda e: e.name.lower())
         rafs = sorted((e for e in entries
                        if e.is_file() and e.suffix.lower() == ".raf"),
                       key=lambda e: e.name.lower())
@@ -787,6 +852,12 @@ class Controller(QObject):
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "
               f"kelvin={self._kelvin} tint={self._tint:.2f} as_shot={as_shot}")
+        # 새 파일의 첫 디코딩이 끝났을 때만 복원 트리거(WB 커밋 등 재디코딩에는 발화 안 함).
+        # 이 시점에 UI 가 이 파일을 반영하게 되므로 _ui_path 갱신(저장 귀속 기준).
+        if self._fresh_load:
+            self._fresh_load = False
+            self._ui_path = self._path
+            self.editsReady.emit()
 
     def _get_url(self) -> str:
         return self._url
