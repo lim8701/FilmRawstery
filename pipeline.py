@@ -335,10 +335,12 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     M = cam_to_srgb_matrix(cam).astype(np.float32)
     linsrgb = (nat @ M.T) * (2.0 ** float(p.get("exposure", 0.0)))   # 노출 = scene-linear 배수
     disp = wb.filmic(linsrgb).astype(np.float32)                     # scene→display[0,1]
-    # 하이라이트 디새추레이션: 단일채널 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성(흰색).
-    # filmic 의 채널별 숄더로는 안 잡힘(클립채널 복원은 별개). filmic 뒤 display 공간.
+    # 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성(흰색).
+    # ⚠️쿨(청/녹 우세) 하이라이트만 중성화한다 — 밝은 빨강/주황 광원(예: 네온·간판)은
+    # 보존해야 하므로 max(G,B)-R 로 게이트(따뜻한 색은 음수→게이트 0). filmic 뒤 display 공간.
     _mx = disp.max(axis=2, keepdims=True)
-    disp = disp + (_mx - disp) * _smoothstep(0.95, 1.0, _mx)
+    _cool = np.maximum(disp[..., 1:2], disp[..., 2:3]) - disp[..., 0:1]
+    disp = disp + (_mx - disp) * (_smoothstep(0.95, 1.0, _mx) * _smoothstep(0.05, 0.35, _cool))
 
     hi, sh = float(p.get("highlights", 0)), float(p.get("shadows", 0))
     wh, bl = float(p.get("whites", 0)), float(p.get("blacks", 0))

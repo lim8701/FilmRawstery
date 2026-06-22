@@ -196,11 +196,13 @@ void main() {
     vec3 lin = applyCamMat(cam) * pow(2.0, ubuf.exposure);   // scene-linear sRGB + 노출
     vec3 rgb = filmic(lin);                                  // → display sRGB[0,1]
 
-    // 0.5) 하이라이트 디새추레이션: 단일채널 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성.
-    //      filmic 채널별 숄더로는 안 잡힘(클립채널 복원은 별개). filmic 뒤 display 공간.
+    // 0.5) 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성.
+    //      ⚠️쿨(청/녹 우세) 하이라이트만 중성화 — 밝은 빨강/주황 광원(네온·간판)은 보존.
+    //      max(G,B)-R 게이트(따뜻한 색은 음수→0). filmic 뒤 display 공간.
     {
         float mx = max(rgb.r, max(rgb.g, rgb.b));
-        rgb = mix(rgb, vec3(mx), smoothstep(0.95, 1.0, mx));
+        float cool = max(rgb.g, rgb.b) - rgb.r;
+        rgb = mix(rgb, vec3(mx), smoothstep(0.95, 1.0, mx) * smoothstep(0.05, 0.35, cool));
     }
 
     // 3) 톤 영역별 — hi/sh 마스크 = 중성 dispSrc(claBlur) 국소 평균 휘도(노출 무관, 장면 구조 기준).
