@@ -193,6 +193,39 @@ ApplicationWindow {
         win.resetGeometry()
     }
 
+    // ===== 편집 복사/붙여넣기 (이미지 간) =====
+    // 클립보드는 editParams 스냅샷(JSON 딥카피 — 이후 원본 편집 변경에 영향 안 받게).
+    property var _editClipboard: null
+    // excludeWb=true 면 temp/tint 를 뺀 스냅샷 → 붙여넣을 때 대상의 WB 유지.
+    // 사진별 고유 항목은 복사에서 제외 → 붙여넣을 때 대상 이미지의 값이 유지됨.
+    // (date stamp + geometry. WB·Tint 는 excludeWb 일 때 추가 제외)
+    readonly property var _copyExclude: ["dateStamp", "stampText",
+        "quarterTurns", "rotateAngle", "flipH", "flipV", "aspectIndex", "cropLandscape",
+        "cropX", "cropY", "cropW", "cropH", "geoV", "geoH", "geoScale"]
+    function copyEdits(excludeWb) {
+        if (controller.imagePath === "") return
+        var snap = JSON.parse(JSON.stringify(win.editParams()))
+        var ex = win._copyExclude.slice()
+        if (excludeWb) { ex.push("temp"); ex.push("tint") }
+        for (var i = 0; i < ex.length; i++) delete snap[ex[i]]
+        _editClipboard = snap
+    }
+    function pasteEdits() {
+        if (!_editClipboard || controller.imagePath === "") return
+        // 현재 이미지 편집값을 기준으로, 클립보드에 담긴 항목만 덮어씀 →
+        // 복사에서 제외된 항목(date stamp·geometry·WB)은 대상 값 그대로 유지.
+        var p = win.editParams()
+        for (var k in _editClipboard) p[k] = _editClipboard[k]
+        win._applying = true
+        win.applyEdits(p)
+        win._applying = false
+        // _applying 중엔 WB 커밋이 막히므로 직접 반영(export 가 쓰는 _kelvin/_tint 갱신).
+        controller.setWb(tempSlider.value, tintSlider.value)
+        controller.setCurve(curveEditor.allLuts())
+        controller.saveEdits(win.editParams())   // 붙여넣은 편집을 현재 이미지 사이드카에 저장
+        win.refreshHistogram()
+    }
+
     // 자동저장: 편집 변화를 단일 바인딩(editSaveWatch)으로 감지 → 디바운스 후 1회 저장.
     function scheduleSave() {
         if (win._applying || controller.imagePath === "") return
@@ -1506,6 +1539,30 @@ ApplicationWindow {
                         ToolTip.visible: hovered
                         ToolTip.text: "Reset (조절 초기화 — 지오메트리 포함)"
                         onClicked: win.resetAllEdits()   // 모든 편집 + 회전/크롭/지오메트리 초기화
+                    }
+                    // 편집 복사/붙여넣기 메뉴(이미지 간) — Reset 우측 "⋯" 드롭다운.
+                    Button {
+                        id: editClipBtn
+                        text: "⋯"
+                        Layout.preferredWidth: 26
+                        Layout.preferredHeight: 26
+                        Layout.alignment: Qt.AlignVCenter
+                        padding: 0
+                        font.pixelSize: 14
+                        enabled: controller.imagePath !== ""
+                        ToolTip.visible: hovered
+                        ToolTip.text: "편집 복사 / 붙여넣기 (이미지 간)"
+                        onClicked: editClipMenu.popup(0, height)
+                        Menu {
+                            id: editClipMenu
+                            MenuItem { text: "전체 복사"; onTriggered: win.copyEdits(false) }
+                            MenuItem { text: "복사 (WB·Tint 제외)"; onTriggered: win.copyEdits(true) }
+                            MenuItem {
+                                text: "붙여넣기"
+                                enabled: win._editClipboard !== null
+                                onTriggered: win.pasteEdits()
+                            }
+                        }
                     }
                 }
 
