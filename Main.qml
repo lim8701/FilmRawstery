@@ -73,7 +73,8 @@ ApplicationWindow {
 
     // Edit 패널 섹션 접기 상태(인덱스=표시순서: 0필름 1라이트 2톤커브 3WB 4컬러 5컬러믹서
     // 11컬러그레이딩 6디테일&비네팅 7그레인 8샤프닝 9렌즈 10날짜). 헤더 클릭으로 토글.
-    property var secOpen: [true, true, true, true, true, true, true, true, true, true, true, true]
+    // 기본 접힘: 5 Color Mixer, 8 Sharpening, 9 Lens, 11 Color Grading.
+    property var secOpen: [true, true, true, true, true, false, true, true, false, false, true, false]
     function toggleSec(i) { var a = secOpen.slice(); a[i] = !a[i]; secOpen = a }
 
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
