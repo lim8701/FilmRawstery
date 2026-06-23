@@ -37,6 +37,9 @@ ApplicationWindow {
     // 클리핑 경고 오버레이(프리뷰): 하이라이트=빨강 / 섀도=파랑. J 키로 토글(라이트룸과 동일).
     property bool clipWarn: false
     Shortcut { sequence: "J"; onActivated: win.clipWarn = !win.clipWarn }
+    // Undo / Redo (편집 스냅샷)
+    Shortcut { sequences: [StandardKey.Undo]; onActivated: win.undo() }                    // Ctrl+Z
+    Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; onActivated: win.redo() }    // Ctrl+Y / Ctrl+Shift+Z
 
 
     // 컬러 그레이딩 Hue 슬라이더 위에 두는 무지개 스펙트럼 막대(슬라이더 위치↔색상 가이드).
@@ -262,6 +265,37 @@ ApplicationWindow {
         win.refreshHistogram()
     }
 
+    // ===== Undo / Redo (편집 스냅샷 스택) =====
+    // editParams() JSON 스냅샷을 쌓는다. 자동저장(editSaveTimer 디바운스) 시점마다 1개 push
+    // → 슬라이더 드래그 1회 = 1 스텝(중간 프레임 무시). 새 파일 로드 시 baseline 으로 리셋.
+    property var undoHist: []           // JSON 문자열 배열
+    property int undoPos: -1            // 현재 상태 인덱스
+    readonly property bool canUndo: undoPos > 0
+    readonly property bool canRedo: undoPos >= 0 && undoPos < undoHist.length - 1
+
+    function histReset(snapStr) { win.undoHist = [snapStr]; win.undoPos = 0 }
+    function histPush(snapStr) {
+        if (win.undoPos >= 0 && win.undoHist[win.undoPos] === snapStr) return   // 변화 없음
+        var h = win.undoHist.slice(0, win.undoPos + 1)                          // redo 꼬리 버림
+        h.push(snapStr)
+        if (h.length > 100) h = h.slice(h.length - 100)                         // 상한
+        win.undoHist = h; win.undoPos = h.length - 1
+    }
+    // 스냅샷 적용(undo/redo 공통) — paste 와 동일 경로: _applying 가드로 자동저장/WB 재디코딩
+    // 억제 후 WB·커브 직접 반영 + 사이드카 저장 + 히스토그램 갱신.
+    function applySnapshot(snapStr) {
+        var p = JSON.parse(snapStr)
+        win._applying = true
+        win.applyEdits(p)
+        win._applying = false
+        controller.setWb(tempSlider.value, tintSlider.value)
+        controller.setCurve(curveEditor.allLuts())
+        controller.saveEdits(win.editParams())
+        win.refreshHistogram()
+    }
+    function undo() { if (win.canUndo) { win.undoPos = win.undoPos - 1; win.applySnapshot(win.undoHist[win.undoPos]) } }
+    function redo() { if (win.canRedo) { win.undoPos = win.undoPos + 1; win.applySnapshot(win.undoHist[win.undoPos]) } }
+
     // 자동저장: 편집 변화를 단일 바인딩(editSaveWatch)으로 감지 → 디바운스 후 1회 저장.
     function scheduleSave() {
         if (win._applying || controller.imagePath === "") return
@@ -270,8 +304,12 @@ ApplicationWindow {
     Timer {
         id: editSaveTimer
         interval: 500
-        onTriggered: if (!win._applying && controller.imagePath !== "")
-                         controller.saveEdits(win.editParams())
+        onTriggered: {
+            if (win._applying || controller.imagePath === "") return
+            var snap = win.editParams()
+            controller.saveEdits(snap)
+            win.histPush(JSON.stringify(snap))   // 커밋된 편집 1개 = undo 스텝 1개
+        }
     }
     // 모든 편집 컨트롤 값을 참조 → 무엇이든 바뀌면 바인딩 재평가 → onChanged 로 저장 예약.
     property var editSaveWatch: [
@@ -1652,15 +1690,27 @@ ApplicationWindow {
                     Layout.topMargin: 16
                     spacing: 12
 
+                // 편집 도구 줄(맨 위): Undo/Redo(좌) — 스페이서 — Reset/복사붙여넣기(우)
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
                     Button {
-                        text: "Export…"
-                        Layout.fillWidth: true
-                        enabled: controller.imagePath !== ""
-                        onClicked: saveDialog.open()
+                        text: "↶"
+                        Layout.preferredWidth: 26; Layout.preferredHeight: 26
+                        Layout.alignment: Qt.AlignVCenter; padding: 0; font.pixelSize: 14
+                        enabled: win.canUndo
+                        ToolTip.visible: hovered; ToolTip.text: "Undo (Ctrl+Z)"
+                        onClicked: win.undo()
                     }
+                    Button {
+                        text: "↷"
+                        Layout.preferredWidth: 26; Layout.preferredHeight: 26
+                        Layout.alignment: Qt.AlignVCenter; padding: 0; font.pixelSize: 14
+                        enabled: win.canRedo
+                        ToolTip.visible: hovered; ToolTip.text: "Redo (Ctrl+Shift+Z)"
+                        onClicked: win.redo()
+                    }
+                    Item { Layout.fillWidth: true }      // 좌(이력) ↔ 우(초기화/기타) 분리 스페이서
                     Button {
                         id: resetBtn
                         text: "↺"                       // Reset 아이콘(조절 초기화)
@@ -1699,46 +1749,76 @@ ApplicationWindow {
                     }
                 }
 
+                // 출력: 주 버튼 + 옵션(⚙) 팝업
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
-                    Label { text: "해상도"; color: "white"; font.pixelSize: 12 }
-                    ComboBox {
-                        id: resCombo
+                    Button {
+                        id: exportMainBtn
+                        text: "Export…"
                         Layout.fillWidth: true
-                        currentIndex: 0     // 원본
-                        model: ["원본 (Full)", "4096", "3840 (4K)",
-                                "2560", "2048", "1920 (FHD)", "1280"]
+                        enabled: controller.imagePath !== ""
+                        onClicked: saveDialog.open()
                     }
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-                    Label { text: "렌더"; color: "white"; font.pixelSize: 12 }
-                    ComboBox {
-                        id: renderModeCombo
-                        Layout.fillWidth: true
-                        // 16bit 는 CPU 전용(GPU grab 은 8bit) → 16bit 체크 시 GPU 비활성/CPU 고정 표시
-                        enabled: !bitDepth16Check.checked
-                        currentIndex: 0     // 기본 CPU
-                        model: ["CPU", "GPU"]
-                    }
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 6
-                    CheckBox {
-                        id: bitDepth16Check
+                    Button {
+                        id: exportOptBtn
+                        text: "▾"                       // Export 옵션 토글(펼치기)
+                        Layout.preferredWidth: 26
+                        Layout.preferredHeight: exportMainBtn.height   // Export 버튼과 높이 동일하게 고정
+                        padding: 0; font.pixelSize: 14
                         ToolTip.visible: hovered
-                        ToolTip.text: "16비트/채널로 저장(계조·헤드룸 보존). TIFF 권장. CPU 렌더 전용."
-                    }
-                    Label {
-                        Layout.fillWidth: true
-                        text: "16비트 (TIFF/PNG · CPU)"
-                        color: "white"; font.pixelSize: 12
-                        verticalAlignment: Text.AlignVCenter
+                        ToolTip.text: "Export 옵션 (해상도 · 렌더 · 16비트)"
+                        onClicked: exportOptPopup.opened ? exportOptPopup.close() : exportOptPopup.open()
+                        Popup {
+                            id: exportOptPopup
+                            y: exportOptBtn.height + 4
+                            x: exportOptBtn.width - width    // 버튼 오른쪽에 맞춰 좌측으로 펼침(패널 안)
+                            width: 240
+                            padding: 12
+                            modal: false
+                            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
+                            background: Rectangle { color: "#2b2b2b"; border.color: "#555"; border.width: 1; radius: 6 }
+                            contentItem: ColumnLayout {
+                                spacing: 10
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 6
+                                    Label { text: "해상도"; color: "white"; font.pixelSize: 12; Layout.preferredWidth: 40 }
+                                    ComboBox {
+                                        id: resCombo
+                                        Layout.fillWidth: true
+                                        currentIndex: 0     // 원본
+                                        model: ["원본 (Full)", "4096", "3840 (4K)",
+                                                "2560", "2048", "1920 (FHD)", "1280"]
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 6
+                                    Label { text: "렌더"; color: "white"; font.pixelSize: 12; Layout.preferredWidth: 40 }
+                                    ComboBox {
+                                        id: renderModeCombo
+                                        Layout.fillWidth: true
+                                        // 16bit 는 CPU 전용(GPU grab 은 8bit) → 16bit 체크 시 GPU 비활성/CPU 고정
+                                        enabled: !bitDepth16Check.checked
+                                        currentIndex: 0     // 기본 CPU
+                                        model: ["CPU", "GPU"]
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 6
+                                    CheckBox {
+                                        id: bitDepth16Check
+                                        ToolTip.visible: hovered
+                                        ToolTip.text: "16비트/채널로 저장(계조·헤드룸 보존). TIFF 권장. CPU 렌더 전용."
+                                    }
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: "16비트 (TIFF/PNG · CPU)"
+                                        color: "white"; font.pixelSize: 12
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
 
@@ -2681,6 +2761,7 @@ ApplicationWindow {
                         }
                         win._applying = false
                         win.refreshHistogram()
+                        win.histReset(JSON.stringify(win.editParams()))   // 로드 상태 = undo baseline
                     }
                 }
                 }   // end Date Stamp section

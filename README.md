@@ -41,6 +41,7 @@ Built-in X100V profile: distortion, vignetting, and chromatic aberration.
 
 ### Workflow
 - **Before / After compare** — toggle the unedited original (button or `\` key)
+- **Undo / redo** — snapshot history of all adjustments (`Ctrl+Z` / `Ctrl+Shift+Z`)
 - **Non-destructive, per-image persistence** — edits autosave to a `.camrawedits/<file>.json` sidecar and restore when you reopen the image
 - **File explorer** with RAF thumbnails and a likes/favorites filter
 - **Film date stamp** — DSEG7 seven-segment date back overlay
