@@ -698,6 +698,13 @@ ApplicationWindow {
             Layout.fillHeight: true
             color: "#1e1e1e"
 
+            // 날짜 입력칸 포커스 중 이미지 영역을 탭하면 포커스 해제 → 단축키 복귀.
+            // passive grab 이라 크롭/팬 등 기존 드래그 조작은 가로채지 않음.
+            TapHandler {
+                enabled: stampField.activeFocus
+                onTapped: stampField.focus = false
+            }
+
             // 텍스처 소스 (화면에는 직접 안 보임, ShaderEffect 입력으로만 사용)
             Image {
                 id: srcImage
@@ -2279,6 +2286,16 @@ ApplicationWindow {
                         enabled: win.dateStamp && controller.imagePath !== ""
                         placeholderText: "'YY MM DD  (예: '24 05 12)"
                         onTextEdited: stampDebounce.restart()
+                        // 포커스가 잡히면 알파벳 단축키(I/D/B/L 등)를 입력으로 먹으므로,
+                        // Enter=확정/Esc=취소 시 포커스를 풀어 단축키가 다시 동작하게 함.
+                        onAccepted: { stampDebounce.stop(); controller.setStampText(text); focus = false }
+                        Keys.onEscapePressed: focus = false
+                        // hover 시 텍스트(I-beam) 커서. HoverHandler 는 hover 만 관찰하므로
+                        // 클릭/드래그 선택/편집에 일절 관여하지 않음(MouseArea 는 드래그를 가로챔).
+                        HoverHandler {
+                            enabled: stampField.enabled
+                            cursorShape: Qt.IBeamCursor
+                        }
                     }
                 }
                 Timer {
@@ -2577,4 +2594,5 @@ ApplicationWindow {
             }
         }
     }
+
 }
