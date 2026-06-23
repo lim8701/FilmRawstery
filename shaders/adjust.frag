@@ -46,6 +46,11 @@ layout(std140, binding = 0) uniform buf {
     vec4 hslSa; vec4 hslSb;
     vec4 hslLa; vec4 hslLb;
     float clipWarn;     // 클리핑 경고 오버레이(1=표시): 하이라이트=빨강, 섀도=파랑. 프리뷰 전용.
+    // 컬러 그레이딩(스플릿 토닝): 섀도/미드/하이라이트 색조 틴트. hue=0..1, sat=0..1, balance=-1..1.
+    float cgHueSh; float cgSatSh;
+    float cgHueMid; float cgSatMid;
+    float cgHueHi; float cgSatHi;
+    float cgBalance;
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -283,6 +288,20 @@ void main() {
     rgb.r = texture(curve, vec2(rgb.r, 0.5)).r;
     rgb.g = texture(curve, vec2(rgb.g, 0.5)).g;
     rgb.b = texture(curve, vec2(rgb.b, 0.5)).b;
+
+    // 9.5) 컬러 그레이딩(스플릿 토닝): 휘도 마스크(섀도/미드/하이라이트) × 색조 틴트.
+    //      balance 는 휘도 감마로 마스크 분포를 이동(+ = 하이라이트 쪽으로).
+    if (ubuf.cgSatSh > 0.0 || ubuf.cgSatMid > 0.0 || ubuf.cgSatHi > 0.0) {
+        float L = dot(rgb, LUMA);
+        float Lb = pow(clamp(L, 0.0, 1.0), exp2(-ubuf.cgBalance));
+        float wsh = clamp(1.0 - 2.0 * Lb, 0.0, 1.0);
+        float whi = clamp(2.0 * Lb - 1.0, 0.0, 1.0);
+        float wmid = 1.0 - wsh - whi;
+        vec3 dsh  = (hsv2rgb(vec3(ubuf.cgHueSh,  1.0, 1.0)) - 0.5) * ubuf.cgSatSh;
+        vec3 dmid = (hsv2rgb(vec3(ubuf.cgHueMid, 1.0, 1.0)) - 0.5) * ubuf.cgSatMid;
+        vec3 dhi  = (hsv2rgb(vec3(ubuf.cgHueHi,  1.0, 1.0)) - 0.5) * ubuf.cgSatHi;
+        rgb = clamp(rgb + (dsh * wsh + dmid * wmid + dhi * whi) * 0.5, 0.0, 1.0);
+    }
 
     // 10) 비네팅 (방사형)
     if (ubuf.vignette != 0.0) {

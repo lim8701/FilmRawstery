@@ -301,6 +301,24 @@ def compose_curves(master, r, g, b):
     return out
 
 
+def _color_grade(c, hue_sh, sat_sh, hue_mid, sat_mid, hue_hi, sat_hi, balance):
+    """컬러 그레이딩(스플릿 토닝) — 셰이더 adjust.frag 9.5 단계와 동일 수식.
+    휘도 마스크(섀도/미드/하이라이트, balance 가 감마로 분포 이동) × 색조 틴트(hue 0..1, sat 0..1)."""
+    if sat_sh <= 0.0 and sat_mid <= 0.0 and sat_hi <= 0.0:
+        return c
+    L = (c @ LUMA).astype(np.float32)
+    Lb = np.clip(L, 0.0, 1.0) ** np.float32(2.0 ** (-balance))
+    wsh = np.clip(1.0 - 2.0 * Lb, 0.0, 1.0)
+    whi = np.clip(2.0 * Lb - 1.0, 0.0, 1.0)
+    wmid = 1.0 - wsh - whi
+
+    def _tdir(hue, sat):
+        return (_hsv2rgb(np.array([hue, 1.0, 1.0], np.float32)) - 0.5) * np.float32(sat)
+    dsh, dmid, dhi = _tdir(hue_sh, sat_sh), _tdir(hue_mid, sat_mid), _tdir(hue_hi, sat_hi)
+    delta = (dsh * wsh[..., None] + dmid * wmid[..., None] + dhi * whi[..., None]) * np.float32(0.5)
+    return np.clip(c + delta, 0.0, 1.0).astype(np.float32)
+
+
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
                 proxy_edge=2560, strip=256, bitdepth=8):
     """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) RGB 로 반환.
@@ -414,6 +432,11 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     out = np.empty((h, w, 3), dtype=dt)
     xs = np.linspace(0.0, 1.0, 256)
     crgb = np.asarray(curve_rgb, dtype=np.float32)   # (256,3) 합성 채널 커브
+    # 컬러 그레이딩 파라미터(hue 슬라이더는 도(0..360) → 0..1 정규화). 셰이더 cg* uniform 과 동일.
+    cg = (float(p.get("cgShadowHue", 0.0)) / 360.0, float(p.get("cgShadowSat", 0.0)),
+          float(p.get("cgMidHue", 0.0)) / 360.0, float(p.get("cgMidSat", 0.0)),
+          float(p.get("cgHighHue", 0.0)) / 360.0, float(p.get("cgHighSat", 0.0)),
+          float(p.get("cgBalance", 0.0)))
     for y in range(0, h, strip):
         blk = c[y:y + strip]
         if lut_arr is not None:
@@ -425,6 +448,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         blk = np.clip((blk - 0.5) * con + 0.5, 0.0, 1.0)
         for ch in range(3):
             blk[..., ch] = np.interp(blk[..., ch], xs, crgb[:, ch])
+        blk = _color_grade(blk, *cg)                                   # 컬러 그레이딩(톤커브 뒤)
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * maxv).astype(dt)

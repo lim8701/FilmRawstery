@@ -38,6 +38,22 @@ ApplicationWindow {
     property bool clipWarn: false
     Shortcut { sequence: "J"; onActivated: win.clipWarn = !win.clipWarn }
 
+    // 컬러 그레이딩 Hue 슬라이더 위에 두는 무지개 스펙트럼 막대(슬라이더 위치↔색상 가이드).
+    // (네이티브 스타일은 Slider.background 커스터마이즈 미지원 → 별도 막대로 표시)
+    component HueBar: Rectangle {
+        implicitHeight: 8; radius: 4
+        gradient: Gradient {
+            orientation: Gradient.Horizontal
+            GradientStop { position: 0.0;    color: "#ff0000" }
+            GradientStop { position: 0.1667; color: "#ffff00" }
+            GradientStop { position: 0.3333; color: "#00ff00" }
+            GradientStop { position: 0.5;    color: "#00ffff" }
+            GradientStop { position: 0.6667; color: "#0000ff" }
+            GradientStop { position: 0.8333; color: "#ff00ff" }
+            GradientStop { position: 1.0;    color: "#ff0000" }
+        }
+    }
+
     // 우측 활성 패널: 0=Edit, 1=Crop/Rotate/Geometry (우측 끝 세로 셀렉터 바로 전환)
     property int activePanel: 0
 
@@ -56,8 +72,8 @@ ApplicationWindow {
     }
 
     // Edit 패널 섹션 접기 상태(인덱스=표시순서: 0필름 1라이트 2톤커브 3WB 4컬러 5컬러믹서
-    // 6디테일&비네팅 7그레인 8샤프닝 9렌즈 10날짜). 헤더 클릭으로 토글.
-    property var secOpen: [true, true, true, true, true, true, true, true, true, true, true]
+    // 11컬러그레이딩 6디테일&비네팅 7그레인 8샤프닝 9렌즈 10날짜). 헤더 클릭으로 토글.
+    property var secOpen: [true, true, true, true, true, true, true, true, true, true, true, true]
     function toggleSec(i) { var a = secOpen.slice(); a[i] = !a[i]; secOpen = a }
 
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
@@ -128,6 +144,10 @@ ApplicationWindow {
             "texture": texSlider.value, "clarity": claritySlider.value, "dehaze": dehazeSlider.value,
             "vibrance": vibSlider.value, "saturation": satSlider.value,
             "hslH": win.hslH, "hslS": win.hslS, "hslL": win.hslL,
+            "cgShadowHue": cgShHueSlider.value, "cgShadowSat": cgShSatSlider.value,
+            "cgMidHue": cgMidHueSlider.value, "cgMidSat": cgMidSatSlider.value,
+            "cgHighHue": cgHiHueSlider.value, "cgHighSat": cgHiSatSlider.value,
+            "cgBalance": cgBalanceSlider.value,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
@@ -156,6 +176,10 @@ ApplicationWindow {
         win.hslH = _ev(p, "hslH", [0,0,0,0,0,0,0,0]).slice()
         win.hslS = _ev(p, "hslS", [0,0,0,0,0,0,0,0]).slice()
         win.hslL = _ev(p, "hslL", [0,0,0,0,0,0,0,0]).slice()
+        cgShHueSlider.value = _ev(p, "cgShadowHue", 0.0); cgShSatSlider.value = _ev(p, "cgShadowSat", 0.0)
+        cgMidHueSlider.value = _ev(p, "cgMidHue", 0.0); cgMidSatSlider.value = _ev(p, "cgMidSat", 0.0)
+        cgHiHueSlider.value = _ev(p, "cgHighHue", 0.0); cgHiSatSlider.value = _ev(p, "cgHighSat", 0.0)
+        cgBalanceSlider.value = _ev(p, "cgBalance", 0.0)
         hslHueSlider.value = win.hslH[win.hslBand]
         hslSatSlider.value = win.hslS[win.hslBand]
         hslLumSlider.value = win.hslL[win.hslBand]
@@ -188,6 +212,9 @@ ApplicationWindow {
         texSlider.value = 0.0; claritySlider.value = 0.0; dehazeSlider.value = 0.0
         satSlider.value = 0.0; vibSlider.value = 0.0
         win.resetHsl(); hslHueSlider.value = 0.0; hslSatSlider.value = 0.0; hslLumSlider.value = 0.0
+        cgShHueSlider.value = 0.0; cgShSatSlider.value = 0.0; cgMidHueSlider.value = 0.0
+        cgMidSatSlider.value = 0.0; cgHiHueSlider.value = 0.0; cgHiSatSlider.value = 0.0
+        cgBalanceSlider.value = 0.0
         sharpAmtSlider.value = 0.0; sharpRadiusSlider.value = 1.0
         sharpDetailSlider.value = 0.25; sharpMaskSlider.value = 0.0
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
@@ -247,6 +274,8 @@ ApplicationWindow {
         tempSlider.value, tintSlider.value, simCombo.currentIndex, simStrengthSlider.value,
         texSlider.value, claritySlider.value, dehazeSlider.value, vibSlider.value, satSlider.value,
         win.hslH, win.hslS, win.hslL,
+        cgShHueSlider.value, cgShSatSlider.value, cgMidHueSlider.value, cgMidSatSlider.value,
+        cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value,
         vignetteSlider.value, grainSlider.value, grainSizeSlider.value,
         sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
         lensCheck.checked, win.dateStamp, stampField.text, curveEditor.channelPoints,
@@ -266,6 +295,10 @@ ApplicationWindow {
             "texAmt": texSlider.value, "clarity": claritySlider.value, "dehaze": dehazeSlider.value,
             "saturation": satSlider.value, "vibrance": vibSlider.value,
             "hslH": win.hslH, "hslS": win.hslS, "hslL": win.hslL,
+            "cgShadowHue": cgShHueSlider.value, "cgShadowSat": cgShSatSlider.value,
+            "cgMidHue": cgMidHueSlider.value, "cgMidSat": cgMidSatSlider.value,
+            "cgHighHue": cgHiHueSlider.value, "cgHighSat": cgHiSatSlider.value,
+            "cgBalance": cgBalanceSlider.value,
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
@@ -855,6 +888,14 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: width / Math.max(1, height)
                         property real clipWarn: 0.0   // export 는 클리핑 오버레이 미적용
+                        // 컬러 그레이딩 — 프리뷰(pipe)와 동일 바인딩(export 일치).
+                        property real cgHueSh: cgShHueSlider.value / 360.0
+                        property real cgSatSh: cgShSatSlider.value
+                        property real cgHueMid: cgMidHueSlider.value / 360.0
+                        property real cgSatMid: cgMidSatSlider.value
+                        property real cgHueHi: cgHiHueSlider.value / 360.0
+                        property real cgSatHi: cgHiSatSlider.value
+                        property real cgBalance: cgBalanceSlider.value
                         property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
                         property real wbR: wbGain.x
                         property real wbG: wbGain.y
@@ -1094,6 +1135,14 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
                         property real clipWarn: win.clipWarn ? 1.0 : 0.0   // 클리핑 경고 오버레이(프리뷰 전용)
+                        // 컬러 그레이딩(스플릿 토닝): hue 슬라이더(도) → 0..1 정규화.
+                        property real cgHueSh: cgShHueSlider.value / 360.0
+                        property real cgSatSh: cgShSatSlider.value
+                        property real cgHueMid: cgMidHueSlider.value / 360.0
+                        property real cgSatMid: cgMidSatSlider.value
+                        property real cgHueHi: cgHiHueSlider.value / 360.0
+                        property real cgSatHi: cgHiSatSlider.value
+                        property real cgBalance: cgBalanceSlider.value
                         // WB 게인: TREF 베이크 대비 상대게인(카메라공간). 재디코딩 없이 실시간.
                         property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
                         property real wbR: wbGain.x
@@ -2111,6 +2160,94 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                // ===== Color Grading (스플릿 토닝) — 섹션 인덱스 11 =====
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[11] ? "▾  " : "▸  ") + "Color Grading"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(11) }
+                }
+                ColumnLayout {
+                    visible: win.secOpen[11]
+                    Layout.fillWidth: true
+                    spacing: 6
+
+                    // 섀도 — Hue(0..360°) + Sat(0..100). Sat=0 이면 무효과. 스와치=적용 색 미리보기.
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        Label { text: "Shadows"; color: "white"; font.pixelSize: 12; font.bold: true }
+                        Item { Layout.fillWidth: true }
+                        Label { text: "H " + Math.round(cgShHueSlider.value) + "°  S " + Math.round(cgShSatSlider.value*100); color: "#aaa"; font.pixelSize: 11 }
+                        Rectangle { width: 26; height: 14; radius: 3; border.color: "#666"; border.width: 1
+                                    color: Qt.hsva(cgShHueSlider.value/360, cgShSatSlider.value, 1, 1) }
+                    }
+                    HueBar { Layout.fillWidth: true; Layout.preferredHeight: 8 }
+                    Slider {
+                        id: cgShHueSlider; Layout.fillWidth: true; from: 0; to: 360; value: 0; property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: { if (pressed) _pendingReset = win.isDblPress(cgShHueSlider); else if (_pendingReset) { value = 0; _pendingReset = false } }
+                    }
+                    Slider {
+                        id: cgShSatSlider; Layout.fillWidth: true; from: 0; to: 1; value: 0; property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: { if (pressed) _pendingReset = win.isDblPress(cgShSatSlider); else if (_pendingReset) { value = 0; _pendingReset = false } }
+                    }
+                    // 미드톤
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        Label { text: "Midtones"; color: "white"; font.pixelSize: 12; font.bold: true }
+                        Item { Layout.fillWidth: true }
+                        Label { text: "H " + Math.round(cgMidHueSlider.value) + "°  S " + Math.round(cgMidSatSlider.value*100); color: "#aaa"; font.pixelSize: 11 }
+                        Rectangle { width: 26; height: 14; radius: 3; border.color: "#666"; border.width: 1
+                                    color: Qt.hsva(cgMidHueSlider.value/360, cgMidSatSlider.value, 1, 1) }
+                    }
+                    HueBar { Layout.fillWidth: true; Layout.preferredHeight: 8 }
+                    Slider {
+                        id: cgMidHueSlider; Layout.fillWidth: true; from: 0; to: 360; value: 0; property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: { if (pressed) _pendingReset = win.isDblPress(cgMidHueSlider); else if (_pendingReset) { value = 0; _pendingReset = false } }
+                    }
+                    Slider {
+                        id: cgMidSatSlider; Layout.fillWidth: true; from: 0; to: 1; value: 0; property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: { if (pressed) _pendingReset = win.isDblPress(cgMidSatSlider); else if (_pendingReset) { value = 0; _pendingReset = false } }
+                    }
+                    // 하이라이트
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 6
+                        Label { text: "Highlights"; color: "white"; font.pixelSize: 12; font.bold: true }
+                        Item { Layout.fillWidth: true }
+                        Label { text: "H " + Math.round(cgHiHueSlider.value) + "°  S " + Math.round(cgHiSatSlider.value*100); color: "#aaa"; font.pixelSize: 11 }
+                        Rectangle { width: 26; height: 14; radius: 3; border.color: "#666"; border.width: 1
+                                    color: Qt.hsva(cgHiHueSlider.value/360, cgHiSatSlider.value, 1, 1) }
+                    }
+                    HueBar { Layout.fillWidth: true; Layout.preferredHeight: 8 }
+                    Slider {
+                        id: cgHiHueSlider; Layout.fillWidth: true; from: 0; to: 360; value: 0; property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: { if (pressed) _pendingReset = win.isDblPress(cgHiHueSlider); else if (_pendingReset) { value = 0; _pendingReset = false } }
+                    }
+                    Slider {
+                        id: cgHiSatSlider; Layout.fillWidth: true; from: 0; to: 1; value: 0; property real _lastPressMs: 0
+                        property bool _pendingReset: false
+                        onPressedChanged: { if (pressed) _pendingReset = win.isDblPress(cgHiSatSlider); else if (_pendingReset) { value = 0; _pendingReset = false } }
+                    }
+                    // 밸런스: 섀도↔하이라이트 마스크 분포 이동(+ = 하이라이트 쪽).
+                    Label { text: "Balance   " + cgBalanceSlider.value.toFixed(2); color: "white"; font.pixelSize: 12 }
+                    Slider {
+                        id: cgBalanceSlider; Layout.fillWidth: true; from: -1.0; to: 1.0; value: 0.0; property real _lastPressMs: 0
+                        property real defaultValue: 0.0
+                        property bool _pendingReset: false
+                        onPressedChanged: { if (pressed) _pendingReset = win.isDblPress(cgBalanceSlider); else if (_pendingReset) { value = defaultValue; _pendingReset = false } }
+                    }
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
