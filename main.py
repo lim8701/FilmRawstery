@@ -809,8 +809,9 @@ class Controller(QObject):
 
     @Slot("QVariantMap")
     def updateHistogram(self, params) -> None:  # noqa: N802 (QML 슬롯)
-        """현재 조절값(exposure/contrast/hi·sh·wh·bl/필름시뮬/커브)을 축소 프록시에
-        numpy 로 적용해 '조절 반영' 히스토그램을 재계산. (공간/그레인 단계는 생략)"""
+        """현재 조절값을 축소 프록시에 numpy 로 적용해 '조절 반영' 히스토그램을 재계산.
+        라이트룸처럼 색 단계 전부 반영: 노출/톤/LUT/채도·바이브런스/HSL/대비/커브/컬러그레이딩/비네팅.
+        (그레인은 노이즈라 제외, 로컬대비/샤프닝 등 공간 단계는 생략)"""
         if self._proxy_small is None:
             return
         import numpy as np
@@ -828,6 +829,12 @@ class Controller(QObject):
                 looked = pipeline._apply_lut3d(c, arr, n)
                 st = float(params.get("lutStrength", 1.0))
                 c = c * (1.0 - st) + looked * st
+        # 바이브런스/채도 → HSL 컬러 믹서 (셰이더/export 와 동일: 대비 앞)
+        sat = float(params.get("saturation", 0)); vib = float(params.get("vibrance", 0))
+        if sat != 0.0 or vib != 0.0:
+            c = pipeline._presence(c, sat, vib)
+        c = pipeline._hsl_mixer(c, params.get("hslH", [0.0] * 8),
+                                params.get("hslS", [0.0] * 8), params.get("hslL", [0.0] * 8))
         c = np.clip((c - 0.5) * float(params.get("contrast", 1.0)) + 0.5, 0.0, 1.0)
         curves = params.get("curves", None)
         if curves and len(curves) == 4:
@@ -835,6 +842,20 @@ class Controller(QObject):
             xs = np.linspace(0.0, 1.0, 256)
             for ch in range(3):
                 c[..., ch] = np.interp(c[..., ch], xs, crgb[:, ch])
+        # 컬러 그레이딩(톤커브 뒤) — render_full 과 동일(hue 도→0..1)
+        c = pipeline._color_grade(
+            c, float(params.get("cgShadowHue", 0)) / 360.0, float(params.get("cgShadowSat", 0)),
+            float(params.get("cgMidHue", 0)) / 360.0, float(params.get("cgMidSat", 0)),
+            float(params.get("cgHighHue", 0)) / 360.0, float(params.get("cgHighSat", 0)),
+            float(params.get("cgBalance", 0)))
+        # 비네팅(정규화 좌표 — render_full 과 동일 공식). 그레인은 노이즈라 제외.
+        vig = float(params.get("vignette", 0))
+        if vig != 0.0:
+            h2, w2 = c.shape[:2]
+            yy = (np.arange(h2, dtype=np.float32) / (h2 - 1)) - 0.5
+            xx = (np.arange(w2, dtype=np.float32) / (w2 - 1)) - 0.5
+            rr = np.sqrt(yy[:, None] ** 2 + xx[None, :] ** 2) / 0.7071
+            c = np.clip(c * (1.0 + vig * 0.8 * pipeline._smoothstep(0.35, 1.0, rr))[..., None], 0.0, 1.0)
         self._histogram = self._hist_of(c)
         self.histogramChanged.emit()
 

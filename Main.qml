@@ -286,6 +286,15 @@ ApplicationWindow {
     ]
     onEditSaveWatchChanged: win.scheduleSave()
 
+    // 히스토그램 갱신 watcher: 색 단계(채도/바이브런스/HSL/컬러그레이딩)+비네팅이 바뀌면 재계산.
+    // (노출/톤/대비/커브 슬라이더는 자체 onMoved 로 이미 refreshHistogram 호출함)
+    property var histWatch: [
+        satSlider.value, vibSlider.value, win.hslH, win.hslS, win.hslL,
+        cgShHueSlider.value, cgShSatSlider.value, cgMidHueSlider.value, cgMidSatSlider.value,
+        cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value, vignetteSlider.value
+    ]
+    onHistWatchChanged: win.refreshHistogram()
+
     // Export 파라미터(현상 전효과 + 지오메트리 + 해상도). CPU/GPU export 공용.
     function exportParams() {
         return {
@@ -429,7 +438,15 @@ ApplicationWindow {
             "lutEnabled": simCombo.currentIndex !== 0,
             "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value,
-            "curves": curveEditor.allLuts()
+            "curves": curveEditor.allLuts(),
+            // 라이트룸식 전체 반영: 색 단계 + 비네팅(그레인 제외)
+            "saturation": satSlider.value, "vibrance": vibSlider.value,
+            "hslH": win.hslH, "hslS": win.hslS, "hslL": win.hslL,
+            "cgShadowHue": cgShHueSlider.value, "cgShadowSat": cgShSatSlider.value,
+            "cgMidHue": cgMidHueSlider.value, "cgMidSat": cgMidSatSlider.value,
+            "cgHighHue": cgHiHueSlider.value, "cgHighSat": cgHiSatSlider.value,
+            "cgBalance": cgBalanceSlider.value,
+            "vignette": vignetteSlider.value
         }
     }
 
