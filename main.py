@@ -791,11 +791,13 @@ class Controller(QObject):
 
     @staticmethod
     def _hist_of(c) -> list:
+        """R/G/B 3채널 히스토그램(각 256-bin)을 공통 최대값으로 정규화해 [R,G,B] 반환.
+        공통 정규화라 채널 간 상대 크기 비교 가능(라이트룸식 중첩 표시)."""
         import numpy as np
-        lum = c[..., 0] * 0.299 + c[..., 1] * 0.587 + c[..., 2] * 0.114
-        hist = np.histogram(lum, bins=256, range=(0.0, 1.0))[0].astype(np.float32)
-        m = float(hist.max())
-        return (hist / m).tolist() if m > 0 else []
+        hists = [np.histogram(c[..., ch], bins=256, range=(0.0, 1.0))[0].astype(np.float32)
+                 for ch in range(3)]
+        m = max(float(h.max()) for h in hists)
+        return [(h / m).tolist() for h in hists] if m > 0 else []
 
     def _get_lut(self, key):
         if key not in self._lut_cache:

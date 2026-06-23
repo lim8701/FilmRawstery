@@ -116,14 +116,21 @@ Item {
         onPaint: {
             var ctx = getContext('2d'), W = width, H = height
             ctx.clearRect(0, 0, W, H)
-            // 배경 히스토그램 (sqrt 스케일로 낮은 빈도도 보이게)
+            // 배경 히스토그램 R/G/B 채널별(가산 블렌딩 → 겹치면 밝아짐, 라이트룸식).
+            // sqrt 스케일로 낮은 빈도도 보이게.
             var hist = root.histogram
-            if (hist && hist.length === 256) {
-                ctx.fillStyle = "rgba(200,200,200,0.28)"
-                ctx.beginPath(); ctx.moveTo(0, H)
-                for (var hx = 0; hx < 256; hx++)
-                    ctx.lineTo(hx/255*W, H - Math.sqrt(hist[hx]) * H * 0.92)
-                ctx.lineTo(W, H); ctx.closePath(); ctx.fill()
+            if (hist && hist.length === 3) {
+                var hcols = ["rgba(255,64,64,0.55)", "rgba(64,210,90,0.55)", "rgba(80,150,255,0.55)"]
+                ctx.globalCompositeOperation = "lighter"
+                for (var ch = 0; ch < 3; ch++) {
+                    var hc = hist[ch]
+                    ctx.fillStyle = hcols[ch]
+                    ctx.beginPath(); ctx.moveTo(0, H)
+                    for (var hx = 0; hx < 256; hx++)
+                        ctx.lineTo(hx/255*W, H - Math.sqrt(hc[hx]) * H * 0.92)
+                    ctx.lineTo(W, H); ctx.closePath(); ctx.fill()
+                }
+                ctx.globalCompositeOperation = "source-over"
             }
             // 그리드 (1/4 간격 = 4개 톤 구역 경계)
             ctx.strokeStyle = "#3a3a3a"; ctx.lineWidth = 1

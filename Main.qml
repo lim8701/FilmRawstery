@@ -34,6 +34,10 @@ ApplicationWindow {
     property bool compareOn: false
     Shortcut { sequence: "\\"; onActivated: win.compareOn = !win.compareOn }
 
+    // 클리핑 경고 오버레이(프리뷰): 하이라이트=빨강 / 섀도=파랑. J 키로 토글(라이트룸과 동일).
+    property bool clipWarn: false
+    Shortcut { sequence: "J"; onActivated: win.clipWarn = !win.clipWarn }
+
     // 우측 활성 패널: 0=Edit, 1=Crop/Rotate/Geometry (우측 끝 세로 셀렉터 바로 전환)
     property int activePanel: 0
 
@@ -850,6 +854,7 @@ ApplicationWindow {
                         property real grainAmt: grainSlider.value
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: width / Math.max(1, height)
+                        property real clipWarn: 0.0   // export 는 클리핑 오버레이 미적용
                         property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
                         property real wbR: wbGain.x
                         property real wbG: wbGain.y
@@ -1088,6 +1093,7 @@ ApplicationWindow {
                         property real grainAmt: grainSlider.value
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
+                        property real clipWarn: win.clipWarn ? 1.0 : 0.0   // 클리핑 경고 오버레이(프리뷰 전용)
                         // WB 게인: TREF 베이크 대비 상대게인(카메라공간). 재디코딩 없이 실시간.
                         property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
                         property real wbR: wbGain.x
@@ -1893,6 +1899,23 @@ ApplicationWindow {
                     Layout.preferredHeight: 240     // 고정 높이(너비에서 분리: 레이아웃 루프 방지)
                     histogram: controller.histogram
                     onEdited: { controller.setCurve(allLuts()); win.refreshHistogram() }
+                }
+
+                // 클리핑 경고 오버레이 토글(프리뷰 전용): 하이라이트=빨강 / 섀도=파랑.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    CheckBox {
+                        id: clipWarnCheck
+                        checked: win.clipWarn
+                        onToggled: win.clipWarn = checked
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "클리핑 경고  — J  (하이라이트 빨강 / 섀도 파랑)"
+                        color: "white"; font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
+                    }
                 }
 
                 }

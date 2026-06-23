@@ -45,6 +45,7 @@ layout(std140, binding = 0) uniform buf {
     vec4 hslHa; vec4 hslHb;
     vec4 hslSa; vec4 hslSb;
     vec4 hslLa; vec4 hslLb;
+    float clipWarn;     // 클리핑 경고 오버레이(1=표시): 하이라이트=빨강, 섀도=파랑. 프리뷰 전용.
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -310,5 +311,13 @@ void main() {
     }
 
     rgb = clamp(rgb, 0.0, 1.0);
+
+    // 클리핑 경고(프리뷰 전용 진단 오버레이): 어느 채널이든 클리핑되면 표시.
+    //   하이라이트(>=254/255)=빨강, 섀도(<=1/255)=파랑. export(pipeFull)에선 clipWarn=0.
+    if (ubuf.clipWarn > 0.5) {
+        if (max(max(rgb.r, rgb.g), rgb.b) >= 0.9961)      rgb = vec3(1.0, 0.0, 0.0);
+        else if (min(min(rgb.r, rgb.g), rgb.b) <= 0.0039) rgb = vec3(0.1, 0.45, 1.0);
+    }
+
     fragColor = vec4(rgb, 1.0) * ubuf.qt_Opacity;
 }
