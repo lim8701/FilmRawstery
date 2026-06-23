@@ -1332,6 +1332,55 @@ ApplicationWindow {
                         }
                     }
 
+                    // === 미니맵(확대 시): 전체(크롭 결과) 중 현재 보이는 영역 표시. 우하단. ===
+                    Item {
+                        id: minimap
+                        visible: viewport.zoomed && !viewport.cropEdit && cropClip.visible
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 12
+                        property real maxMM: 180                       // 긴 변 최대 px
+                        property real crW: Math.max(1, viewport.clipW) // 크롭 결과 표시 폭(zoom=1)
+                        property real crH: Math.max(1, viewport.clipH)
+                        property real mmScale: maxMM / Math.max(crW, crH)
+                        width: crW * mmScale
+                        height: crH * mmScale
+
+                        // 배경: 전체 크롭 결과 썸네일(canvasHolder 를 줌/팬 없이 작게 복제)
+                        Rectangle {
+                            anchors.fill: parent
+                            color: "#000000"
+                            border.color: "#80ffffff"; border.width: 1
+                            radius: 3
+                            clip: true
+                            ShaderEffectSource {
+                                sourceItem: canvasHolder      // 지오메트리 변환된 캔버스(줌/팬은 cropClip 에 있어 미반영)
+                                live: true
+                                smooth: true
+                                width: viewport.canvasDispW * minimap.mmScale
+                                height: viewport.canvasDispH * minimap.mmScale
+                                x: -win.cropX * viewport.canvasDispW * minimap.mmScale   // 크롭 영역만 보이게 오프셋
+                                y: -win.cropY * viewport.canvasDispH * minimap.mmScale
+                            }
+                        }
+                        // 현재 보이는 영역 사각형 (pan/zoom 으로부터 콘텐츠 대비 분율 계산)
+                        Rectangle {
+                            color: "#33ffd24a"
+                            border.color: "#ffd24a"; border.width: 1.5
+                            radius: 1
+                            property real cw: viewport.clipW * viewport.zoomFactor   // 줌 콘텐츠 폭(px)
+                            property real ch: viewport.clipH * viewport.zoomFactor
+                            property real lf: Math.max(0, 0.5 - (viewport.panX + viewport.width / 2) / cw)
+                            property real tf: Math.max(0, 0.5 - (viewport.panY + viewport.height / 2) / ch)
+                            property real wf: Math.min(1, viewport.width / cw)
+                            property real hf: Math.min(1, viewport.height / ch)
+                            x: lf * minimap.width
+                            y: tf * minimap.height
+                            width: Math.min(minimap.width - x, wf * minimap.width)
+                            height: Math.min(minimap.height - y, hf * minimap.height)
+                        }
+                    }
+
                     // === 크롭 편집 오버레이 (크롭 패널에서만): 핸들=리사이즈, 내부=이동,
                     //     네 꼭짓점 외곽 부근 드래그=회전(스트레이튼). 캔버스 위에 정렬. ===
                     Item {
