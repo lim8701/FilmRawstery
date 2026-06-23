@@ -638,7 +638,8 @@ class Controller(QObject):
             curves = params.get("curves") or [ident, ident, ident, ident]
             curve_rgb = pipeline.compose_curves(*curves)
             arr = pipeline.render_full(
-                self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb)
+                self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb,
+                bitdepth=int(params.get("bitDepth", 8)))
             ok = pipeline.save_image(arr, path)
             msg = f"저장됨: {path}" if ok else f"저장 실패: {path}"
         except Exception as exc:

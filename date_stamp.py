@@ -119,10 +119,12 @@ def _placement(sprite, img_w, img_h, margin_px):
     return x0, y0, sp
 
 
-def stamp_export(out_u8, text):
-    """export(풀해상도) 합성: out_u8 (H,W,3) uint8 의 '우하단 코너에만' 하이브리드 합성.
-    코어=source-over(배경무관 일관), 헤일로=screen 가산(빛 번짐) — 셰이더와 동일."""
-    H, W, _ = out_u8.shape
+def stamp_export(out, text):
+    """export(풀해상도) 합성: out (H,W,3) 의 '우하단 코너에만' 하이브리드 합성.
+    코어=source-over(배경무관 일관), 헤일로=screen 가산(빛 번짐) — 셰이더와 동일.
+    out 의 dtype 으로 비트깊이 자동 인식(uint8=255, uint16=65535)."""
+    mx = 65535.0 if out.dtype == np.uint16 else 255.0
+    H, W, _ = out.shape
     short = min(H, W)
     sprite = render_sprite(text, TEXT_FRAC * short)
     x0, y0, sp = _placement(sprite, W, H, int(round(MARGIN_FRAC * short)))
@@ -131,12 +133,12 @@ def stamp_export(out_u8, text):
     a = np.clip(sp[..., 3] * STAMP_STRENGTH, 0.0, 1.0)       # (h,w)
     t = np.clip((a - 0.45) / (0.85 - 0.45), 0.0, 1.0)
     coreA = (t * t * (3.0 - 2.0 * t))[..., None] * STAMP_CORE_OPACITY   # 코어 불투명도(배경 비침)
-    region = out_u8[y0:y0 + sh, x0:x0 + sw, :].astype(np.float32) / 255.0
+    region = out[y0:y0 + sh, x0:x0 + sw, :].astype(np.float32) / mx
     region = region * (1.0 - coreA) + col * coreA            # 코어 source-over
     glow = col * np.clip(a[..., None] * (1.0 - coreA * 0.5) * STAMP_GLOW_GAIN, 0.0, 1.0)
     region = 1.0 - (1.0 - region) * (1.0 - glow)             # screen 가산(코어도 일부 태움)
-    out_u8[y0:y0 + sh, x0:x0 + sw, :] = np.rint(np.clip(region, 0.0, 1.0) * 255.0).astype(np.uint8)
-    return out_u8
+    out[y0:y0 + sh, x0:x0 + sw, :] = np.rint(np.clip(region, 0.0, 1.0) * mx).astype(out.dtype)
+    return out
 
 
 def preview_layer_qimage(text, img_w, img_h):

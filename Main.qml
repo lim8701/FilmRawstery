@@ -161,6 +161,8 @@ ApplicationWindow {
         sharpDetailSlider.value = _ev(p, "sharpenDetail", 0.25); sharpMaskSlider.value = _ev(p, "sharpenMask", 0.0)
         win.dateStamp = _ev(p, "dateStamp", false)
         stampField.text = _ev(p, "stampText", controller.stampText)
+        // 프로그램으로 text 를 바꾸면 onTextEdited 가 안 불리므로 직접 push(스탬프 렌더 갱신).
+        controller.setStampText(stampField.text)
         controller.setLensCorrection(_ev(p, "lensCorrection", true))
         var cp = _ev(p, "curves", null)
         if (cp) { curveEditor.setChannelPoints(cp); controller.setCurve(curveEditor.allLuts()) }
@@ -234,6 +236,7 @@ ApplicationWindow {
             "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
             "dateStamp": win.dateStamp, "stampText": stampField.text,
             "outEdge": win.exportEdges[resCombo.currentIndex], "lensCorrection": lensCheck.checked,
+            "bitDepth": bitDepth16Check.checked ? 16 : 8,   // 16=TIFF/PNG 16bit(CPU 전용)
             // 지오메트리(현상 뒤 적용): 플립 -> 90° -> 스트레이튼(회전+채움줌) -> 종횡비 중앙크롭
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
@@ -419,7 +422,8 @@ ApplicationWindow {
         // 렌더 모드: 0=CPU(render_full), 1=GPU(프리뷰 셰이더로 풀해상도 렌더 → 프리뷰=Export)
         onAccepted: {
             var p = win.exportParams()
-            if (renderModeCombo.currentIndex === 1) {
+            // GPU grab 은 8bit 라 16bit 선택 시 무조건 CPU 경로 사용.
+            if (renderModeCombo.currentIndex === 1 && !bitDepth16Check.checked) {
                 gpuExportLoader.active = true     // 풀해상도 셰이더 체인 인스턴스화(grab 대기)
                 controller.exportImageGpu(selectedFile, p)
             } else {
@@ -1525,8 +1529,26 @@ ApplicationWindow {
                     ComboBox {
                         id: renderModeCombo
                         Layout.fillWidth: true
+                        // 16bit 는 CPU 전용(GPU grab 은 8bit) → 16bit 체크 시 GPU 비활성/CPU 고정 표시
+                        enabled: !bitDepth16Check.checked
                         currentIndex: 0     // 기본 CPU
                         model: ["CPU", "GPU"]
+                    }
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    CheckBox {
+                        id: bitDepth16Check
+                        ToolTip.visible: hovered
+                        ToolTip.text: "16비트/채널로 저장(계조·헤드룸 보존). TIFF 권장. CPU 렌더 전용."
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "16비트 (TIFF/PNG · CPU)"
+                        color: "white"; font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
                     }
                 }
 

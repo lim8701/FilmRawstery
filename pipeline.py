@@ -274,7 +274,7 @@ def _apply_geometry(arr, p):
         # mode=nearest: 채움 줌이 사실상 정확해 경계 1~2px 만 바깥을 샘플 -> 검정 대신
         # 가장자리 색 복제(프리뷰 GPU edge-clamp 샘플링과 정합).
         arr = affine_transform(arr, mat, offset=off, order=1,
-                               mode="nearest").astype(np.uint8)
+                               mode="nearest").astype(arr.dtype)
 
     # 원근(키스톤)+배율 — 스트레이튼 뒤, 크롭 앞(프리뷰 Matrix4x4 와 동일 순서/수식)
     if abs(geo_v) > 1e-3 or abs(geo_h) > 1e-3 or abs(geo_s - 100.0) > 1e-3:
@@ -302,8 +302,9 @@ def compose_curves(master, r, g, b):
 
 
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
-                proxy_edge=2560, strip=256):
-    """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) uint8 RGB 로 반환."""
+                proxy_edge=2560, strip=256, bitdepth=8):
+    """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) RGB 로 반환.
+    bitdepth=8 -> uint8, 16 -> uint16(계조/헤드룸 보존, TIFF/PNG 16bit 저장용)."""
     with rawpy.imread(path) as raw:
         cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
         ref = np.array(raw.daylight_whitebalance)[:3]
@@ -408,7 +409,9 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         grain2d = None
 
     # --- LUT/대비/커브/비네팅 (메모리 큰 LUT 는 스트립) ---
-    out = np.empty((h, w, 3), dtype=np.uint8)
+    maxv = 65535.0 if bitdepth == 16 else 255.0
+    dt = np.uint16 if bitdepth == 16 else np.uint8
+    out = np.empty((h, w, 3), dtype=dt)
     xs = np.linspace(0.0, 1.0, 256)
     crgb = np.asarray(curve_rgb, dtype=np.float32)   # (256,3) 합성 채널 커브
     for y in range(0, h, strip):
@@ -424,17 +427,17 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
             blk[..., ch] = np.interp(blk[..., ch], xs, crgb[:, ch])
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
-        out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * 255.0).astype(np.uint8)
+        out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * maxv).astype(dt)
 
     # 날짜 스탬프(필름 데이트백) — 비네팅 뒤 우하단 코너 가산(렌즈 비네팅 영향 없음)
     if do_stamp:
-        date_stamp.stamp_export(out, stamp_text)   # uint8 코너만 in-place
+        date_stamp.stamp_export(out, stamp_text)   # dtype(8/16bit) 자동 인식, 코너만 in-place
 
     # 필름 그레인 — 맨 끝: 장면과 스탬프 모두에 입혀짐(에멀전 입자, 셰이더와 동일 순서)
     if grain2d is not None:
-        f = out.astype(np.float32) / 255.0
+        f = out.astype(np.float32) / maxv
         f += grain2d[..., None] * grain_amt * 0.12
-        out = np.rint(np.clip(f, 0.0, 1.0) * 255.0).astype(np.uint8)
+        out = np.rint(np.clip(f, 0.0, 1.0) * maxv).astype(dt)
 
     # === 지오메트리(회전/크롭) — 현상 끝난 이미지에 마지막 적용(프리뷰 뷰 변환과 동일) ===
     out = _apply_geometry(out, p)
@@ -442,9 +445,18 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     return out
 
 
-def save_image(arr_u8, path) -> bool:
-    """(H,W,3) uint8 -> 파일 저장 (확장자로 포맷 추론: jpg/png/tif 8bit)."""
-    arr_u8 = np.ascontiguousarray(arr_u8)
-    h, w, _ = arr_u8.shape
-    img = QImage(arr_u8.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+def save_image(arr, path) -> bool:
+    """(H,W,3) RGB 저장. dtype 으로 비트깊이 결정:
+    - uint8  -> RGB888 (jpg/png/tif 8bit)
+    - uint16 -> RGBX64 (png/tif 16bit, 알파 없음). jpg 는 8bit 만 가능(Qt 가 자동 강등)."""
+    arr = np.ascontiguousarray(arr)
+    h, w, _ = arr.shape
+    if arr.dtype == np.uint16:
+        rgbx = np.empty((h, w, 4), np.uint16)
+        rgbx[..., :3] = arr
+        rgbx[..., 3] = 65535                       # X 채널(미사용) — RGBX64 는 알파 무시
+        rgbx = np.ascontiguousarray(rgbx)
+        img = QImage(rgbx.data, w, h, 8 * w, QImage.Format.Format_RGBX64).copy()
+    else:
+        img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
     return bool(img.save(path))
