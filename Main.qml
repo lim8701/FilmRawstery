@@ -73,9 +73,9 @@ ApplicationWindow {
     }
 
     // Edit 패널 섹션 접기 상태(인덱스=표시순서: 0필름 1라이트 2톤커브 3WB 4컬러 5컬러믹서
-    // 11컬러그레이딩 6디테일&비네팅 7그레인 8샤프닝 9렌즈 10날짜). 헤더 클릭으로 토글.
-    // 기본 접힘: 5 Color Mixer, 8 Sharpening, 9 Lens, 11 Color Grading.
-    property var secOpen: [true, true, true, true, true, false, true, true, false, false, true, false]
+    // 11컬러그레이딩 6디테일&비네팅 7그레인 8샤프닝 12노이즈리덕션 9렌즈 10날짜). 헤더 클릭으로 토글.
+    // 기본 접힘: 5 Color Mixer, 8 Sharpening, 12 Noise Reduction, 9 Lens, 11 Color Grading.
+    property var secOpen: [true, true, true, true, true, false, true, true, false, false, true, false, false]
     function toggleSec(i) { var a = secOpen.slice(); a[i] = !a[i]; secOpen = a }
 
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
@@ -153,6 +153,7 @@ ApplicationWindow {
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
+            "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value,
             "lensCorrection": lensCheck.checked, "dateStamp": win.dateStamp, "stampText": stampField.text,
             "curves": curveEditor.channelPoints,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
@@ -189,6 +190,7 @@ ApplicationWindow {
         grainSlider.value = _ev(p, "grainAmt", 0.0); grainSizeSlider.value = _ev(p, "grainSize", 0.5)
         sharpAmtSlider.value = _ev(p, "sharpenAmt", 0.0); sharpRadiusSlider.value = _ev(p, "sharpenRadius", 1.0)
         sharpDetailSlider.value = _ev(p, "sharpenDetail", 0.25); sharpMaskSlider.value = _ev(p, "sharpenMask", 0.0)
+        lumaNrSlider.value = _ev(p, "lumaNR", 0.0); colorNrSlider.value = _ev(p, "colorNR", 0.0)
         win.dateStamp = _ev(p, "dateStamp", false)
         stampField.text = _ev(p, "stampText", controller.stampText)
         // 프로그램으로 text 를 바꾸면 onTextEdited 가 안 불리므로 직접 push(스탬프 렌더 갱신).
@@ -219,6 +221,7 @@ ApplicationWindow {
         cgBalanceSlider.value = 0.0
         sharpAmtSlider.value = 0.0; sharpRadiusSlider.value = 1.0
         sharpDetailSlider.value = 0.25; sharpMaskSlider.value = 0.0
+        lumaNrSlider.value = 0.0; colorNrSlider.value = 0.0
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
         tempSlider.value = controller.asShotKelvin; tintSlider.value = controller.asShotTint
         simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
@@ -280,6 +283,7 @@ ApplicationWindow {
         cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value,
         vignetteSlider.value, grainSlider.value, grainSizeSlider.value,
         sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
+        lumaNrSlider.value, colorNrSlider.value,
         lensCheck.checked, win.dateStamp, stampField.text, curveEditor.channelPoints,
         win.quarterTurns, rotAngleSlider.value, flipHBtn.checked, flipVBtn.checked,
         aspectCombo.currentIndex, cropLandscapeBtn.checked,
@@ -312,6 +316,7 @@ ApplicationWindow {
             "cgBalance": cgBalanceSlider.value,
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
+            "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "lutEnabled": simCombo.currentIndex !== 0, "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
@@ -915,6 +920,8 @@ ApplicationWindow {
                         property real cgHueHi: cgHiHueSlider.value / 360.0
                         property real cgSatHi: cgHiSatSlider.value
                         property real cgBalance: cgBalanceSlider.value
+                        property real lumaNR: lumaNrSlider.value
+                        property real colorNR: colorNrSlider.value
                         property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
                         property real wbR: wbGain.x
                         property real wbG: wbGain.y
@@ -1182,6 +1189,8 @@ ApplicationWindow {
                         property real cgHueHi: cgHiHueSlider.value / 360.0
                         property real cgSatHi: cgHiSatSlider.value
                         property real cgBalance: cgBalanceSlider.value
+                        property real lumaNR: lumaNrSlider.value
+                        property real colorNR: colorNrSlider.value
                         // WB 게인: TREF 베이크 대비 상대게인(카메라공간). 재디코딩 없이 실시간.
                         property vector3d wbGain: win.wbPreview(tempSlider.value, tintSlider.value)
                         property real wbR: wbGain.x
@@ -2514,6 +2523,51 @@ ApplicationWindow {
                     }
                 }
 
+                }
+
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                // ===== Noise Reduction — 섹션 인덱스 12 (텍스처/샤프닝 앞 단계) =====
+                RowLayout {
+                    Layout.fillWidth: true
+                    Label {
+                        Layout.fillWidth: true
+                        text: (win.secOpen[12] ? "▾  " : "▸  ") + "Noise Reduction"
+                        color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                        font.capitalization: Font.AllUppercase
+                    }
+                    TapHandler { onTapped: win.toggleSec(12) }
+                }
+                ColumnLayout {
+                    visible: win.secOpen[12]
+                    Layout.fillWidth: true
+                    spacing: 12
+                Label { text: "Luminance:  " + Math.round(lumaNrSlider.value * 100); color: "white" }
+                Slider {
+                    id: lumaNrSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(lumaNrSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
+                Label { text: "Color:  " + Math.round(colorNrSlider.value * 100); color: "white" }
+                Slider {
+                    id: colorNrSlider
+                    Layout.fillWidth: true
+                    from: 0.0; to: 1.0; value: 0.0
+                    property real defaultValue: 0.0
+                    property real _lastPressMs: 0
+                    property bool _pendingReset: false
+                    onPressedChanged: {
+                        if (pressed) _pendingReset = win.isDblPress(colorNrSlider)
+                        else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                    }
+                }
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }

@@ -394,6 +394,16 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # hi/sh 국소 톤맵 마스크 = 중성 베이스(neutral_disp)의 국소 평균 휘도. 셰이더 claBlur(중성) 대응.
     lb = _blur_luma((neutral_disp @ LUMA).astype(np.float32), sigma_cla)
     c = np.maximum(_tone_zones(c, hi, sh, wh, bl, lb), 0.0)
+    # 노이즈 리덕션(텍스처/샤프닝 앞) — 셰이더 3.5 단계와 동일. 반경은 sigma_tex/sigma_cla 사용.
+    ln = float(p.get("lumaNR", 0)); cn = float(p.get("colorNR", 0))
+    if ln > 0.0:
+        hpL = (c @ LUMA) - (_blur_rgb(c, sigma_tex) @ LUMA)
+        flatw = 1.0 - _smoothstep(0.0, 0.06, np.abs(hpL))      # 엣지 보존
+        c = np.clip(c - (hpL * ln * flatw)[..., None], 0.0, 1.0)
+    if cn > 0.0:
+        bl_ = _blur_rgb(c, sigma_cla)
+        chroma_detail = (c - (c @ LUMA)[..., None]) - (bl_ - (bl_ @ LUMA)[..., None])
+        c = np.clip(c - chroma_detail * cn, 0.0, 1.0)
     if tex != 0.0:
         c = _texture(c, tex, sigma_tex)
     if cla != 0.0:

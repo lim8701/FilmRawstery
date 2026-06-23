@@ -51,6 +51,8 @@ layout(std140, binding = 0) uniform buf {
     float cgHueMid; float cgSatMid;
     float cgHueHi; float cgSatHi;
     float cgBalance;
+    float lumaNR;       // 휘도 노이즈 리덕션 0..1 (평탄부 고주파 억제, 엣지 보존)
+    float colorNR;      // 컬러(chroma) 노이즈 리덕션 0..1 (색얼룩 제거, 휘도 불변)
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -216,6 +218,23 @@ void main() {
     rgb = max(tone_zones(rgb, lb, ubuf.highlights, ubuf.shadows, ubuf.whites, ubuf.blacks), 0.0);
 
     vec3 s0 = texture(dispSrc, uv).rgb;          // display sRGB 변환본(블러 비교용)
+
+    // 3.5) 노이즈 리덕션 (텍스처/샤프닝 앞 — 노이즈를 먼저 줄이고 디테일 강조). dispSrc 블러 기반.
+    if (ubuf.lumaNR > 0.0 || ubuf.colorNR > 0.0) {
+        // 휘도 NR: 작은반경 고주파(노이즈+미세디테일)를 평탄부에서 제거(엣지는 보존). 휘도만 변경.
+        if (ubuf.lumaNR > 0.0) {
+            float hpL = dot(s0, LUMA) - dot(texture(texBlur, uv).rgb, LUMA);
+            float flatW = 1.0 - smoothstep(0.0, 0.06, abs(hpL));   // 엣지(큰 hp)는 보존
+            rgb -= vec3(hpL * ubuf.lumaNR * flatW);
+        }
+        // 컬러 NR: 큰반경 기준 chroma 노이즈 제거(색얼룩). chroma 만 변경(휘도 불변).
+        if (ubuf.colorNR > 0.0) {
+            vec3 bl = texture(claBlur, uv).rgb;
+            vec3 chromaDetail = (s0 - dot(s0, LUMA)) - (bl - dot(bl, LUMA));
+            rgb -= chromaDetail * ubuf.colorNR;
+        }
+        rgb = clamp(rgb, 0.0, 1.0);
+    }
 
     // 4) 텍스처 — 중주파 디테일 (원본 - 작은반경 블러)
     if (ubuf.texAmt != 0.0) {
