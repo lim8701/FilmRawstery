@@ -38,6 +38,7 @@ ApplicationWindow {
     property bool clipWarn: false
     Shortcut { sequence: "J"; onActivated: win.clipWarn = !win.clipWarn }
 
+
     // 컬러 그레이딩 Hue 슬라이더 위에 두는 무지개 스펙트럼 막대(슬라이더 위치↔색상 가이드).
     // (네이티브 스타일은 Slider.background 커스터마이즈 미지원 → 별도 막대로 표시)
     component HueBar: Rectangle {
@@ -461,7 +462,7 @@ ApplicationWindow {
             tintSlider.value = controller.asShotTint   // off-locus(불빛 등) as-shot tint 반영
         }
         // 로드/WB 커밋(재디코딩)으로 프록시가 갱신되면 조절 반영 히스토그램 재계산.
-        function onImageChanged() { win.refreshHistogram() }
+        function onImageChanged() { win.refreshHistogram(); viewport.resetZoom() }
         // 이미지 전환 직전: 이전 파일(controller._path 아직 이전값)로 편집 플러시 저장.
         function onFlushEdits() {
             editSaveTimer.stop()
@@ -989,6 +990,26 @@ ApplicationWindow {
                     property real clipW: cropEdit ? canvasDispW : (canvasDispW * win.cropW)
                     property real clipH: cropEdit ? canvasDispH : (canvasDispH * win.cropH)
 
+                    // === 1:1 확대 & 패닝(핀트 확인). 프록시(≤2560) 기준 1:1(proxy px:screen px). ===
+                    clip: true                       // 확대 시 이미지가 패널을 침범하지 않게
+                    property bool zoomed: false
+                    property real panX: 0
+                    property real panY: 0
+                    property real zoomFactor: 1.0 / Math.max(1e-4, fitScale)
+                    function clampPan() {
+                        var mx = Math.max(0, (clipW * zoomFactor - width) / 2)
+                        var my = Math.max(0, (clipH * zoomFactor - height) / 2)
+                        panX = Math.max(-mx, Math.min(mx, panX))
+                        panY = Math.max(-my, Math.min(my, panY))
+                    }
+                    function zoomToPoint(px, py) {     // 클릭점을 중앙으로 → 확대
+                        panX = -(px - width / 2) * zoomFactor
+                        panY = -(py - height / 2) * zoomFactor
+                        zoomed = true; clampPan()
+                    }
+                    function resetZoom() { zoomed = false; panX = 0; panY = 0 }
+                    onCropEditChanged: if (cropEdit) resetZoom()   // 크롭 패널 진입 시 확대 해제
+
                     // 원근(키스톤)+배율 호모그래피 (export pipeline._persp_homography 와 동일 수식).
                     // GEO_PERSP_K=0.35 강도 일치 필수. 중심 기준, 소스(procW/procH) 정규화.
                     property matrix4x4 perspMat: {
@@ -1183,6 +1204,12 @@ ApplicationWindow {
                         width: viewport.clipW
                         height: viewport.clipH
                         clip: true
+                        // 1:1 확대 & 패닝 — 중앙 기준 스케일 후 팬(translate). 핀트 확인용.
+                        scale: viewport.zoomed ? viewport.zoomFactor : 1.0
+                        transform: Translate {
+                            x: viewport.zoomed ? viewport.panX : 0
+                            y: viewport.zoomed ? viewport.panY : 0
+                        }
 
                         // 캔버스 홀더: 편집모드=(0,0)으로 캔버스 전체가 cropClip 채움,
                         // 결과모드=크롭 영역의 좌상단이 cropClip 좌상단에 오도록 음수 오프셋.
@@ -1197,6 +1224,10 @@ ApplicationWindow {
                             layer.enabled: true
                             layer.smooth: true
                             layer.samples: 4
+                            // 1:1 확대 시 FBO 를 프록시 native 해상도로 렌더(아니면 fit 해상도라 확대=흐릿).
+                            // 평소엔 Qt.size(0,0)=아이템 크기(기존 동작 유지).
+                            layer.textureSize: viewport.zoomed ? Qt.size(viewport.caW, viewport.caH)
+                                                               : Qt.size(0, 0)
 
                             ShaderEffectSource {
                                 id: pipeView
@@ -1231,6 +1262,26 @@ ApplicationWindow {
                                     }
                                 ]
                             }
+                        }
+                    }
+
+                    // 1:1 확대 & 패닝 입력(크롭 패널 외): 더블클릭=확대/해제(클릭점 중앙), 드래그=팬.
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: !viewport.cropEdit && cropClip.visible
+                        cursorShape: viewport.zoomed ? (pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor)
+                                                     : Qt.ArrowCursor
+                        property real _px: 0
+                        property real _py: 0
+                        onPressed: (m) => { _px = m.x; _py = m.y }
+                        onPositionChanged: (m) => {
+                            if (!pressed || !viewport.zoomed) return
+                            viewport.panX += m.x - _px; viewport.panY += m.y - _py
+                            _px = m.x; _py = m.y; viewport.clampPan()
+                        }
+                        onDoubleClicked: (m) => {
+                            if (viewport.zoomed) viewport.resetZoom()
+                            else viewport.zoomToPoint(m.x, m.y)
                         }
                     }
 
