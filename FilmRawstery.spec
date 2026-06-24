@@ -58,6 +58,7 @@ exe = EXE(
     upx=False,          # UPX off — Qt DLL 손상 방지
     console=CONSOLE,
     icon=None,
+    contents_directory="lib",   # onedir 하위폴더 이름(기본 _internal → lib)
 )
 coll = COLLECT(
     exe, a.binaries, a.datas,
