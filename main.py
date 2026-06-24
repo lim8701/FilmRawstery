@@ -1120,6 +1120,50 @@ def ensure_luts() -> None:
         make_luts.generate_all()
 
 
+def _show_splash(app):
+    """콜드 스타트 동안 보일 가벼운 스플래시 창을 띄워 즉시 그린다.
+
+    QQuickView 로 Splash.qml 을 로드 → 화면 중앙에 frameless 로 표시.
+    이 첫 GPU 창 생성이 RHI(D3D11) 디바이스 초기화를 대부분 떠안으므로,
+    뒤따르는 메인 창은 더 빨리 뜬다. processEvents 로 즉시 페인트한다.
+    실패해도 앱 동작에는 영향 없도록 None 반환."""
+    try:
+        from PySide6.QtQuick import QQuickView
+        view = QQuickView()
+        view.setFlags(Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint)
+        view.setResizeMode(QQuickView.ResizeMode.SizeViewToRootObject)
+        view.setColor(Qt.GlobalColor.transparent)
+        view.setSource(QUrl.fromLocalFile(str(BASE / "Splash.qml")))
+        scr = app.primaryScreen().geometry()
+        view.setPosition((scr.width() - view.width()) // 2,
+                         (scr.height() - view.height()) // 2)
+        view.show()
+        app.processEvents()    # 이벤트 루프 시작 전이라 강제로 한 번 그린다
+        return view
+    except Exception as exc:
+        print(f"[splash] 표시 실패(무시): {exc}")
+        return None
+
+
+def _close_splash_when_ready(root, splash) -> None:
+    """메인 창의 첫 프레임이 화면에 올라오면(frameSwapped) 스플래시를 닫는다."""
+    if splash is None:
+        return
+    done = {"v": False}
+
+    def _close():
+        if done["v"]:
+            return
+        done["v"] = True
+        splash.close()
+        splash.deleteLater()
+
+    # frameSwapped 는 매 프레임 발생 -> 가드로 1회만 닫는다.
+    root.frameSwapped.connect(_close)
+    # 혹시 frameSwapped 가 안 와도(드문 경우) 폴백으로 닫기.
+    QTimer.singleShot(3000, _close)
+
+
 def apply_dark_titlebar(window) -> None:
     """Windows OS 타이틀바를 다크 모드로(DWMWA_USE_IMMERSIVE_DARK_MODE)."""
     if sys.platform != "win32":
@@ -1139,10 +1183,12 @@ def apply_dark_titlebar(window) -> None:
 def main() -> int:
     if PREFER_HIGH_PERF_GPU:
         _prefer_high_performance_gpu()   # 외장 GPU 우선(다음 실행부터). Windows 한정.
-    ensure_shader()
-    ensure_luts()
 
     app = QGuiApplication(sys.argv)
+    splash = _show_splash(app)   # 콜드 스타트 동안 표시(아래 무거운 초기화를 덮는다)
+
+    ensure_shader()
+    ensure_luts()
     date_stamp.font_family()   # 번들 DSEG7 폰트 1회 등록(메인 스레드)
     engine = QQmlApplicationEngine()
 
@@ -1177,7 +1223,9 @@ def main() -> int:
     if not engine.rootObjects():
         return -1
 
-    apply_dark_titlebar(engine.rootObjects()[0])   # OS 타이틀바 다크 모드(Windows)
+    root = engine.rootObjects()[0]
+    apply_dark_titlebar(root)                      # OS 타이틀바 다크 모드(Windows)
+    _close_splash_when_ready(root, splash)         # 메인 창 첫 프레임에 스플래시 닫기
 
     # 명령줄 인자가 있으면 그 경로, 없으면 기본 샘플을 자동 로드
     start_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_RAF
