@@ -1,17 +1,19 @@
-"""하늘 자동 세그멘테이션 엔진 (ONNX / SegFormer-B0 @ ADE20K).
+"""시맨틱 세그멘테이션 마스킹 엔진 (ONNX / SegFormer-B2 @ ADE20K, 150클래스).
 
-라이트룸 "Select Sky" 식 하늘 마스크를 ML 시맨틱 세그멘테이션으로 생성한다.
-PySide6/QML 비의존 — numpy in/out 의 독립 모듈이라 export 파이프라인에서도 재사용 가능.
+라이트룸식 영역 마스크를 ML 세그로 생성한다. 추론 1회로 150클래스 softmax 를 모두 얻으므로,
+원하는 클래스(또는 여러 클래스의 합집합)를 골라 **복합 마스크**를 만들 수 있다(Sky/Vegetation/
+Building/Water/…). PySide6/QML 비의존 — numpy in/out 독립 모듈(export 파이프라인에서도 재사용).
 
-파이프라인:
-  display-sRGB RGB(uint8) → 종횡비 유지 고해상도 리사이즈 → ImageNet 정규화 → SegFormer ONNX 추론
-  → 150클래스 logits → softmax → sky(=2) 확률맵(입력의 1/4)
-  → 입력 해상도로 업샘플 → (옵션) 원본 휘도 기준 guided filter 로 엣지 정제 → soft alpha[0,1]
+2단계 사용(라이브 갱신용):
+  infer_softmax(rgb)            → (probs[150,hm,wm], (H,W))   # 추론 1회, 캐시
+  compose_mask(probs, ..., ids) → soft alpha[0,1]            # 선택 클래스 합산 → 후처리(빠름)
 
+후처리: 선택 클래스 확률 합산 → 입력 해상도 업샘플 → 결정 곡선(smoothstep) → 구멍 채우기
+       → 원본 휘도 기준 guided filter 엣지 정제.
   ⚠️입력을 정사각 512 로 '찌부리면' 종횡비 왜곡 + 저해상도라 가는 가지/전선/경계가 뭉갠다.
     종횡비 유지 + 긴 변 INPUT_LONG_EDGE(32배수)로 넣어야 경계 디테일이 산다(실측 확인).
 
-모델: Xenova/segformer-b0-finetuned-ade-512-512 의 사전 export ONNX(fp32, ~14MB).
+모델: Xenova/segformer-b2-finetuned-ade-512-512 의 사전 export ONNX(fp32, ~105MB).
 최초 호출 시 자동 다운로드(models/ 캐시). torch/transformers 불필요(onnxruntime 만 사용).
 """
 
@@ -38,6 +40,33 @@ _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 _SKY_CLASS = 2                                 # ADE20K id2label["2"] == "sky"
 _LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+
+# ── 마스크 클래스 그룹 (UI 체크박스) ─────────────────────────────────────────
+# (key, 표시이름, ADE20K 인덱스 목록). 체크된 그룹들의 인덱스를 합집합으로 모아 복합 마스크 생성.
+# 인덱스는 사진 편집 관점 묶음(예: 초목=나무+풀+식물). 자유롭게 추가/수정 가능.
+MASK_GROUPS = [
+    ("sky",        "Sky",        [2]),
+    ("vegetation", "Vegetation", [4, 9, 17, 66]),     # tree, grass, plant, flower
+    ("building",   "Building",   [1, 25, 48]),        # building, house, skyscraper
+    ("ground",     "Ground",     [6, 11, 13, 29, 46]),# road, sidewalk, earth, field, sand
+    ("water",      "Water",      [21, 26, 60, 109, 128]),  # water, sea, river, pool, lake
+    ("mountain",   "Mountain",   [16, 34]),           # mountain, rock
+    ("person",     "Person",     [12]),
+]
+_GROUP_IDS = {k: ids for k, _, ids in MASK_GROUPS}
+
+
+def class_ids_for(keys):
+    """그룹 key 목록 → ADE 인덱스 합집합(정렬)."""
+    out = set()
+    for k in keys:
+        out.update(_GROUP_IDS.get(str(k), []))
+    return sorted(out)
+
+
+def groups_for_qml():
+    """QML 체크박스용 [{key,label}, ...]."""
+    return [{"key": k, "label": lbl} for k, lbl, _ in MASK_GROUPS]
 
 # ── 정제 계수 (라이트룸 비교로 튜닝 대상) ────────────────────────────────────
 # 마스크 결정 곡선: softmax 확률을 smoothstep(LO,HI)로 정형. 모델은 약확신 하늘(채광창 유리 너머
@@ -104,16 +133,37 @@ def _preprocess(rgb_u8: np.ndarray) -> np.ndarray:
     return np.ascontiguousarray(x.transpose(2, 0, 1)[None], dtype=np.float32)  # (1,3,ih,iw)
 
 
-def _sky_prob(rgb_u8: np.ndarray) -> np.ndarray:
-    """추론 → sky 클래스 softmax 확률맵 (Hm,Wm) float32. (보통 128×128)"""
+def infer_softmax(rgb_u8: np.ndarray):
+    """추론 1회 → 전체 150클래스 softmax 확률맵. (probs[150,Hm,Wm] float32, 원본 (H,W)) 반환.
+    Hm,Wm ≈ 입력/4. 복합 마스크용으로 캐시해 두고 compose_mask 로 여러 번 재조합한다."""
     sess = _session()
     inp = sess.get_inputs()[0].name
     out = sess.get_outputs()[0].name
     logits = sess.run([out], {inp: _preprocess(rgb_u8)})[0][0]   # (150, Hm, Wm)
     logits = logits - logits.max(axis=0, keepdims=True)          # softmax 수치안정
     e = np.exp(logits)
-    prob = e[_SKY_CLASS] / e.sum(axis=0)
-    return prob.astype(np.float32)
+    probs = (e / e.sum(axis=0)).astype(np.float32)
+    return probs, tuple(rgb_u8.shape[:2])
+
+
+def compose_mask(probs, out_hw, class_ids, guide_luma=None, refine=True, fill_holes=True):
+    """선택 클래스 합산 → 마스크(soft alpha float32 [0,1], out_hw). 추론 없이 빠르게 재조합.
+
+    probs: infer_softmax 결과(150,Hm,Wm). class_ids: 합집합할 ADE 인덱스(빈 목록=빈 마스크).
+    guide_luma: 원본 휘도(H,W)[0,1] — guided filter 가이드(refine=True 시 필요).
+    softmax 확률이라 선택 채널 합 = P(픽셀이 선택 클래스 중 하나)."""
+    h, w = out_hw
+    if not class_ids:
+        return np.zeros((h, w), dtype=np.float32)
+    p = probs[list(class_ids)].sum(axis=0)                       # 합집합 확률(저해상도)
+    mask = _resize(p, (h, w), order=1).astype(np.float32)        # 입력 해상도 업샘플
+    mask = _smoothstep(MASK_LO, MASK_HI, mask)                   # 결정 곡선
+    if fill_holes:
+        mask = np.maximum(mask, binary_fill_holes(mask > MASK_FILL_T).astype(np.float32))
+    if refine and guide_luma is not None:
+        r = max(1, int(min(h, w) * GUIDED_RADIUS_FRAC))
+        mask = _guided_filter(guide_luma, mask, r, GUIDED_EPS)
+    return np.clip(mask, 0.0, 1.0)
 
 
 def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
@@ -137,23 +187,7 @@ def _guided_filter(guide: np.ndarray, src: np.ndarray, radius: int, eps: float) 
 
 
 def segment_sky(rgb_u8: np.ndarray, refine: bool = True, fill_holes: bool = True) -> np.ndarray:
-    """하늘 마스크(soft alpha, float32 [0,1], 입력과 동일 H×W) 반환.
-
-    rgb_u8: display-sRGB RGB (H,W,3) uint8.
-    fill_holes=True 면 하늘로 에워싸인 구멍(밝은 구름 등)을 채움.
-    refine=True 면 원본 휘도를 가이드로 guided filter 정제(나뭇가지/건물 경계 밀착).
-    하드 마스크가 필요하면 호출측에서 threshold(예: mask > 0.5).
-    """
-    h, w = rgb_u8.shape[:2]
-    prob = _sky_prob(rgb_u8)
-    mask = _resize(prob, (h, w), order=1).astype(np.float32)     # 입력 해상도 업샘플
-    mask = _smoothstep(MASK_LO, MASK_HI, mask)                   # 결정 곡선: 내부 solid·경계 soft
-    if fill_holes:
-        # 하늘에 에워싸인 구멍(구름)을 solid 로. 에워싸이지 않은 것(줄기·프레임)은 그대로 → 안전.
-        filled = binary_fill_holes(mask > MASK_FILL_T)
-        mask = np.maximum(mask, filled.astype(np.float32))
-    if refine:
-        luma = (rgb_u8.astype(np.float32) / 255.0) @ _LUMA
-        r = max(1, int(min(h, w) * GUIDED_RADIUS_FRAC))
-        mask = _guided_filter(luma, mask, r, GUIDED_EPS)
-    return np.clip(mask, 0.0, 1.0)
+    """편의 함수: 단일 추론 → 하늘(sky) 마스크. (복합 마스크는 infer_softmax + compose_mask 사용)"""
+    probs, hw = infer_softmax(rgb_u8)
+    guide = (rgb_u8.astype(np.float32) / 255.0) @ _LUMA
+    return compose_mask(probs, hw, [_SKY_CLASS], guide, refine, fill_holes)

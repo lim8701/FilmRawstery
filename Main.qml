@@ -92,8 +92,18 @@ ApplicationWindow {
     property var secOpen: [true, true, true, true, true, false, true, true, false, false, true, false, false]
     function toggleSec(i) { var a = secOpen.slice(); a[i] = !a[i]; secOpen = a }
 
-    // 하늘 마스크 선택영역 오버레이 표시(프리뷰 전용 시각화)
+    // 마스크 선택영역 오버레이 표시(프리뷰 전용 시각화)
     property bool showSkyMask: false
+    // 현재 체크된 마스크 클래스 그룹 key 목록(복합 선택). 토글 시 라이브 재조합.
+    property var maskKeys: []
+    function toggleMaskKey(key, on) {
+        var a = maskKeys.slice()
+        var i = a.indexOf(key)
+        if (on && i < 0) a.push(key)
+        else if (!on && i >= 0) a.splice(i, 1)
+        maskKeys = a
+        controller.setMaskClasses(a)
+    }
 
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
     property int quarterTurns: 0        // 90° 단위 회전 (⟳ CW +1, ⟲ CCW -1, mod 4)
@@ -234,6 +244,7 @@ ApplicationWindow {
         skyTextureSlider.value = 0.0; skyClaritySlider.value = 0.0; skyDehazeSlider.value = 0.0
         skyInvertCheck.checked = false
         win.showSkyMask = false
+        win.maskKeys = []
         controller.clearSky()
     }
 
@@ -3258,25 +3269,43 @@ ApplicationWindow {
                             width: maskScroll.width - 32
                             spacing: 12
 
-                            // ---- Create Mask: 선택 방법(현재 Sky, 추후 Object/Subject/Brush 등 추가) ----
+                            // ---- Create Mask: 클래스 체크박스(복합 선택, 라이브 재조합) ----
                             Label {
                                 text: "Create Mask"
                                 color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
                                 font.capitalization: Font.AllUppercase
                             }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                Button {
-                                    text: controller.skyBusy ? "Selecting…" : "Select Sky"
-                                    enabled: controller.imagePath !== "" && !controller.skyBusy
-                                    onClicked: controller.selectSky()
+                            Label {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: "Check one or more — the mask is the union of the selected classes."
+                                color: "#888"; font.pixelSize: 11
+                            }
+                            GridLayout {
+                                Layout.fillWidth: true
+                                columns: 2
+                                columnSpacing: 4; rowSpacing: 2
+                                Repeater {
+                                    model: controller.maskGroups
+                                    delegate: RowLayout {
+                                        Layout.fillWidth: true; spacing: 6
+                                        CheckBox {
+                                            checked: win.maskKeys.indexOf(modelData.key) >= 0
+                                            enabled: controller.imagePath !== "" && !controller.skyBusy
+                                            onToggled: win.toggleMaskKey(modelData.key, checked)
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true; text: modelData.label
+                                            color: "white"; font.pixelSize: 12
+                                            verticalAlignment: Text.AlignVCenter
+                                        }
+                                    }
                                 }
-                                // 추후: Select Object / Select Subject / Brush 버튼 추가
-                                Button {
-                                    text: "Clear"
-                                    enabled: controller.imagePath !== ""
-                                    onClicked: win.resetSky()
-                                }
+                            }
+                            Button {
+                                text: "Clear"
+                                Layout.fillWidth: true
+                                enabled: controller.imagePath !== ""
+                                onClicked: win.resetSky()
                             }
                             // 선택 진행 중/완료 상태는 이미지 위 스피너 오버레이가 표시(controller.skyBusy).
                             // 선택 '완료'(클리어 제외) → 마스크 오버레이 자동 표시

@@ -20,10 +20,11 @@ Export(numpy)가 동일 결과를 내도록 양쪽에 같은 수식을 유지한
    ┌──────────────────────────────────────────┘
    ▼
  [1] 종횡비 유지 리사이즈(긴 변 1024, 32배수)  →  ImageNet 정규화
- [2] SegFormer-B2 ONNX 추론 → 150클래스 logits → softmax → sky(=2) 확률맵(입력 1/4)
- [3] 입력 해상도로 업샘플
- [4] 결정 곡선 smoothstep(0.02, 0.20)  → 약확신 하늘까지 solid
- [5] binary_fill_holes  → 에워싸인 구멍(구름) 채움
+ [2] SegFormer-B2 ONNX 추론 → 150클래스 logits → softmax (전체 캐시)   ── infer_softmax()
+ ─── 이하 후처리(추론 없이 재조합) ────────────────────────────────── compose_mask()
+ [3] 선택 클래스 확률 합산(복합 마스크 = 선택 클래스 합집합) → 입력 해상도로 업샘플
+ [4] 결정 곡선 smoothstep(0.02, 0.20)  → 약확신 영역까지 solid
+ [5] binary_fill_holes  → 에워싸인 구멍(구름 등) 채움
  [6] guided filter(휘도 가이드)  → 나뭇가지/건물 경계 밀착
    ▼
  soft alpha 마스크 float32 [0,1] (프록시 해상도)
@@ -34,7 +35,29 @@ Export(numpy)가 동일 결과를 내도록 양쪽에 같은 수식을 유지한
 
 핵심 원칙: **마스크 입력은 "중성 display sRGB"**(노출 0, as-shot WB, filmic 적용)로 만들어 화면에
 표시되는 프록시와 픽셀 정렬한다. 임베드 JPEG는 방향(Orientation)이 안 맞아 부적합 →
-`Controller._sky_worker`가 `_native_to_scenelinear` + `wb.filmic`로 프록시를 직접 변환해 사용.
+`Controller._sky_input_rgb()` 가 `_native_to_scenelinear` + `wb.filmic`로 프록시를 직접 변환해 사용.
+
+**라이브 갱신(추론 1회 캐시)**: `infer_softmax()` 결과(150채널 softmax)를 Controller가 캐시
+(`_seg_probs`/`_seg_guide`/`_seg_size`, 이미지당 1회, 새 이미지에 무효화)하고, 체크박스 토글마다
+`compose_mask()`만 다시 돌려(재추론 없이) 마스크를 재조합한다. 무거운 추론은 1회뿐.
+
+**복합 마스킹(멀티클래스)**: 추론 출력이 150클래스 softmax 전체라, 원하는 클래스들의 확률을
+**합산**하면(softmax 합 = "픽셀이 선택 클래스 중 하나일 확률") 여러 영역을 한 마스크로 합칠 수 있다.
+선택 가능한 묶음은 `sky_seg.MASK_GROUPS`(key·label·ADE인덱스 목록, 자유 편집):
+
+| 그룹 | ADE 인덱스 |
+|------|-----------|
+| Sky | 2 |
+| Vegetation | 4, 9, 17, 66 (tree·grass·plant·flower) |
+| Building | 1, 25, 48 (building·house·skyscraper) |
+| Ground | 6, 11, 13, 29, 46 (road·sidewalk·earth·field·sand) |
+| Water | 21, 26, 60, 109, 128 (water·sea·river·pool·lake) |
+| Mountain | 16, 34 (mountain·rock) |
+| Person | 12 |
+
+UI(Masking 패널 "Create Mask")는 이 그룹들을 체크박스로 노출하고, 체크 조합을
+`Controller.setMaskClasses(keys)` → `class_ids_for()` → `compose_mask()` 로 라이브 합성한다.
+⚠️ person 등 미세 경계 클래스는 영역만 대략 잡힘(정밀 피사체는 전용 매팅 모델 영역).
 
 ---
 
@@ -151,7 +174,8 @@ sky=2·ImageNet 동일이라 `sky_seg.py`의 `_REPO`/`MODEL_PATH` 한 줄 교체
 ### UI (Masking 패널)
 
 - 우측 세로 셀렉터 3번째 아이콘 ◉ → StackLayout index2(Edit 안 섹션 아님, 독립 패널).
-- **Create Mask**: `Select Sky` / `Clear` (추후 Object/Subject/Brush 확장 자리). Show mask / Invert 체크.
+- **Create Mask**: 클래스 체크박스(`controller.maskGroups` Repeater, 복합 선택) + `Clear`.
+  토글 → `win.toggleMaskKey` → `controller.setMaskClasses(keys)` 라이브 합성. Show mask / Invert 체크.
 - **Adjustments**: 9 슬라이더(-1..1, 더블클릭=리셋).
 - 진행 상태: 이미지 위 스피너 오버레이(`controller.skyBusy` → "Detecting sky…").
 - UX: 선택 완료(`skySelected` 시그널)→마스크 오버레이 자동 표시 / 슬라이더 `onMoved`→오버레이 off.

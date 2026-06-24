@@ -502,10 +502,14 @@ class Controller(QObject):
         self._sky_provider = sky_provider        # 하늘 마스크 텍스처
         self._sky_url = "image://skymask/m?v=0"
         self._sky_counter = 0
-        self._sky_seq = 0           # 비동기 세그 순번(오래된 결과 폐기)
-        self._sky_busy = False      # 세그 추론 진행 중
-        self._sky_mask = None       # 마지막 하늘 마스크 (numpy float32 [0,1], 프록시 해상도) — CPU export 용
+        self._sky_seq = 0           # 비동기 세그/재조합 순번(오래된 결과 폐기)
+        self._sky_busy = False      # 세그 추론/재조합 진행 중
+        self._sky_mask = None       # 마지막 마스크 (numpy float32 [0,1], 프록시 해상도) — CPU export 용
         self._proxy_img = None      # 마지막 프록시 QImage(세그 입력 디코드용)
+        self._seg_probs = None      # 캐시된 150클래스 softmax(저해상도) — 이미지당 추론 1회
+        self._seg_guide = None      # 캐시된 원본 휘도(guided filter 가이드)
+        self._seg_size = None       # 캐시된 마스크 출력 크기(H,W)
+        self._mask_keys = []        # 현재 선택된 클래스 그룹 key 목록
         self._full_url = "image://rawfull/f?v=0"
         self._full_counter = 0
         self._gpu_path = ""                      # GPU export 대상 파일
@@ -1061,32 +1065,57 @@ class Controller(QObject):
         self._stamp_url = f"image://stamp/s?v={self._stamp_counter}"
         self.stampChanged.emit()
 
-    # ---------- 하늘 자동 마스킹 (ONNX SegFormer 세그멘테이션) ----------
-    @Slot()
-    def selectSky(self) -> None:  # noqa: N802 (QML 슬롯)
-        """현재 프록시에서 하늘 마스크를 ML 세그로 생성(백그라운드 스레드). UI 안 멈춤."""
-        if self._proxy_img is None or self._sky_busy:
+    # ---------- 시맨틱 마스킹 (ONNX SegFormer, 복합 클래스) ----------
+    #   추론 1회로 150클래스 softmax 를 캐시(_seg_probs)해 두고, 체크된 클래스들을 합산해
+    #   라이브로 재조합한다(재추론 없음). 마스크 적용/조정/export 는 클래스 무관(단일 알파).
+    def _get_mask_groups(self):
+        import sky_seg
+        return sky_seg.groups_for_qml()
+
+    maskGroups = Property("QVariantList", _get_mask_groups, constant=True)
+
+    @Slot("QVariantList")
+    def setMaskClasses(self, keys) -> None:  # noqa: N802 (QML 슬롯)
+        """체크된 클래스 그룹 key 목록으로 복합 마스크 생성(백그라운드). 캐시 있으면 재추론 없음."""
+        self._mask_keys = [str(k) for k in keys]
+        if self._proxy_img is None:
             return
         self._sky_seq += 1
         self._sky_busy = True
         self.skyBusyChanged.emit()
-        threading.Thread(target=self._sky_worker, args=(self._sky_seq,), daemon=True).start()
+        threading.Thread(target=self._mask_worker,
+                         args=(self._sky_seq, list(self._mask_keys)), daemon=True).start()
 
-    def _sky_worker(self, seq: int) -> None:
-        """프록시(헤드룸 카메라네이티브) → 중성 display sRGB → SegFormer 추론 → 하늘 마스크."""
+    @Slot()
+    def selectSky(self) -> None:  # noqa: N802 (QML 슬롯, 하위호환)
+        self.setMaskClasses(["sky"])
+
+    def _sky_input_rgb(self):
+        """프록시(헤드룸 카메라네이티브) → 중성(노출0·as-shot WB) display sRGB uint8. 세그 입력."""
         import numpy as np
+        im = self._proxy_img.convertToFormat(QImage.Format.Format_RGB888)
+        w, h = im.width(), im.height()
+        arr = (np.frombuffer(im.constBits(), np.uint8)
+               .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3).astype(np.float32) / 255.0)
+        disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
+        return (disp * 255.0 + 0.5).astype(np.uint8)
+
+    def _mask_worker(self, seq: int, keys) -> None:
+        import numpy as np
+        import sky_seg
         mask = None
         try:
-            im = self._proxy_img.convertToFormat(QImage.Format.Format_RGB888)
-            w, h = im.width(), im.height()
-            arr = (np.frombuffer(im.constBits(), np.uint8)
-                   .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3).astype(np.float32) / 255.0)
-            disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)  # 중성(노출0) display
-            rgb8 = (disp * 255.0 + 0.5).astype(np.uint8)
-            import sky_seg
-            mask = sky_seg.segment_sky(rgb8, refine=True)
+            if self._seg_probs is None:                 # 이미지당 추론 1회 → 캐시
+                rgb8 = self._sky_input_rgb()
+                probs, hw = sky_seg.infer_softmax(rgb8)
+                self._seg_probs = probs
+                self._seg_size = hw
+                self._seg_guide = (rgb8.astype(np.float32) / 255.0) @ sky_seg._LUMA
+            ids = sky_seg.class_ids_for(keys)
+            if ids:
+                mask = sky_seg.compose_mask(self._seg_probs, self._seg_size, ids, self._seg_guide)
         except Exception as exc:
-            print(f"[sky] 세그 실패: {exc}")
+            print(f"[mask] 세그 실패: {exc}")
         self._skyReady.emit((seq, mask))
 
     @Slot(object)
@@ -1094,36 +1123,40 @@ class Controller(QObject):
         import numpy as np
         seq, mask = payload
         if seq != self._sky_seq:
-            return                       # 더 최신 세그 진행 중 → 폐기
+            return                       # 더 최신 작업 진행 중 → 폐기
         self._sky_busy = False
         self.skyBusyChanged.emit()
-        if mask is None:
+        if mask is None:                 # 선택 없음/실패 → 마스크 제거
+            self._set_sky_mask(None)
             return
+        self._set_sky_mask(mask)
+        self.skySelected.emit()          # 갱신 완료 → QML 이 마스크 오버레이 자동 표시
+
+    def _set_sky_mask(self, mask) -> None:
+        """마스크(numpy [0,1] 또는 None)를 프로바이더/캐시에 반영. None=1x1 검정(sampler 유효 유지)."""
+        import numpy as np
         self._sky_mask = mask            # CPU export 용(프록시 해상도 보관)
-        g = np.ascontiguousarray((np.clip(mask, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
-        h, w = g.shape
-        qi = QImage(g.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+        if mask is None:
+            qi = QImage(1, 1, QImage.Format.Format_Grayscale8)
+            qi.fill(0)
+        else:
+            g = np.ascontiguousarray((np.clip(mask, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
+            h, w = g.shape
+            qi = QImage(g.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
         if self._sky_provider is not None:
             self._sky_provider.set_image(qi)
         self._sky_counter += 1
         self._sky_url = f"image://skymask/m?v={self._sky_counter}"
         self.skyMaskChanged.emit()
-        self.skySelected.emit()          # 생성 완료 → QML 이 마스크 오버레이 자동 표시
 
     @Slot()
     def clearSky(self) -> None:  # noqa: N802 (QML 슬롯)
         self._clear_sky()
 
     def _clear_sky(self) -> None:
-        """하늘 마스크 제거(1x1 검정) — 새 파일 로드/리셋 시. 셰이더 sampler 는 항상 유효 유지."""
-        self._sky_mask = None
-        if self._sky_provider is not None:
-            blank = QImage(1, 1, QImage.Format.Format_Grayscale8)
-            blank.fill(0)
-            self._sky_provider.set_image(blank)
-        self._sky_counter += 1
-        self._sky_url = f"image://skymask/m?v={self._sky_counter}"
-        self.skyMaskChanged.emit()
+        """마스크 선택 해제(1x1 검정). 캐시(_seg_probs)는 유지 — 같은 이미지 재선택은 재추론 불필요."""
+        self._mask_keys = []
+        self._set_sky_mask(None)
 
     def _get_sky_url(self) -> str:
         return self._sky_url
@@ -1202,8 +1235,10 @@ class Controller(QObject):
         self.imageChanged.emit()
         self.wbBaked.emit()              # baked kelvin/tint/matrix 갱신 알림
         self._proxy_w, self._proxy_h = img.width(), img.height()
-        self._proxy_img = img            # 하늘 세그 입력 디코드용(display sRGB 변환 base)
-        self._clear_sky()                # 새 프록시 → 이전 하늘 마스크 폐기
+        self._proxy_img = img            # 세그 입력 디코드용(display sRGB 변환 base)
+        self._seg_probs = None           # 새 이미지 → 추론 캐시 무효화(다음 선택 시 재추론)
+        self._seg_guide = self._seg_size = None
+        self._clear_sky()                # 새 프록시 → 이전 마스크 폐기
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "
