@@ -319,8 +319,40 @@ def _color_grade(c, hue_sh, sat_sh, hue_mid, sat_mid, hue_hi, sat_hi, balance):
     return np.clip(c + delta, 0.0, 1.0).astype(np.float32)
 
 
+def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
+    """하늘(로컬) 조정 — 셰이더 adjust.frag 9.7 단계와 동일 수식. m=0 인 곳은 항등.
+    c=display sRGB (H,W,3), m=마스크(H,W)[0,1], sp=파라미터 dict.
+    nd_texhi=중성 텍스처 고주파(RGB), nd_lc=중성 로컬대비(luma) — 셰이더 dispSrc 블러 대응."""
+    if sp["invert"]:
+        m = 1.0 - m
+    m1 = m[..., None]
+    out = c * np.float32(2.0) ** (sp["exp"] * m1)              # 노출
+    out[..., 0] *= (1.0 + sp["temp"] * 0.20 * m)               # 색온도(+따뜻 R↑B↓)
+    out[..., 2] *= (1.0 - sp["temp"] * 0.20 * m)
+    out[..., 1] *= (1.0 - sp["tint"] * 0.15 * m)               # 틴트(+마젠타 G↓)
+    L1 = out @ LUMA                                            # 하이라이트/섀도 국소 노출
+    hiW = _smoothstep(0.5, 1.0, L1)
+    shW = 1.0 - _smoothstep(0.0, 0.5, L1)
+    out = out * (np.float32(2.0) ** ((sp["hi"] * hiW + sp["sh"] * shW) * m)[..., None])
+    if sp["texture"] != 0.0 and nd_texhi is not None:          # 텍스처(중주파)
+        out = out + nd_texhi * (sp["texture"] * 1.6) * m1
+    if sp["clarity"] != 0.0 and nd_lc is not None:             # 클래리티(중간톤 로컬대비)
+        l = out @ LUMA
+        out = out + (nd_lc * (sp["clarity"] * 0.8) * (1.0 - np.abs(2.0 * l - 1.0)) * m)[..., None]
+    if sp["dehaze"] != 0.0 and nd_lc is not None:              # 디헤이즈(톤 모델)
+        out = out + (nd_lc * (sp["dehaze"] * 0.4) * m)[..., None]
+        out = (out - 0.5) * (1.0 + sp["dehaze"] * 0.25 * m1) + 0.5
+        if sp["dehaze"] < 0.0:
+            out = out + (0.92 - out) * ((-sp["dehaze"]) * 0.22 * m1)
+        ll = (out @ LUMA)[..., None]
+        out = ll + (out - ll) * (1.0 + sp["dehaze"] * 0.3 * m1)
+    la = (out @ LUMA)[..., None]                               # 채도
+    out = la + (out - la) * (1.0 + sp["sat"] * m1)
+    return np.clip(out, 0.0, 1.0).astype(np.float32)
+
+
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
-                proxy_edge=2560, strip=256, bitdepth=8):
+                proxy_edge=2560, strip=256, bitdepth=8, sky_mask=None):
     """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) RGB 로 반환.
     bitdepth=8 -> uint8, 16 -> uint16(계조/헤드룸 보존, TIFF/PNG 16bit 저장용)."""
     with rawpy.imread(path) as raw:
@@ -386,6 +418,21 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     hsl_l = p.get("hslL", [0.0] * 8)
     stamp_text = str(p.get("stampText", "") or "")
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
+    # 하늘(로컬) 조정 — 마스크는 프록시 해상도라 풀해상도로 업샘플(부드러운 알파 → bilinear OK).
+    sky = {"exp": float(p.get("skyExp", 0)), "temp": float(p.get("skyTemp", 0)),
+           "tint": float(p.get("skyTint", 0)), "sat": float(p.get("skySat", 0)),
+           "hi": float(p.get("skyHi", 0)), "sh": float(p.get("skyShadows", 0)),
+           "texture": float(p.get("skyTexture", 0)), "clarity": float(p.get("skyClarity", 0)),
+           "dehaze": float(p.get("skyDehaze", 0)), "invert": bool(p.get("skyInvert", False))}
+    sky_any = any(sky[k] for k in ("exp", "temp", "tint", "sat", "hi", "sh",
+                                   "texture", "clarity", "dehaze"))
+    skym_full = None
+    if sky_any and sky_mask is not None:
+        sm = np.asarray(sky_mask, np.float32)
+        mh, mw = sm.shape[:2]
+        if (mh, mw) != (h, w):
+            sm = zoom(sm, (h / mh, w / mw), order=1).astype(np.float32)
+        skym_full = np.clip(sm, 0.0, 1.0)
 
     # --- 전역/공간 단계 (전체 배열). 노출/하이라이트는 filmic 프론트엔드에서 이미 처리됨 ---
     sigma_tex = 1.5 * scale     # 프리뷰 텍스처 블러에 대응
@@ -436,6 +483,15 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     else:
         grain2d = None
 
+    # 하늘(로컬) 조정용 중성 로컬대비(셰이더 dispSrc 블러 대응) — 텍스처/클래리티/디헤이즈 시만 계산.
+    nd_texhi = nd_lc = None
+    if skym_full is not None:
+        if sky["texture"] != 0.0:
+            nd_texhi = (neutral_disp - _blur_rgb(neutral_disp, sigma_tex)).astype(np.float32)
+        if sky["clarity"] != 0.0 or sky["dehaze"] != 0.0:
+            ndl = (neutral_disp @ LUMA).astype(np.float32)
+            nd_lc = (ndl - _blur_luma(ndl, sigma_cla)).astype(np.float32)
+
     # --- LUT/대비/커브/비네팅 (메모리 큰 LUT 는 스트립) ---
     maxv = 65535.0 if bitdepth == 16 else 255.0
     dt = np.uint16 if bitdepth == 16 else np.uint8
@@ -459,6 +515,10 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         for ch in range(3):
             blk[..., ch] = np.interp(blk[..., ch], xs, crgb[:, ch])
         blk = _color_grade(blk, *cg)                                   # 컬러 그레이딩(톤커브 뒤)
+        if skym_full is not None:                                      # 하늘(로컬) 조정 — 비네팅 앞
+            blk = _sky_adjust(blk, skym_full[y:y + strip], sky,
+                              None if nd_texhi is None else nd_texhi[y:y + strip],
+                              None if nd_lc is None else nd_lc[y:y + strip])
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * maxv).astype(dt)

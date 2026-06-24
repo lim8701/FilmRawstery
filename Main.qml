@@ -92,6 +92,9 @@ ApplicationWindow {
     property var secOpen: [true, true, true, true, true, false, true, true, false, false, true, false, false]
     function toggleSec(i) { var a = secOpen.slice(); a[i] = !a[i]; secOpen = a }
 
+    // 하늘 마스크 선택영역 오버레이 표시(프리뷰 전용 시각화)
+    property bool showSkyMask: false
+
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
     property int quarterTurns: 0        // 90° 단위 회전 (⟳ CW +1, ⟲ CCW -1, mod 4)
     // 종횡비 콤보 인덱스 -> 비율(가로/세로). aspectCombo 모델과 순서 일치.
@@ -221,6 +224,17 @@ ApplicationWindow {
         win.setCropRect(_ev(p,"cropX",0.0), _ev(p,"cropY",0.0), _ev(p,"cropW",1.0), _ev(p,"cropH",1.0))
         geoVSlider.value = _ev(p, "geoV", 0); geoHSlider.value = _ev(p, "geoH", 0)
         geoScaleSlider.value = _ev(p, "geoScale", 100)
+        win.resetSky()    // 하늘 조정/마스크는 세션 전용(사이드카 미저장) → 로드마다 초기화
+    }
+
+    // 하늘(로컬) 조정 초기화 — 슬라이더 + 마스크 + 오버레이. 새 파일 로드/Reset 에서 호출.
+    function resetSky() {
+        skyExpSlider.value = 0.0; skyTempSlider.value = 0.0; skyTintSlider.value = 0.0
+        skySatSlider.value = 0.0; skyHiSlider.value = 0.0; skyShadowsSlider.value = 0.0
+        skyTextureSlider.value = 0.0; skyClaritySlider.value = 0.0; skyDehazeSlider.value = 0.0
+        skyInvertCheck.checked = false
+        win.showSkyMask = false
+        controller.clearSky()
     }
 
     // 전체 초기화(편집 + 지오메트리). 수동 Reset 버튼 & 저장본 없는 파일 로드에서 호출.
@@ -241,6 +255,7 @@ ApplicationWindow {
         simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
         curveEditor.resetAll()
         win.resetGeometry()
+        win.resetSky()
     }
 
     // ===== 편집 복사/붙여넣기 (이미지 간) =====
@@ -376,7 +391,13 @@ ApplicationWindow {
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
             "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScalePct": geoScaleSlider.value
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScalePct": geoScaleSlider.value,
+            // 하늘(로컬) 조정 — CPU render_full 이 보관된 마스크(controller._sky_mask)와 함께 적용.
+            "skyExp": skyExpSlider.value, "skyTemp": skyTempSlider.value,
+            "skyTint": skyTintSlider.value, "skySat": skySatSlider.value,
+            "skyHi": skyHiSlider.value, "skyShadows": skyShadowsSlider.value,
+            "skyTexture": skyTextureSlider.value, "skyClarity": skyClaritySlider.value,
+            "skyDehaze": skyDehazeSlider.value, "skyInvert": skyInvertCheck.checked
         }
     }
 
@@ -1000,6 +1021,15 @@ ApplicationWindow {
                 source: controller.stampUrl
             }
 
+            // 하늘 마스크 텍스처(프록시 크기 단일채널). 셰이더가 하늘 로컬조정에 게이팅.
+            Image {
+                id: skyMaskImage
+                visible: false
+                cache: false
+                smooth: true
+                source: controller.skyMaskUrl
+            }
+
             // ── GPU export: 풀해상도를 프리뷰와 **동일한 adjust.frag** 로 렌더(프리뷰=Export) ──
             //   온디맨드(렌더=GPU 일 때만 active). src 만 풀해상도, 블러 텍스처는 프록시 것 재사용
             //   (로컬대비/톤마스크 성격을 프리뷰와 동일하게). uniform 바인딩은 pipe 와 반드시 동일.
@@ -1091,6 +1121,19 @@ ApplicationWindow {
                         property real lutSize: lutN
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
+                        // 하늘(로컬) 조정 — 프리뷰(pipe)와 동일 바인딩. 오버레이는 export 미적용(0).
+                        property variant skyMask: skyMaskImage
+                        property real skyExp: skyExpSlider.value
+                        property real skyTemp: skyTempSlider.value
+                        property real skyTint: skyTintSlider.value
+                        property real skySat: skySatSlider.value
+                        property real skyHi: skyHiSlider.value
+                        property real skyShadows: skyShadowsSlider.value
+                        property real skyTexture: skyTextureSlider.value
+                        property real skyClarity: skyClaritySlider.value
+                        property real skyDehaze: skyDehazeSlider.value
+                        property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
+                        property real skyShowMask: 0.0
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
                 }}
@@ -1361,6 +1404,19 @@ ApplicationWindow {
                         property real lutSize: lutN             // context property (LUT 크기 N)
                         property real lutStrength: simStrengthSlider.value
                         property int lutEnabled: simCombo.currentIndex === 0 ? 0 : 1
+                        // 하늘(로컬) 조정 — ML 세그 마스크에만 적용. showSkyMask=선택영역 시각화(프리뷰 전용).
+                        property variant skyMask: skyMaskImage
+                        property real skyExp: skyExpSlider.value
+                        property real skyTemp: skyTempSlider.value
+                        property real skyTint: skyTintSlider.value
+                        property real skySat: skySatSlider.value
+                        property real skyHi: skyHiSlider.value
+                        property real skyShadows: skyShadowsSlider.value
+                        property real skyTexture: skyTextureSlider.value
+                        property real skyClarity: skyClaritySlider.value
+                        property real skyDehaze: skyDehazeSlider.value
+                        property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
+                        property real skyShowMask: win.showSkyMask ? 1.0 : 0.0
 
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
@@ -1821,22 +1877,23 @@ ApplicationWindow {
                 }
             }
 
-            // 진행 중 스피너 오버레이 (이미지 위): export 또는 디코딩(렌즈 보정 등)
+            // 진행 중 스피너 오버레이 (이미지 위): export / 디코딩(렌즈 보정) / 하늘 세그멘테이션
             Rectangle {
                 anchors.fill: parent
-                visible: controller.exporting || controller.busy
+                visible: controller.exporting || controller.busy || controller.skyBusy
                 color: "#aa000000"
                 MouseArea { anchors.fill: parent }   // 진행 중 이미지 입력 차단
                 ColumnLayout {
                     anchors.centerIn: parent
                     spacing: 12
                     BusyIndicator {
-                        running: controller.exporting || controller.busy
+                        running: controller.exporting || controller.busy || controller.skyBusy
                         Layout.alignment: Qt.AlignHCenter
                         implicitWidth: 64; implicitHeight: 64
                     }
                     Label {
-                        text: controller.exporting ? "Exporting…" : "Processing…"
+                        text: controller.exporting ? "Exporting…"
+                              : (controller.skyBusy ? "Detecting sky…" : "Processing…")
                         color: "white"; font.pixelSize: 14
                         Layout.alignment: Qt.AlignHCenter
                     }
@@ -3177,6 +3234,218 @@ ApplicationWindow {
                             }
                         }
                     }
+
+                    // ===== index 2: Masking (영역별 로컬 조정 — ML 세그 마스크) =====
+                    Flickable {
+                        id: maskScroll
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: width
+                        contentHeight: maskCol.height + 32
+                        boundsBehavior: Flickable.StopAtBounds
+                        ScrollBar.vertical: B.ScrollBar {
+                            id: maskBar
+                            width: 12
+                            policy: ScrollBar.AlwaysOn
+                            contentItem: Rectangle { implicitWidth: 8; radius: 4; color: maskBar.pressed ? "#cfcfcf" : "#9a9a9a" }
+                            background: Rectangle { radius: 4; color: "#3a3a3a" }
+                        }
+
+                        ColumnLayout {
+                            id: maskCol
+                            x: 16; y: 16
+                            width: maskScroll.width - 32
+                            spacing: 12
+
+                            // ---- Create Mask: 선택 방법(현재 Sky, 추후 Object/Subject/Brush 등 추가) ----
+                            Label {
+                                text: "Create Mask"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 6
+                                Button {
+                                    text: controller.skyBusy ? "Selecting…" : "Select Sky"
+                                    enabled: controller.imagePath !== "" && !controller.skyBusy
+                                    onClicked: controller.selectSky()
+                                }
+                                // 추후: Select Object / Select Subject / Brush 버튼 추가
+                                Button {
+                                    text: "Clear"
+                                    enabled: controller.imagePath !== ""
+                                    onClicked: win.resetSky()
+                                }
+                            }
+                            // 선택 진행 중/완료 상태는 이미지 위 스피너 오버레이가 표시(controller.skyBusy).
+                            // 선택 '완료'(클리어 제외) → 마스크 오버레이 자동 표시
+                            Connections {
+                                target: controller
+                                function onSkySelected() { win.showSkyMask = true }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 6
+                                CheckBox {
+                                    id: skyShowCheck
+                                    checked: win.showSkyMask
+                                    onToggled: win.showSkyMask = checked
+                                }
+                                Label {
+                                    Layout.fillWidth: true; text: "Show mask overlay (red)"
+                                    color: "white"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+                            RowLayout {
+                                Layout.fillWidth: true; spacing: 6
+                                CheckBox { id: skyInvertCheck }
+                                Label {
+                                    Layout.fillWidth: true; text: "Invert mask (everything but the selection)"
+                                    color: "white"; font.pixelSize: 12; verticalAlignment: Text.AlignVCenter
+                                }
+                            }
+
+                            Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                            // ---- Adjustments (활성 마스크 영역 전용) ----
+                            Label {
+                                text: "Adjustments"
+                                color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+                            Label { text: "Exposure:  " + skyExpSlider.value.toFixed(2) + "  (stop)"; color: "white" }
+                            Slider {
+                                id: skyExpSlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skyExpSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false   // 조정 중엔 오버레이 끄고 실제 효과 보기
+                            }
+                            Label { text: "Temp:  " + skyTempSlider.value.toFixed(2) + "  (− cool / + warm)"; color: "white" }
+                            Slider {
+                                id: skyTempSlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skyTempSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false
+                            }
+                            Label { text: "Tint:  " + skyTintSlider.value.toFixed(2) + "  (− green / + magenta)"; color: "white" }
+                            Slider {
+                                id: skyTintSlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skyTintSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false
+                            }
+                            Label { text: "Highlights:  " + skyHiSlider.value.toFixed(2); color: "white" }
+                            Slider {
+                                id: skyHiSlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skyHiSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false
+                            }
+                            Label { text: "Shadows:  " + skyShadowsSlider.value.toFixed(2); color: "white" }
+                            Slider {
+                                id: skyShadowsSlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skyShadowsSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false
+                            }
+                            Label { text: "Texture:  " + skyTextureSlider.value.toFixed(2); color: "white" }
+                            Slider {
+                                id: skyTextureSlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skyTextureSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false
+                            }
+                            Label { text: "Clarity:  " + skyClaritySlider.value.toFixed(2); color: "white" }
+                            Slider {
+                                id: skyClaritySlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skyClaritySlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false
+                            }
+                            Label { text: "Dehaze:  " + skyDehazeSlider.value.toFixed(2); color: "white" }
+                            Slider {
+                                id: skyDehazeSlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skyDehazeSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false
+                            }
+                            Label { text: "Saturation:  " + skySatSlider.value.toFixed(2); color: "white" }
+                            Slider {
+                                id: skySatSlider
+                                Layout.fillWidth: true
+                                from: -1.0; to: 1.0; value: 0.0
+                                property real defaultValue: 0.0
+                                property real _lastPressMs: 0
+                                property bool _pendingReset: false
+                                onPressedChanged: {
+                                    if (pressed) _pendingReset = win.isDblPress(skySatSlider)
+                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
+                                }
+                                onMoved: win.showSkyMask = false
+                            }
+                            Label {
+                                Layout.fillWidth: true; wrapMode: Text.WordWrap
+                                text: "Create a mask (e.g. Select Sky — more selection types coming), then the sliders apply only to the masked region. Applies to both preview and export."
+                                color: "#888"; font.pixelSize: 11
+                            }
+                        }
+                    }
                 }   // end StackLayout
             }       // end 우측 패널 outer ColumnLayout
         }           // end 우측 패널 Rectangle
@@ -3196,7 +3465,8 @@ ApplicationWindow {
                 Repeater {
                     model: [
                         { icon: "edit", tip: "Edit" },
-                        { icon: "crop", tip: "Crop / Rotate / Geometry" }
+                        { icon: "crop", tip: "Crop / Rotate / Geometry" },
+                        { icon: "mask", tip: "Masking" }
                     ]
                     delegate: Rectangle {
                         width: 40; height: 40
@@ -3229,12 +3499,17 @@ ApplicationWindow {
                                         var k = P(rows[i][1], rows[i][0])
                                         ctx.beginPath(); ctx.arc(k[0], k[1], 2.6, 0, 2 * Math.PI); ctx.fill()
                                     }
-                                } else {
+                                } else if (ic === "crop") {
                                     // 크롭 브래킷(└ 좌하 + ┐ 우상)
                                     ctx.lineCap = "butt"; ctx.lineJoin = "miter"
                                     function seg(a, b) { ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke() }
                                     seg(P(7,2), P(7,17));  seg(P(7,17), P(22,17))
                                     seg(P(2,7), P(17,7));  seg(P(17,7), P(17,22))
+                                } else {
+                                    // 마스킹: 프레임(이미지) + 채운 원(선택 영역) — 영역별 보정
+                                    ctx.strokeRect(o + 3, o + 4, 18, 16)
+                                    var c = P(9, 13)
+                                    ctx.beginPath(); ctx.arc(c[0], c[1], 5, 0, 2 * Math.PI); ctx.fill()
                                 }
                             }
                         }

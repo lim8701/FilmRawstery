@@ -53,6 +53,18 @@ layout(std140, binding = 0) uniform buf {
     float cgBalance;
     float lumaNR;       // 휘도 노이즈 리덕션 0..1 (평탄부 고주파 억제, 엣지 보존)
     float colorNR;      // 컬러(chroma) 노이즈 리덕션 0..1 (색얼룩 제거, 휘도 불변)
+    // 하늘(로컬) 조정 — skyMask(binding 9) 게이팅. ML 세그멘테이션 마스크에만 적용.
+    float skyExp;       // 하늘 국소 노출 (stop, -1..1)
+    float skyTemp;      // 하늘 색온도 (+따뜻 R↑B↓ / -차갑, -1..1)
+    float skySat;       // 하늘 채도 (-1..1)
+    float skyHi;        // 하늘 하이라이트 국소 노출 (밝은 부분, -1..1)
+    float skyInvert;    // 마스크 반전 1/0
+    float skyShowMask;  // 마스크 선택영역 오버레이(프리뷰 전용) 1/0
+    float skyTint;      // 하늘 틴트 (+마젠타 / -녹, -1..1)
+    float skyShadows;   // 하늘 섀도 국소 노출 (어두운 부분, -1..1)
+    float skyTexture;   // 하늘 텍스처 (중주파 로컬대비, -1..1)
+    float skyClarity;   // 하늘 클래리티 (중간톤 로컬대비, -1..1)
+    float skyDehaze;    // 하늘 디헤이즈 (-1..1)
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -63,6 +75,7 @@ layout(binding = 5) uniform sampler2D claBlur;   // dispSrc 가우시안 블러(
 layout(binding = 6) uniform sampler2D stampTex;  // 날짜 스탬프 오버레이(프록시 RGBA)
 layout(binding = 7) uniform sampler2D dispSrc;   // src 의 display sRGB 변환본(블러/로컬대비 base)
 layout(binding = 8) uniform sampler2D sharpBlur; // dispSrc 가우시안 블러(샤프닝 반경, 가변)
+layout(binding = 9) uniform sampler2D skyMask;   // 하늘 마스크(단일채널 R, 프록시 해상도). 없으면 1x1 검정
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -320,6 +333,51 @@ void main() {
         vec3 dmid = (hsv2rgb(vec3(ubuf.cgHueMid, 1.0, 1.0)) - 0.5) * ubuf.cgSatMid;
         vec3 dhi  = (hsv2rgb(vec3(ubuf.cgHueHi,  1.0, 1.0)) - 0.5) * ubuf.cgSatHi;
         rgb = clamp(rgb + (dsh * wsh + dmid * wmid + dhi * whi) * 0.5, 0.0, 1.0);
+    }
+
+    // 9.7) 하늘(로컬) 조정 — skyMask(binding 9) 게이팅. display sRGB 공간.
+    //      m 스케일이 국소화하므로 별도 mix 불필요(m=0 인 곳은 모든 항이 항등 → 영향 없음).
+    //      마스크 없을 때(1x1 검정 텍스처)도 m=0 → 안전. 계수는 라이트룸 비교로 튜닝 대상.
+    if (ubuf.skyShowMask > 0.5 || ubuf.skyExp != 0.0 || ubuf.skyTemp != 0.0
+        || ubuf.skyTint != 0.0 || ubuf.skySat != 0.0 || ubuf.skyHi != 0.0
+        || ubuf.skyShadows != 0.0 || ubuf.skyTexture != 0.0
+        || ubuf.skyClarity != 0.0 || ubuf.skyDehaze != 0.0) {
+        float m = texture(skyMask, uv).r;
+        m = mix(m, 1.0 - m, ubuf.skyInvert);
+        if (ubuf.skyShowMask > 0.5) {
+            rgb = mix(rgb, vec3(0.95, 0.25, 0.25), m * 0.5);   // 선택 영역 시각화(프리뷰 전용)
+        } else {
+            rgb *= exp2(ubuf.skyExp * m);                      // 국소 노출(stop)
+            rgb.r *= (1.0 + ubuf.skyTemp * 0.20 * m);          // 색온도(+따뜻 R↑B↓)
+            rgb.b *= (1.0 - ubuf.skyTemp * 0.20 * m);
+            rgb.g *= (1.0 - ubuf.skyTint * 0.15 * m);          // 틴트(+마젠타 G↓ / -녹)
+            // 톤: 하이라이트/섀도 국소 노출(픽셀 휘도 가중)
+            float L1 = dot(rgb, LUMA);
+            float hiW = smoothstep(0.5, 1.0, L1);
+            float shW = 1.0 - smoothstep(0.0, 0.5, L1);
+            rgb *= exp2((ubuf.skyHi * hiW + ubuf.skyShadows * shW) * m);
+            // 로컬 대비(중성 dispSrc 기준 — 전역 텍스처/클래리티와 동일 base)
+            if (ubuf.skyTexture != 0.0)
+                rgb += (s0 - texture(texBlur, uv).rgb) * ubuf.skyTexture * 1.6 * m;
+            if (ubuf.skyClarity != 0.0) {
+                float d = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
+                float l = dot(rgb, LUMA);
+                rgb += d * ubuf.skyClarity * 0.8 * (1.0 - abs(2.0 * l - 1.0)) * m;
+            }
+            // 디헤이즈(톤 모델 — 전역 dehaze 와 동일 수식)
+            if (ubuf.skyDehaze != 0.0) {
+                float ld = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
+                rgb += ld * ubuf.skyDehaze * 0.4 * m;
+                rgb = (rgb - 0.5) * (1.0 + ubuf.skyDehaze * 0.25 * m) + 0.5;
+                if (ubuf.skyDehaze < 0.0)
+                    rgb = mix(rgb, vec3(0.92), (-ubuf.skyDehaze) * 0.22 * m);
+                float ll = dot(rgb, LUMA);
+                rgb = mix(vec3(ll), rgb, 1.0 + ubuf.skyDehaze * 0.3 * m);
+            }
+            float la = dot(rgb, LUMA);
+            rgb = mix(vec3(la), rgb, 1.0 + ubuf.skySat * m);   // 채도
+            rgb = clamp(rgb, 0.0, 1.0);
+        }
     }
 
     // 10) 비네팅 (방사형)

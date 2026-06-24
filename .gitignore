@@ -8,6 +8,9 @@ __pycache__/
 # 근사 LUT 백업 (make_luts.py 로 재생성 가능)
 luts/_approx_backup/
 
+# ONNX 모델 (용량 큼, 최초 실행 시 자동 다운로드 — 출처/링크는 models/README.md 참조)
+models/*.onnx
+
 # 패키징 산출물 (FilmRawstery.spec 빌드 레시피는 추적 유지)
 /build/
 /dist/

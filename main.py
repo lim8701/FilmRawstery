@@ -301,6 +301,21 @@ class StampProvider(QQuickImageProvider):
         return self._img
 
 
+class SkyMaskProvider(QQuickImageProvider):
+    """하늘 세그멘테이션 마스크(프록시 크기 단일채널 Grayscale8)를 'image://skymask/...' 로 제공."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._img = QImage(1, 1, QImage.Format.Format_Grayscale8)
+        self._img.fill(0)            # 시작 시에도 유효한 검정(마스크 없음) 텍스처
+
+    def set_image(self, img: QImage) -> None:
+        self._img = img
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802
+        return self._img
+
+
 class ThumbProvider(QQuickImageProvider):
     """RAF 임베드 JPEG -> 썸네일을 'image://thumb/<percent-encoded-path>' 로 제공.
 
@@ -468,17 +483,29 @@ class Controller(QObject):
     flushEdits = Signal()        # 이미지 전환 직전: QML 이 *이전* 파일로 편집 저장(플러시)
     fullChanged = Signal()       # GPU export: 풀해상도 src URL 갱신(QML Image 재로드용)
     fullReady = Signal()         # GPU export: 풀해상도 디코드 완료(QML 이 grab 준비)
+    skyMaskChanged = Signal()    # 하늘 마스크 텍스처 갱신 알림(생성/클리어 모두)
+    skySelected = Signal()       # 하늘 마스크 '생성 완료'만(클리어 제외) → QML 이 오버레이 자동 표시
+    skyBusyChanged = Signal()    # 하늘 세그멘테이션(추론) 진행 중 표시
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
+    _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
-                 full_provider: "RawFullProvider" = None):
+                 full_provider: "RawFullProvider" = None,
+                 sky_provider: "SkyMaskProvider" = None):
         super().__init__()
         self._provider = provider
         self._curve_provider = curve_provider
         self._stamp_provider = stamp_provider
         self._full_provider = full_provider     # GPU export 풀해상도 src
+        self._sky_provider = sky_provider        # 하늘 마스크 텍스처
+        self._sky_url = "image://skymask/m?v=0"
+        self._sky_counter = 0
+        self._sky_seq = 0           # 비동기 세그 순번(오래된 결과 폐기)
+        self._sky_busy = False      # 세그 추론 진행 중
+        self._sky_mask = None       # 마지막 하늘 마스크 (numpy float32 [0,1], 프록시 해상도) — CPU export 용
+        self._proxy_img = None      # 마지막 프록시 QImage(세그 입력 디코드용)
         self._full_url = "image://rawfull/f?v=0"
         self._full_counter = 0
         self._gpu_path = ""                      # GPU export 대상 파일
@@ -520,6 +547,7 @@ class Controller(QObject):
         self._fresh_load = False    # 새 파일 로드의 첫 디코딩 대기 중(완료 시 editsReady 발화)
         self._renderReady.connect(self._on_render_ready)
         self._fullDecoded.connect(self._on_full_decoded)
+        self._skyReady.connect(self._on_sky_ready)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -674,7 +702,7 @@ class Controller(QObject):
             curve_rgb = pipeline.compose_curves(*curves)
             arr = pipeline.render_full(
                 self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb,
-                bitdepth=int(params.get("bitDepth", 8)))
+                bitdepth=int(params.get("bitDepth", 8)), sky_mask=self._sky_mask)
             ok = pipeline.save_image(arr, path)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
@@ -1033,6 +1061,80 @@ class Controller(QObject):
         self._stamp_url = f"image://stamp/s?v={self._stamp_counter}"
         self.stampChanged.emit()
 
+    # ---------- 하늘 자동 마스킹 (ONNX SegFormer 세그멘테이션) ----------
+    @Slot()
+    def selectSky(self) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 프록시에서 하늘 마스크를 ML 세그로 생성(백그라운드 스레드). UI 안 멈춤."""
+        if self._proxy_img is None or self._sky_busy:
+            return
+        self._sky_seq += 1
+        self._sky_busy = True
+        self.skyBusyChanged.emit()
+        threading.Thread(target=self._sky_worker, args=(self._sky_seq,), daemon=True).start()
+
+    def _sky_worker(self, seq: int) -> None:
+        """프록시(헤드룸 카메라네이티브) → 중성 display sRGB → SegFormer 추론 → 하늘 마스크."""
+        import numpy as np
+        mask = None
+        try:
+            im = self._proxy_img.convertToFormat(QImage.Format.Format_RGB888)
+            w, h = im.width(), im.height()
+            arr = (np.frombuffer(im.constBits(), np.uint8)
+                   .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3).astype(np.float32) / 255.0)
+            disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)  # 중성(노출0) display
+            rgb8 = (disp * 255.0 + 0.5).astype(np.uint8)
+            import sky_seg
+            mask = sky_seg.segment_sky(rgb8, refine=True)
+        except Exception as exc:
+            print(f"[sky] 세그 실패: {exc}")
+        self._skyReady.emit((seq, mask))
+
+    @Slot(object)
+    def _on_sky_ready(self, payload) -> None:
+        import numpy as np
+        seq, mask = payload
+        if seq != self._sky_seq:
+            return                       # 더 최신 세그 진행 중 → 폐기
+        self._sky_busy = False
+        self.skyBusyChanged.emit()
+        if mask is None:
+            return
+        self._sky_mask = mask            # CPU export 용(프록시 해상도 보관)
+        g = np.ascontiguousarray((np.clip(mask, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
+        h, w = g.shape
+        qi = QImage(g.data, w, h, w, QImage.Format.Format_Grayscale8).copy()
+        if self._sky_provider is not None:
+            self._sky_provider.set_image(qi)
+        self._sky_counter += 1
+        self._sky_url = f"image://skymask/m?v={self._sky_counter}"
+        self.skyMaskChanged.emit()
+        self.skySelected.emit()          # 생성 완료 → QML 이 마스크 오버레이 자동 표시
+
+    @Slot()
+    def clearSky(self) -> None:  # noqa: N802 (QML 슬롯)
+        self._clear_sky()
+
+    def _clear_sky(self) -> None:
+        """하늘 마스크 제거(1x1 검정) — 새 파일 로드/리셋 시. 셰이더 sampler 는 항상 유효 유지."""
+        self._sky_mask = None
+        if self._sky_provider is not None:
+            blank = QImage(1, 1, QImage.Format.Format_Grayscale8)
+            blank.fill(0)
+            self._sky_provider.set_image(blank)
+        self._sky_counter += 1
+        self._sky_url = f"image://skymask/m?v={self._sky_counter}"
+        self.skyMaskChanged.emit()
+
+    def _get_sky_url(self) -> str:
+        return self._sky_url
+
+    skyMaskUrl = Property(str, _get_sky_url, notify=skyMaskChanged)
+
+    def _get_sky_busy(self) -> bool:
+        return self._sky_busy
+
+    skyBusy = Property(bool, _get_sky_busy, notify=skyBusyChanged)
+
     @Slot(bool)
     def setLensCorrection(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
         """X100V 렌즈 보정 on/off (재디코딩)."""
@@ -1100,6 +1202,8 @@ class Controller(QObject):
         self.imageChanged.emit()
         self.wbBaked.emit()              # baked kelvin/tint/matrix 갱신 알림
         self._proxy_w, self._proxy_h = img.width(), img.height()
+        self._proxy_img = img            # 하늘 세그 입력 디코드용(display sRGB 변환 base)
+        self._clear_sky()                # 새 프록시 → 이전 하늘 마스크 폐기
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "
@@ -1266,7 +1370,10 @@ def main() -> int:
     full_provider = RawFullProvider()
     engine.addImageProvider("rawfull", full_provider)
 
-    controller = Controller(provider, curve_provider, stamp_provider, full_provider)
+    sky_provider = SkyMaskProvider()
+    engine.addImageProvider("skymask", sky_provider)
+
+    controller = Controller(provider, curve_provider, stamp_provider, full_provider, sky_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)

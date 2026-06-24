@@ -3,3 +3,4 @@ rawpy>=0.18
 numpy>=1.24
 scipy>=1.10
 exifread>=3.0
+onnxruntime>=1.17
