@@ -10,7 +10,7 @@ ApplicationWindow {
     visibility: Window.Maximized   // 시작 시 최대화(타이틀바·작업표시줄 유지)
     width: 1280
     height: 820                     // 복원(restore) 시 사용할 크기
-    title: "Film Rawstery"
+    title: "FILM RAWSTERY"
     color: "#1a1a1a"
 
     // === 종료 확인 ===
@@ -574,7 +574,7 @@ ApplicationWindow {
                 spacing: 12
 
                 Label {
-                    text: "Quit Film Rawstery?"
+                    text: "Quit FILM RAWSTERY?"
                     color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
                     Layout.alignment: Qt.AlignHCenter
                 }

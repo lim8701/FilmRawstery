@@ -47,8 +47,9 @@ Rectangle {
             text: "Film Rawstery"
             color: "#f2f2f2"
             font.pixelSize: 32
-            font.weight: Font.DemiBold
-            font.letterSpacing: 1.5
+            font.weight: Font.Bold
+            font.capitalization: Font.AllUppercase   // FILM RAWSTERY (임팩트)
+            font.letterSpacing: 2.5
         }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
