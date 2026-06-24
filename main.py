@@ -24,12 +24,10 @@ from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QTransform
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider
 
-import date_stamp
-import make_luts
-from exif_info import read_shooting_info, _read_embedded_jpeg
-import wb
-from lut import atlas_qimage, load_cube
-from raw_loader import PROXY_HEADROOM, load_full, load_proxy
+# ⚠️ numpy/scipy/rawpy 등을 끌어오는 무거운 모듈(date_stamp, make_luts, exif_info, wb,
+#    lut, raw_loader)은 여기서 임포트하지 않는다. 최상단에 두면 QGuiApplication/splash 가
+#    뜨기 전에 전부 로드돼 '아무 동작 없는' 대기 구간이 길어진다. main() 에서 splash 를
+#    띄운 *직후* _load_heavy_modules() 로 로드한다(체감 시작 시간 단축).
 
 BASE = Path(__file__).resolve().parent
 SHADERS_DIR = BASE / "shaders"
@@ -1120,6 +1118,20 @@ def ensure_luts() -> None:
         make_luts.generate_all()
 
 
+def _load_heavy_modules() -> None:
+    """numpy/scipy/rawpy 등을 끌어오는 무거운 모듈을 splash 표시 *후* 로드한다.
+
+    이 임포트들을 모듈 최상단에 두면 splash 가 뜨기 전에 다 로드돼 대기 구간이
+    길어진다(특히 콜드 스타트). splash 가 보인 뒤로 미뤄 체감 시작 시간을 줄인다.
+    여기서 module-global 로 바인딩하므로 이후 Controller/provider 들이 그대로 참조한다."""
+    global date_stamp, make_luts, read_shooting_info, _read_embedded_jpeg
+    global wb, atlas_qimage, load_cube, PROXY_HEADROOM, load_full, load_proxy
+    import date_stamp, make_luts, wb                                  # noqa: E401
+    from exif_info import read_shooting_info, _read_embedded_jpeg
+    from lut import atlas_qimage, load_cube
+    from raw_loader import PROXY_HEADROOM, load_full, load_proxy
+
+
 def _show_splash(app):
     """콜드 스타트 동안 보일 가벼운 스플래시 창을 띄워 즉시 그린다.
 
@@ -1187,6 +1199,7 @@ def main() -> int:
     app = QGuiApplication(sys.argv)
     splash = _show_splash(app)   # 콜드 스타트 동안 표시(아래 무거운 초기화를 덮는다)
 
+    _load_heavy_modules()        # numpy/scipy/rawpy 등은 splash 표시 후 로드(앞 구간 단축)
     ensure_shader()
     ensure_luts()
     date_stamp.font_family()   # 번들 DSEG7 폰트 1회 등록(메인 스레드)
