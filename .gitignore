@@ -8,6 +8,11 @@ __pycache__/
 # 근사 LUT 백업 (make_luts.py 로 재생성 가능)
 luts/_approx_backup/
 
+# 패키징 산출물 (CamRawEditor.spec 빌드 레시피는 추적 유지)
+/build/
+/dist/
+*.zip
+
 # OS
 Thumbs.db
 .DS_Store

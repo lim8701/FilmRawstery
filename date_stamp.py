@@ -8,13 +8,25 @@ EXIF 촬영일시를 7-세그먼트(DSEG7) 호박색 숫자로 그리고, 가우
 슬래시(/)는 DSEG7 에 없어 Qt 폴백 폰트로 렌더되지만 글로우에 묻혀 무방.
 """
 import os
+import sys
+from pathlib import Path
 
 import numpy as np
 from scipy.ndimage import gaussian_filter, grey_dilation, zoom
 from PySide6.QtGui import (QColor, QFont, QFontDatabase, QFontMetrics, QImage,
                            QPainter)
 
-_FONT_PATH = os.path.join(os.path.dirname(__file__), "fonts", "DSEG7Classic-Bold.ttf")
+
+def _asset_base() -> Path:
+    """폰트 등 번들 자산 위치. frozen(PyInstaller/Nuitka) 인식. (main.app_base 와 동일 로직,
+    순환 임포트 방지를 위해 모듈 내부에 둠.)"""
+    if getattr(sys, "frozen", False):
+        mp = getattr(sys, "_MEIPASS", None)
+        return Path(mp) if mp else Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent
+
+
+_FONT_PATH = str(_asset_base() / "fonts" / "DSEG7Classic-Bold.ttf")
 _family = None
 
 # --- 이미지 상대 기하/룩 (프리뷰·export 단일 소스) ---

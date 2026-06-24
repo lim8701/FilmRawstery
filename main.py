@@ -29,7 +29,22 @@ from PySide6.QtQuick import QQuickImageProvider
 #    뜨기 전에 전부 로드돼 '아무 동작 없는' 대기 구간이 길어진다. main() 에서 splash 를
 #    띄운 *직후* _load_heavy_modules() 로 로드한다(체감 시작 시간 단축).
 
-BASE = Path(__file__).resolve().parent
+def app_base() -> Path:
+    """번들 자산(qml/shaders/luts/fonts)이 위치한 디렉터리.
+
+    - PyInstaller onedir: 자산이 sys._MEIPASS 아래로 해제됨
+    - Nuitka standalone(pyside6-deploy): 자산이 exe 옆에 위치
+    - dev(비-frozen): 소스 디렉터리(기존과 동일)
+    """
+    if getattr(sys, "frozen", False):
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            return Path(meipass)                          # PyInstaller
+        return Path(sys.executable).resolve().parent      # Nuitka standalone
+    return Path(__file__).resolve().parent
+
+
+BASE = app_base()
 SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag"]
 LUTS_DIR = BASE / "luts"
@@ -147,6 +162,8 @@ def _find_qsb():
 
 def ensure_shader() -> None:
     """frag 셰이더들을 .qsb 로 컴파일 (이미 최신이면 건너뜀)."""
+    if getattr(sys, "frozen", False):
+        return  # frozen: 미리 컴파일된 .qsb 동봉, qsb.exe 미번들 + 설치 폴더 무쓰기
     qsb = None
     for name in SHADER_NAMES:
         src = SHADERS_DIR / name
@@ -1114,6 +1131,8 @@ class Controller(QObject):
 
 def ensure_luts() -> None:
     """luts/ 에 .cube 가 없으면 근사 LUT 를 생성."""
+    if getattr(sys, "frozen", False):
+        return  # frozen: .cube 동봉, 설치 폴더에 절대 쓰지 않음
     if not LUTS_DIR.exists() or not any(LUTS_DIR.glob("*.cube")):
         make_luts.generate_all()
 
@@ -1240,13 +1259,23 @@ def main() -> int:
     apply_dark_titlebar(root)                      # OS 타이틀바 다크 모드(Windows)
     _close_splash_when_ready(root, splash)         # 메인 창 첫 프레임에 스플래시 닫기
 
-    # 명령줄 인자가 있으면 그 경로, 없으면 기본 샘플을 자동 로드
-    start_path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT_RAF
+    # 시작 경로: 인자 > 개발용 샘플(있으면) > 사용자 Pictures 폴더(배포 기본)
+    if len(sys.argv) > 1:
+        start_path = sys.argv[1]
+    elif Path(DEFAULT_RAF).is_file():
+        start_path = DEFAULT_RAF
+    else:
+        from PySide6.QtCore import QStandardPaths
+        pics = QStandardPaths.writableLocation(
+            QStandardPaths.StandardLocation.PicturesLocation)
+        start_path = pics or str(Path.home())
     if Path(start_path).is_file():
         controller.load(QUrl.fromLocalFile(start_path))   # load() 가 부모폴더도 scan
+    elif Path(start_path).is_dir():
+        controller.setFolderPath(start_path)              # 폴더(Pictures 등)를 탐색기로 열기
     else:
-        print(f"[init] 시작 파일 없음: {start_path}")
-        controller.setFolderPath(str(Path(start_path).parent))  # 폴더라도 열어둠
+        print(f"[init] 시작 경로 없음: {start_path}")
+        controller.setFolderPath(str(Path(start_path).parent))
 
     return app.exec()
 
