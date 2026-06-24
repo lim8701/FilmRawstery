@@ -9,7 +9,7 @@ ApplicationWindow {
     visible: true
     width: 1280
     height: 820
-    title: "RAW Editor — skeleton"
+    title: "Film Rawstery"
     color: "#1a1a1a"
 
     // === WB 실시간 프리뷰 (드래그 중) ===
@@ -796,6 +796,30 @@ ApplicationWindow {
                                     controller.loadPath(row.modelData.path)    // 로컬경로 디코딩 로드
                             }
                         }
+                    }
+                }
+
+                // 푸터: GitHub 저장소 링크 (클릭 시 외부 브라우저로 열기)
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 24
+                    color: "transparent"
+                    ToolTip.visible: ghHover.hovered
+                    ToolTip.text: "GitHub 저장소 열기 — lim8701/CamRawEditor"
+                    Text {
+                        anchors.left: parent.left
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "GitHub ↗"
+                        color: ghHover.hovered ? "#8ab4f8" : "#8a8a8a"
+                        font.pixelSize: 12
+                        font.underline: ghHover.hovered
+                    }
+                    HoverHandler { id: ghHover }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: Qt.openUrlExternally("https://github.com/lim8701/CamRawEditor")
                     }
                 }
             }
@@ -1958,6 +1982,47 @@ ApplicationWindow {
                         "Monochrome",
                         "Sepia"
                     ]
+                    // 그룹 구분선: 행(인덱스)을 추가하지 않고 그룹 시작 항목 위에 선만 그림
+                    // → simKeys 매핑·저장된 simIndex(사이드카) 그대로 호환.
+                    // 그룹: [None] | [Provia·Velvia·Astia] | [Classic Chrome·Neg·Nostalgic·PRO Neg] | [Eterna·Reala·Bleach] | [B&W]
+                    readonly property var simGroupStarts: [1, 4, 9, 12]
+                    delegate: ItemDelegate {
+                        id: simDel
+                        width: ListView.view ? ListView.view.width : simCombo.width
+                        required property int index
+                        required property var modelData
+                        text: modelData
+                        highlighted: simCombo.highlightedIndex === index
+                        property bool groupStart: simCombo.simGroupStarts.indexOf(index) !== -1
+                        contentItem: Text {
+                            text: simDel.text
+                            color: "#e8e8e8"; font.pixelSize: 13
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        background: Rectangle {
+                            color: simDel.highlighted ? "#3a3f4b" : "#2b2b2b"
+                            Rectangle {                       // 그룹 구분선(항목 상단)
+                                visible: simDel.groupStart
+                                anchors { top: parent.top; left: parent.left; right: parent.right }
+                                height: 1; color: "#555"
+                            }
+                        }
+                    }
+                    // 팝업도 다크로 직접 스타일(네이티브 팝업은 커스텀 delegate 와 안 맞음)
+                    popup: Popup {
+                        y: simCombo.height
+                        width: simCombo.width
+                        implicitHeight: Math.min(contentItem.implicitHeight + 2, 380)
+                        padding: 1
+                        background: Rectangle { color: "#2b2b2b"; border.color: "#555"; radius: 3 }
+                        contentItem: ListView {
+                            clip: true
+                            implicitHeight: contentHeight
+                            model: simCombo.delegateModel
+                            currentIndex: simCombo.highlightedIndex
+                            ScrollIndicator.vertical: ScrollIndicator {}
+                        }
+                    }
                 }
 
                 Label {

@@ -1,4 +1,4 @@
-# CamRawEditor
+# Film Rawstery
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![PySide6](https://img.shields.io/badge/PySide6-Qt-41CD52?logo=qt&logoColor=white)
@@ -10,7 +10,7 @@ A GPU-accelerated RAW developer and film-simulation editor for the **Fujifilm X1
 Edit interactively on a real-time, shader-driven preview, then export at full resolution through a numpy pipeline that mirrors the shader exactly — *what you see is what you get*.
 
 <p align="center">
-  <img src="screenshot.png" alt="CamRawEditor — file explorer, live preview, and develop panel" width="100%">
+  <img src="screenshot.png" alt="Film Rawstery — file explorer, live preview, and develop panel" width="100%">
 </p>
 
 > ⚠️ Tuned specifically for the Fuji X100V (X-Trans sensor + lens profile). Other cameras may decode but won't match the lens/color tuning.
