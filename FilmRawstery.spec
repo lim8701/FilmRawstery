@@ -1,5 +1,5 @@
-# CamRawEditor.spec — PyInstaller onedir build
-# Build:  .\.venv\Scripts\pyinstaller.exe CamRawEditor.spec --noconfirm
+# FilmRawstery.spec — PyInstaller onedir build
+# Build:  .\.venv\Scripts\pyinstaller.exe FilmRawstery.spec --noconfirm
 # 디버그 시 아래 CONSOLE = True 로 두고 빌드(누락 DLL/플러그인 에러를 콘솔로 확인),
 # 검증 후 CONSOLE = False 로 바꿔 재빌드(릴리스: 콘솔창 없음).
 from PyInstaller.utils.hooks import collect_data_files
@@ -52,7 +52,7 @@ pyz = PYZ(a.pure, a.zipped_data)
 exe = EXE(
     pyz, a.scripts, [],
     exclude_binaries=True,
-    name="CamRawEditor",
+    name="FilmRawstery",
     debug=False,
     strip=False,
     upx=False,          # UPX off — Qt DLL 손상 방지
@@ -62,5 +62,5 @@ exe = EXE(
 coll = COLLECT(
     exe, a.binaries, a.datas,
     strip=False, upx=False,
-    name="CamRawEditor",   # → dist/CamRawEditor/
+    name="FilmRawstery",   # → dist/FilmRawstery/
 )

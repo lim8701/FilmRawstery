@@ -134,7 +134,7 @@ ApplicationWindow {
         geoScaleSlider.value = 100
     }
 
-    // === RAF별 편집 자동 저장/복원 (사이드카 .camrawedits/<파일명>.json) ===
+    // === RAF별 편집 자동 저장/복원 (사이드카 .filmrawsteryedits/<파일명>.json) ===
     property bool _applying: false       // 복원 중 — 자동저장/WB 재디코딩 억제
     function _hasSavedEdits() { var e = controller.editsForCurrent(); return e && e.v !== undefined }
 
@@ -807,7 +807,7 @@ ApplicationWindow {
                     Layout.preferredHeight: 24
                     color: "transparent"
                     ToolTip.visible: ghHover.hovered
-                    ToolTip.text: "GitHub 저장소 열기 — lim8701/CamRawEditor"
+                    ToolTip.text: "GitHub 저장소 열기 — lim8701/FilmRawstery"
                     Text {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
@@ -820,7 +820,7 @@ ApplicationWindow {
                     MouseArea {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: Qt.openUrlExternally("https://github.com/lim8701/CamRawEditor")
+                        onClicked: Qt.openUrlExternally("https://github.com/lim8701/FilmRawstery")
                     }
                 }
             }

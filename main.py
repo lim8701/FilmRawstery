@@ -49,6 +49,24 @@ SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag"]
 LUTS_DIR = BASE / "luts"
 
+# 사이드카(폴더당 데이터) 파일/폴더 이름. 구 이름(.camraw*)은 폴더 접근 시 1회 자동 마이그레이션.
+EDITS_DIR_NAME = ".filmrawsteryedits"
+LIKES_FILE_NAME = ".filmrawsterylikes.json"
+_OLD_SIDECARS = [(".camrawedits", EDITS_DIR_NAME), (".camrawlikes.json", LIKES_FILE_NAME)]
+
+
+def _migrate_sidecars(folder: str) -> None:
+    """구 사이드카 이름(.camraw*)을 신 이름(.filmrawstery*)으로 1회 이동(신 이름이 없을 때만).
+    이미 신 이름이 있거나 구 이름이 없으면 아무 것도 안 함(멱등)."""
+    try:
+        base = Path(folder)
+        for old, new in _OLD_SIDECARS:
+            op, npath = base / old, base / new
+            if op.exists() and not npath.exists():
+                op.rename(npath)
+    except Exception:
+        pass
+
 # 시작 시 자동으로 열어볼 샘플 RAF (명령줄 인자가 없을 때 사용)
 DEFAULT_RAF = r"C:\Pic\x100v\128_FUJI\DSCF8035.RAF"
 # DEFAULT_RAF = r"C:\Pic\x100v\131_FUJI\DSCF1039.RAF"  # 임시 비활성
@@ -524,15 +542,16 @@ class Controller(QObject):
         if self._folder:
             self._scan_folder(self._folder, force=False)
 
-    # ---------- 좋아요(셀렉트) 영속화: 폴더당 .camrawlikes.json ----------
+    # ---------- 좋아요(셀렉트) 영속화: 폴더당 .filmrawsterylikes.json ----------
     @staticmethod
     def _likes_path(folder: str) -> Path:
-        return Path(folder) / ".camrawlikes.json"
+        return Path(folder) / LIKES_FILE_NAME
 
     @staticmethod
     def _load_likes(folder: str) -> set:
-        """폴더의 .camrawlikes.json 에서 좋아요(True)된 파일명 집합을 읽음(없으면 빈 집합)."""
+        """폴더의 .filmrawsterylikes.json 에서 좋아요(True)된 파일명 집합을 읽음(없으면 빈 집합)."""
         try:
+            _migrate_sidecars(folder)   # 구 .camraw* → 신 이름 1회 이동
             p = Controller._likes_path(folder)
             if not p.is_file():
                 return set()
@@ -576,10 +595,10 @@ class Controller(QObject):
         self._like_rev += 1
         self.likesChanged.emit()
 
-    # ---------- RAF별 편집 영속화: 폴더/.camrawedits/<파일명>.json (이미지당 사이드카) ----------
+    # ---------- RAF별 편집 영속화: 폴더/.filmrawsteryedits/<파일명>.json (이미지당 사이드카) ----------
     @staticmethod
     def _edits_dir(folder: str) -> Path:
-        return Path(folder) / ".camrawedits"
+        return Path(folder) / EDITS_DIR_NAME
 
     @staticmethod
     def _edits_path(folder: str, name: str) -> Path:
@@ -590,6 +609,7 @@ class Controller(QObject):
         """RAF 경로의 사이드카 편집 dict 를 읽음(없거나 오류면 빈 dict)."""
         try:
             p = Path(path)
+            _migrate_sidecars(str(p.parent))   # 구 .camraw* → 신 이름 1회 이동
             ep = Controller._edits_path(str(p.parent), p.name)
             if not ep.is_file():
                 return {}
@@ -926,14 +946,14 @@ class Controller(QObject):
 
         force=True: 탐색기 탐색(폴더 이동) — 항상 갱신.
         force=False: 자동 감시 재스캔 — 같은 폴더에서 목록이 그대로면 아무 것도 안 함
-                     (우리 자신의 .camrawlikes.json 저장이나 무관한 변화로 깜빡이지 않음).
+                     (우리 자신의 .filmrawsterylikes.json 저장이나 무관한 변화로 깜빡이지 않음).
         """
         p = Path(folder)
         try:
             entries = list(p.iterdir())
         except Exception:
             entries = []
-        # 점으로 시작하는 폴더(.camrawedits 등)는 탐색기에 노출하지 않음
+        # 점으로 시작하는 폴더(.filmrawsteryedits 등)는 탐색기에 노출하지 않음
         dirs = sorted((e for e in entries if e.is_dir() and not e.name.startswith(".")),
                       key=lambda e: e.name.lower())
         rafs = sorted((e for e in entries
