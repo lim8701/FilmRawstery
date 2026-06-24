@@ -7,8 +7,9 @@ import QtQuick.Dialogs
 ApplicationWindow {
     id: win
     visible: true
+    visibility: Window.Maximized   // 시작 시 최대화(타이틀바·작업표시줄 유지)
     width: 1280
-    height: 820
+    height: 820                     // 복원(restore) 시 사용할 크기
     title: "Film Rawstery"
     color: "#1a1a1a"
 
