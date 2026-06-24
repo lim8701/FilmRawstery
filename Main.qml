@@ -13,6 +13,16 @@ ApplicationWindow {
     title: "Film Rawstery"
     color: "#1a1a1a"
 
+    // === 종료 확인 ===
+    // X/Alt+F4 로 닫을 때 한 번 확인. allowClose 가 true 면(확인 후) 그대로 닫힘.
+    property bool allowClose: false
+    onClosing: function(close) {
+        if (!win.allowClose) {
+            close.accepted = false
+            quitDialog.open()
+        }
+    }
+
     // === WB 실시간 프리뷰 (드래그 중) ===
     // baked 색온도로 디코딩된 프록시에 "baked->target" 상대 게인만 셰이더로 입힌다.
     // 손을 떼면 target 색온도로 재디코딩(확정)하고 게인은 (1,1,1) 로 수렴 -> 이중적용 없음.
@@ -370,8 +380,7 @@ ApplicationWindow {
         }
     }
 
-    // 앱 종료 시 현재 파일 편집 플러시 저장.
-    onClosing: if (controller.imagePath !== "") controller.saveEdits(win.editParams())
+    // (앱 종료 시 편집 플러시 저장은 quitDialog 확인 후 onAccepted 에서 수행)
 
     // 탐색기 "좋아요만 보기" 필터 (L 키로 토글)
     property bool showLikedOnly: false
@@ -516,8 +525,98 @@ ApplicationWindow {
 
     FolderDialog {
         id: folderDialog
-        title: "폴더 선택"
+        title: "Select Folder"
         onAccepted: controller.setFolder(selectedFolder)   // QUrl -> Python .toLocalFile()
+    }
+
+    // 종료 확인 대화상자 (앱 컨셉: 다크 + 필름 퍼포레이션 + 앰버 강조, 커스텀 스타일)
+    Popup {
+        id: quitDialog
+        modal: true
+        dim: true
+        width: 380
+        padding: 0
+        anchors.centerIn: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.55 }
+        background: Rectangle {
+            color: "#232325"; radius: 16
+            border.color: "#3d3d40"; border.width: 1
+        }
+
+        function doQuit() {
+            if (controller.imagePath !== "") controller.saveEdits(win.editParams())  // 편집 플러시 저장
+            win.allowClose = true
+            Qt.quit()
+        }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+
+            // 상단 필름 퍼포레이션 스트립(앰버)
+            Item {
+                Layout.fillWidth: true
+                Layout.preferredHeight: 26
+                Row {
+                    anchors.centerIn: parent
+                    spacing: 9
+                    Repeater {
+                        model: 9
+                        Rectangle { width: 14; height: 9; radius: 2; color: "#E0A226" }
+                    }
+                }
+            }
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: 24
+                Layout.topMargin: 6
+                spacing: 12
+
+                Label {
+                    text: "Quit Film Rawstery?"
+                    color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
+                    Layout.alignment: Qt.AlignHCenter
+                }
+                Label {
+                    text: "Your current edits are saved before exit."
+                    color: "#9a9a9a"; font.pixelSize: 13
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    spacing: 12
+
+                    Rectangle {        // Cancel
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: cancelMA.containsMouse ? "#3a3a3d" : "#2e2e31"
+                        border.color: "#55555a"; border.width: 1
+                        Label { anchors.centerIn: parent; text: "Cancel"; color: "#e6e6e6"; font.pixelSize: 13 }
+                        MouseArea {
+                            id: cancelMA; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: quitDialog.close()
+                        }
+                    }
+                    Rectangle {        // Quit (앰버 강조)
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: okMA.containsMouse ? "#f0b945" : "#E0A226"
+                        Label { anchors.centerIn: parent; text: "Quit"; color: "#1a1a1a"; font.pixelSize: 13; font.bold: true }
+                        MouseArea {
+                            id: okMA; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: quitDialog.doQuit()
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // 프리뷰 모드 오버레이(탐색기에서 RAF 우클릭 → 메뉴 Preview 로 염). 메인 창 위를 꽉 덮음.
@@ -548,7 +647,7 @@ ApplicationWindow {
 
     FileDialog {
         id: saveDialog
-        title: "내보내기 (풀해상도)"
+        title: "Export (Full Resolution)"
         fileMode: FileDialog.SaveFile
         nameFilters: ["PNG (*.png)", "JPEG (*.jpg)", "TIFF (*.tif)"]
         defaultSuffix: "png"
@@ -589,12 +688,12 @@ ApplicationWindow {
                         text: "⬆"
                         Layout.preferredWidth: 30
                         ToolTip.visible: hovered
-                        ToolTip.text: "상위 폴더"
+                        ToolTip.text: "Parent folder"
                         onClicked: controller.goUp()
                     }
                     Button {
                         id: folderBtn
-                        text: "폴더…"
+                        text: "Folder…"
                         Layout.fillWidth: true
                         onClicked: folderDialog.open()
                     }
@@ -611,7 +710,7 @@ ApplicationWindow {
                         border.width: 1
 
                         ToolTip.visible: lfHover.hovered
-                        ToolTip.text: "좋아요만 보기"
+                        ToolTip.text: "Show liked only"
 
                         // 팝업 패널과 동일하게 ♥(채움)/♡(빈) 글리프로 활성/비활성 표시
                         Text {
@@ -632,7 +731,7 @@ ApplicationWindow {
                 // 현재 폴더 경로
                 Label {
                     Layout.fillWidth: true
-                    text: controller.currentFolder || "폴더를 선택하세요"
+                    text: controller.currentFolder || "Select a folder"
                     color: "#9a9a9a"
                     font.pixelSize: 11
                     elide: Text.ElideMiddle
@@ -807,7 +906,7 @@ ApplicationWindow {
                     Layout.preferredHeight: 24
                     color: "transparent"
                     ToolTip.visible: ghHover.hovered
-                    ToolTip.text: "GitHub 저장소 열기 — lim8701/FilmRawstery"
+                    ToolTip.text: "Open GitHub repository — lim8701/FilmRawstery"
                     Text {
                         anchors.left: parent.left
                         anchors.verticalCenter: parent.verticalCenter
@@ -850,7 +949,7 @@ ApplicationWindow {
 
             ToolTip.visible: handleArea.containsMouse
             ToolTip.delay: 1500        // 호버 즉시 말고 1.5초 뒤 표시
-            ToolTip.text: (win.showExplorer ? "탐색기 숨기기" : "탐색기 보이기") + " (B)"
+            ToolTip.text: (win.showExplorer ? "Hide explorer" : "Show explorer") + " (B)"
         }
 
         // ---------- 이미지 영역 ----------
@@ -1017,7 +1116,7 @@ ApplicationWindow {
                         width: parent.width - 20
                         text: controller.imagePath !== ""
                               ? controller.imagePath
-                              : "열린 파일 없음"
+                              : "No file open"
                     }
                 }
 
@@ -1623,7 +1722,7 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         color: "#888"
                         font.pixelSize: 16
-                        text: "왼쪽 탐색기에서 RAF 파일을 더블클릭해 여세요"
+                        text: "Double-click a RAF file in the explorer on the left to open it"
                     }
 
                     // 원본 비교 버튼: 클릭(또는 \ 키)으로 원본↔편집본 토글(좌하단). 크롭 페이지에선 숨김.
@@ -1642,7 +1741,7 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             spacing: 6
                             Label {
-                                text: win.compareOn ? "원본 보는 중" : "원본 비교"
+                                text: win.compareOn ? "Viewing original" : "Compare original"
                                 color: win.compareOn ? "#10243f" : "#e6e6e6"
                                 font.pixelSize: 11; font.bold: true
                             }
@@ -1672,7 +1771,7 @@ ApplicationWindow {
                         Label {
                             id: cmpBadge
                             anchors.centerIn: parent
-                            text: "원본 · BEFORE"
+                            text: "Original · BEFORE"
                             color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
                             font.capitalization: Font.AllUppercase
                         }
@@ -1737,7 +1836,7 @@ ApplicationWindow {
                         implicitWidth: 64; implicitHeight: 64
                     }
                     Label {
-                        text: controller.exporting ? "내보내는 중…" : "처리 중…"
+                        text: controller.exporting ? "Exporting…" : "Processing…"
                         color: "white"; font.pixelSize: 14
                         Layout.alignment: Qt.AlignHCenter
                     }
@@ -1794,7 +1893,7 @@ ApplicationWindow {
                         padding: 0
                         font.pixelSize: 14
                         ToolTip.visible: hovered
-                        ToolTip.text: "Reset (조절 초기화 — 지오메트리 포함)"
+                        ToolTip.text: "Reset (clear adjustments — including geometry)"
                         onClicked: win.resetAllEdits()   // 모든 편집 + 회전/크롭/지오메트리 초기화
                     }
                     // 편집 복사/붙여넣기 메뉴(이미지 간) — Reset 우측 "⋯" 드롭다운.
@@ -1808,14 +1907,14 @@ ApplicationWindow {
                         font.pixelSize: 14
                         enabled: controller.imagePath !== ""
                         ToolTip.visible: hovered
-                        ToolTip.text: "편집 복사 / 붙여넣기 (이미지 간)"
+                        ToolTip.text: "Copy / paste edits (between images)"
                         onClicked: editClipMenu.popup(0, height)
                         Menu {
                             id: editClipMenu
-                            MenuItem { text: "전체 복사"; onTriggered: win.copyEdits(false) }
-                            MenuItem { text: "복사 (WB·Tint 제외)"; onTriggered: win.copyEdits(true) }
+                            MenuItem { text: "Copy all"; onTriggered: win.copyEdits(false) }
+                            MenuItem { text: "Copy (excluding WB · Tint)"; onTriggered: win.copyEdits(true) }
                             MenuItem {
-                                text: "붙여넣기"
+                                text: "Paste"
                                 enabled: win._editClipboard !== null
                                 onTriggered: win.pasteEdits()
                             }
@@ -1841,14 +1940,14 @@ ApplicationWindow {
                         Layout.preferredHeight: exportMainBtn.height   // Export 버튼과 높이 동일하게 고정
                         padding: 0; font.pixelSize: 14
                         ToolTip.visible: hovered
-                        ToolTip.text: "Export 옵션 (해상도 · 렌더 · 16비트)"
+                        ToolTip.text: "Export options (resolution · render · 16-bit)"
                         onClicked: exportOptPopup.opened ? exportOptPopup.close() : exportOptPopup.open()
                         Popup {
                             id: exportOptPopup
                             y: exportOptBtn.height + 4
                             x: exportOptBtn.width - width    // 버튼 오른쪽에 맞춰 좌측으로 펼침(패널 안)
-                            width: 240
-                            padding: 12
+                            width: 230
+                            padding: 10
                             modal: false
                             closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutsideParent
                             background: Rectangle { color: "#2b2b2b"; border.color: "#555"; border.width: 1; radius: 6 }
@@ -1856,18 +1955,18 @@ ApplicationWindow {
                                 spacing: 10
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 6
-                                    Label { text: "해상도"; color: "white"; font.pixelSize: 12; Layout.preferredWidth: 40 }
+                                    Label { text: "Resolution"; color: "white"; font.pixelSize: 12; Layout.preferredWidth: 72 }
                                     ComboBox {
                                         id: resCombo
                                         Layout.fillWidth: true
                                         currentIndex: 0     // 원본
-                                        model: ["원본 (Full)", "4096", "3840 (4K)",
+                                        model: ["Original (Full)", "4096", "3840 (4K)",
                                                 "2560", "2048", "1920 (FHD)", "1280"]
                                     }
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true; spacing: 6
-                                    Label { text: "렌더"; color: "white"; font.pixelSize: 12; Layout.preferredWidth: 40 }
+                                    Label { text: "Render"; color: "white"; font.pixelSize: 12; Layout.preferredWidth: 72 }
                                     ComboBox {
                                         id: renderModeCombo
                                         Layout.fillWidth: true
@@ -1882,11 +1981,11 @@ ApplicationWindow {
                                     CheckBox {
                                         id: bitDepth16Check
                                         ToolTip.visible: hovered
-                                        ToolTip.text: "16비트/채널로 저장(계조·헤드룸 보존). TIFF 권장. CPU 렌더 전용."
+                                        ToolTip.text: "Save 16-bit/channel (preserves gradation · headroom). TIFF recommended. CPU render only."
                                     }
                                     Label {
                                         Layout.fillWidth: true
-                                        text: "16비트 (TIFF/PNG · CPU)"
+                                        text: "16-bit (TIFF/PNG · CPU)"
                                         color: "white"; font.pixelSize: 12
                                         verticalAlignment: Text.AlignVCenter
                                     }
@@ -2234,7 +2333,7 @@ ApplicationWindow {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "클리핑 경고  — J  (하이라이트 빨강 / 섀도 파랑)"
+                        text: "Clipping warning  — J  (highlights red / shadows blue)"
                         color: "white"; font.pixelSize: 12
                         verticalAlignment: Text.AlignVCenter
                     }
@@ -2579,7 +2678,7 @@ ApplicationWindow {
                     }
                 }
                 Label {
-                    text: "Vignette:  " + vignetteSlider.value.toFixed(2) + "  (− 어둡게)"
+                    text: "Vignette:  " + vignetteSlider.value.toFixed(2) + "  (− darker)"
                     color: "white"
                 }
                 Slider {
@@ -2631,7 +2730,7 @@ ApplicationWindow {
                 }
 
                 Label {
-                    text: "Grain Size:  " + grainSizeSlider.value.toFixed(2) + "  (작게 ↔ 굵게)"
+                    text: "Grain Size:  " + grainSizeSlider.value.toFixed(2) + "  (fine ↔ coarse)"
                     color: "white"
                 }
                 Slider {
@@ -2791,7 +2890,7 @@ ApplicationWindow {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "X100V 프로파일 (왜곡·주변광량·CA)"
+                        text: "X100V profile (distortion · vignetting · CA)"
                         color: "white"; font.pixelSize: 12
                         verticalAlignment: Text.AlignVCenter
                     }
@@ -2826,7 +2925,7 @@ ApplicationWindow {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "필름 날짜 각인  — D"
+                        text: "Film date stamp  — D"
                         color: stampCheck.enabled ? "white" : "#777"
                         font.pixelSize: 12
                         verticalAlignment: Text.AlignVCenter
@@ -2836,12 +2935,12 @@ ApplicationWindow {
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
-                    Label { text: "날짜"; color: "white"; font.pixelSize: 12 }
+                    Label { text: "Date"; color: "white"; font.pixelSize: 12 }
                     TextField {
                         id: stampField
                         Layout.fillWidth: true
                         enabled: win.dateStamp && controller.imagePath !== ""
-                        placeholderText: "'YY MM DD  (예: '24 05 12)"
+                        placeholderText: "'YY MM DD  (e.g. '24 05 12)"
                         onTextEdited: stampDebounce.restart()
                         // 포커스가 잡히면 알파벳 단축키(I/D/B/L 등)를 입력으로 먹으므로,
                         // Enter=확정/Esc=취소 시 포커스를 풀어 단축키가 다시 동작하게 함.
@@ -2913,12 +3012,12 @@ ApplicationWindow {
                                 color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
                                 font.capitalization: Font.AllUppercase
                             }
-                            Label { text: "종횡비(Aspect Ratio)"; color: "white"; font.pixelSize: 12 }
+                            Label { text: "Aspect Ratio"; color: "white"; font.pixelSize: 12 }
                             ComboBox {
                                 id: aspectCombo
                                 Layout.fillWidth: true
                                 currentIndex: 0
-                                model: ["원본 (Original)", "자유 (Free)", "1:1",
+                                model: ["Original", "Free", "1:1",
                                         "3:2", "4:3", "16:9", "5:4"]
                                 // 고정 비율 선택 -> 박스를 그 비율 중앙 최대로. 원본/자유 -> 전체로.
                                 onActivated: {
@@ -2926,20 +3025,20 @@ ApplicationWindow {
                                     else win.resetCropRect()
                                 }
                             }
-                            Label { text: "방향(Orientation)"; color: "white"; font.pixelSize: 12 }
+                            Label { text: "Orientation"; color: "white"; font.pixelSize: 12 }
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 6
-                                Button { id: cropLandscapeBtn; text: "가로"; checkable: true; checked: true; autoExclusive: true; Layout.fillWidth: true
+                                Button { id: cropLandscapeBtn; text: "Landscape"; checkable: true; checked: true; autoExclusive: true; Layout.fillWidth: true; Layout.preferredWidth: 0
                                          onClicked: win.applyCropAspect() }
-                                Button { id: cropPortraitBtn; text: "세로"; checkable: true; autoExclusive: true; Layout.fillWidth: true
+                                Button { id: cropPortraitBtn; text: "Portrait"; checkable: true; autoExclusive: true; Layout.fillWidth: true; Layout.preferredWidth: 0
                                          onClicked: win.applyCropAspect() }
                             }
                             // 안내
                             Label {
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
-                                text: "이미지 위에서 박스 핸들=크기, 안쪽 드래그=이동, 꼭짓점 외곽 부근 드래그=회전."
+                                text: "On the image: box handles = resize, drag inside = move, drag near a corner = rotate."
                                 color: "#9a9a9a"; font.pixelSize: 11
                             }
 
@@ -2953,7 +3052,7 @@ ApplicationWindow {
                             }
 
                             Label {
-                                text: "각도(Straighten):  "
+                                text: "Angle (Straighten):  "
                                       + (rotAngleSlider.value >= 0 ? "+" : "")
                                       + rotAngleSlider.value.toFixed(1) + "°"
                                 color: "white"
@@ -2972,7 +3071,7 @@ ApplicationWindow {
                             }
 
                             Label {
-                                text: "90° 회전" + (win.quarterTurns !== 0 ? "  (" + (win.quarterTurns * 90) + "°)" : "")
+                                text: "Rotate 90°" + (win.quarterTurns !== 0 ? "  (" + (win.quarterTurns * 90) + "°)" : "")
                                 color: "white"; font.pixelSize: 12
                             }
                             RowLayout {
@@ -2982,33 +3081,35 @@ ApplicationWindow {
                                     text: "⟲ 90°"
                                     Layout.fillWidth: true
                                     ToolTip.visible: hovered
-                                    ToolTip.text: "반시계 90°"
+                                    ToolTip.text: "90° CCW"
                                     onClicked: { win.quarterTurns = (win.quarterTurns + 3) % 4; win.applyCropAspect() }
                                 }
                                 Button {
                                     text: "⟳ 90°"
                                     Layout.fillWidth: true
                                     ToolTip.visible: hovered
-                                    ToolTip.text: "시계 90°"
+                                    ToolTip.text: "90° CW"
                                     onClicked: { win.quarterTurns = (win.quarterTurns + 1) % 4; win.applyCropAspect() }
                                 }
                             }
 
-                            Label { text: "반전(Flip)"; color: "white"; font.pixelSize: 12 }
+                            Label { text: "Flip"; color: "white"; font.pixelSize: 12 }
                             RowLayout {
                                 Layout.fillWidth: true
                                 spacing: 6
                                 Button {
                                     id: flipHBtn
-                                    text: "좌우 반전"
+                                    text: "Flip horizontal"
                                     checkable: true
                                     Layout.fillWidth: true
+                                    Layout.preferredWidth: 0
                                 }
                                 Button {
                                     id: flipVBtn
-                                    text: "상하 반전"
+                                    text: "Flip vertical"
                                     checkable: true
                                     Layout.fillWidth: true
+                                    Layout.preferredWidth: 0
                                 }
                             }
 
@@ -3020,7 +3121,7 @@ ApplicationWindow {
                                 color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
                                 font.capitalization: Font.AllUppercase
                             }
-                            Label { text: "수직 원근(Vertical):  " + geoVSlider.value.toFixed(0); color: "white" }
+                            Label { text: "Vertical perspective:  " + geoVSlider.value.toFixed(0); color: "white" }
                             Slider {
                                 id: geoVSlider
                                 Layout.fillWidth: true
@@ -3033,7 +3134,7 @@ ApplicationWindow {
                                     else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                                 }
                             }
-                            Label { text: "수평 원근(Horizontal):  " + geoHSlider.value.toFixed(0); color: "white" }
+                            Label { text: "Horizontal perspective:  " + geoHSlider.value.toFixed(0); color: "white" }
                             Slider {
                                 id: geoHSlider
                                 Layout.fillWidth: true
@@ -3046,7 +3147,7 @@ ApplicationWindow {
                                     else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                                 }
                             }
-                            Label { text: "배율(Scale):  " + geoScaleSlider.value.toFixed(0) + "%"; color: "white" }
+                            Label { text: "Scale:  " + geoScaleSlider.value.toFixed(0) + "%"; color: "white" }
                             Slider {
                                 id: geoScaleSlider
                                 Layout.fillWidth: true
@@ -3063,7 +3164,7 @@ ApplicationWindow {
                             Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
 
                             Button {
-                                text: "Crop · Rotate · Geometry 초기화"
+                                text: "Reset Crop · Rotate · Geometry"
                                 Layout.fillWidth: true
                                 onClicked: win.resetGeometry()
                             }
@@ -3071,7 +3172,7 @@ ApplicationWindow {
                             Label {
                                 Layout.fillWidth: true
                                 wrapMode: Text.WordWrap
-                                text: "※ 크롭·회전·Geometry(수직/수평 원근·배율) 모두 프리뷰와 Export에 실제 적용됩니다. 원근 보정 후 생기는 빈 영역은 크롭으로 정리하세요."
+                                text: "Note: crop · rotate · geometry (vertical/horizontal perspective · scale) all apply to both preview and export. Trim the empty areas left after perspective correction with the crop tool."
                                 color: "#888"; font.pixelSize: 11
                             }
                         }
@@ -3094,8 +3195,8 @@ ApplicationWindow {
 
                 Repeater {
                     model: [
-                        { icon: "edit", tip: "편집 (Edit)" },
-                        { icon: "crop", tip: "자르기·회전·지오메트리 (Crop / Rotate / Geometry)" }
+                        { icon: "edit", tip: "Edit" },
+                        { icon: "crop", tip: "Crop / Rotate / Geometry" }
                     ]
                     delegate: Rectangle {
                         width: 40; height: 40

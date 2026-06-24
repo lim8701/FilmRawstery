@@ -61,7 +61,7 @@ Item {
             Text {
                 anchors.centerIn: parent
                 visible: bigImg.status !== Image.Ready
-                text: bigImg.status === Image.Loading ? "로딩 중…" : "미리보기 없음"
+                text: bigImg.status === Image.Loading ? "Loading…" : "No preview"
                 color: "#777"
                 font.pixelSize: 16
             }
@@ -247,7 +247,7 @@ Item {
             }
             Text {
                 anchors.verticalCenter: parent.verticalCenter
-                text: previewWin.liked ? "좋아요" : "Space / 클릭으로 좋아요"
+                text: previewWin.liked ? "Liked" : "Space / click to like"
                 color: "#9a9a9a"
                 font.pixelSize: 12
             }

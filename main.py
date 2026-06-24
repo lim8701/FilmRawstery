@@ -660,7 +660,7 @@ class Controller(QObject):
         path = file_url.toLocalFile()
         pdict = {k: params[k] for k in params}     # QVariantMap -> 평범한 dict
         self._exporting = True
-        self._set_export_status("내보내는 중… (풀해상도, 수십 초 걸릴 수 있음)")
+        self._set_export_status("Exporting… (full resolution, may take tens of seconds)")
         threading.Thread(target=self._do_export, args=(path, pdict), daemon=True).start()
 
     def _do_export(self, path: str, params: dict) -> None:
@@ -676,9 +676,9 @@ class Controller(QObject):
                 self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb,
                 bitdepth=int(params.get("bitDepth", 8)))
             ok = pipeline.save_image(arr, path)
-            msg = f"저장됨: {path}" if ok else f"저장 실패: {path}"
+            msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
-            msg = f"실패: {exc}"
+            msg = f"Failed: {exc}"
         finally:
             self._exporting = False
         print(f"[export] {msg}")
@@ -694,7 +694,7 @@ class Controller(QObject):
         self._gpu_path = file_url.toLocalFile()
         self._gpu_params = {k: params[k] for k in params}
         self._exporting = True
-        self._set_export_status("GPU 내보내는 중… (풀해상도 디코드)")
+        self._set_export_status("GPU exporting… (full-resolution decode)")
         threading.Thread(target=self._do_full_decode, daemon=True).start()
 
     def _do_full_decode(self) -> None:
@@ -711,7 +711,7 @@ class Controller(QObject):
         """메인 스레드: 풀해상도 src 준비됨 → URL 갱신(QML Image 재로드) + grab 트리거."""
         if not ok:
             self._exporting = False
-            self._set_export_status("GPU export 실패(디코드)")
+            self._set_export_status("GPU export failed (decode)")
             return
         self._full_counter += 1
         self._full_url = f"image://rawfull/f?v={self._full_counter}"
@@ -740,9 +740,9 @@ class Controller(QObject):
                     x = gaussian_filter(x, (s, s, 0.0))
                 arr = np.clip(zoom(x, (f, f, 1.0), order=1) + 0.5, 0, 255).astype(np.uint8)
             ok = pipeline.save_image(arr, self._gpu_path)
-            msg = f"저장됨: {self._gpu_path}" if ok else f"저장 실패: {self._gpu_path}"
+            msg = f"Saved: {self._gpu_path}" if ok else f"Save failed: {self._gpu_path}"
         except Exception as exc:
-            msg = f"실패: {exc}"
+            msg = f"Failed: {exc}"
         finally:
             self._exporting = False
             if self._full_provider is not None:
