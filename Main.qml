@@ -51,6 +51,10 @@ ApplicationWindow {
     // Undo / Redo (편집 스냅샷)
     Shortcut { sequences: [StandardKey.Undo]; onActivated: win.undo() }                    // Ctrl+Z
     Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; onActivated: win.redo() }    // Ctrl+Y / Ctrl+Shift+Z
+    // 우측 패널 전환: Edit / Crop·Geometry / Masking
+    Shortcut { sequence: "Ctrl+1"; onActivated: win.activePanel = 0 }
+    Shortcut { sequence: "Ctrl+2"; onActivated: win.activePanel = 1 }
+    Shortcut { sequence: "Ctrl+3"; onActivated: win.activePanel = 2 }
 
 
     // 컬러 그레이딩 Hue 슬라이더 위에 두는 무지개 스펙트럼 막대(슬라이더 위치↔색상 가이드).
@@ -827,7 +831,7 @@ ApplicationWindow {
                         border.width: 1
 
                         ToolTip.visible: lfHover.hovered
-                        ToolTip.text: "Show liked only"
+                        ToolTip.text: "Show liked only (L)"
 
                         // 팝업 패널과 동일하게 ♥(채움)/♡(빈) 글리프로 활성/비활성 표시
                         Text {
@@ -3487,9 +3491,9 @@ ApplicationWindow {
 
                 Repeater {
                     model: [
-                        { icon: "edit", tip: "Edit" },
-                        { icon: "crop", tip: "Crop / Rotate / Geometry" },
-                        { icon: "mask", tip: "Masking" }
+                        { icon: "edit", tip: "Edit", key: "Ctrl+1" },
+                        { icon: "crop", tip: "Crop / Rotate / Geometry", key: "Ctrl+2" },
+                        { icon: "mask", tip: "Masking", key: "Ctrl+3" }
                     ]
                     delegate: Rectangle {
                         width: 40; height: 40
@@ -3545,7 +3549,7 @@ ApplicationWindow {
                         }
                         ToolTip.visible: selMouse.containsMouse
                         ToolTip.delay: 1500
-                        ToolTip.text: modelData.tip
+                        ToolTip.text: modelData.tip + "  (" + modelData.key + ")"
                     }
                 }
             }
