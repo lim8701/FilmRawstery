@@ -54,16 +54,47 @@ def _blur_luma(lum, sigma):
     return gaussian_filter(lum, sigma=sigma, mode="nearest")
 
 
+# ── 로컬대비 코어 (전역 _texture/_clarity/_dehaze 와 마스킹 _sky_adjust 가 공유) ──
+# amt 는 스칼라(전역) 또는 (H,W) 배열(마스킹: 계수×마스크). 로컬대비 base(고주파/local-contrast)는
+# 호출측이 넘긴다 — 전역은 현재 배열, 마스킹은 중성(neutral) 배열. ⚠️셰이더 adjust.frag 의
+# 텍스처/클래리티/디헤이즈 분기와 동일 수식 유지(프리뷰=Export). dehaze 는 CLAUDE.md상 임시 톤모델.
+def _b3(x):
+    """스칼라는 그대로, (H,W) 배열은 (H,W,1)로 — (H,W,3) 채널 연산 브로드캐스트용."""
+    return x[..., None] if np.ndim(x) else x
+
+
+def _texture_core(c, amt, hi):
+    """텍스처(중주파 가산, 강도 1.6). hi=고주파(원본-블러, H,W,3)."""
+    return c + hi * _b3(amt) * 1.6
+
+
+def _clarity_core(c, amt, d):
+    """클래리티(중간톤 로컬대비 가산, 0.8). d=로컬대비(휘도, H,W). 중간톤 가중은 c 휘도 기준."""
+    lum = c @ LUMA
+    mid = 1.0 - np.abs(2.0 * lum - 1.0)
+    return c + (d * amt * 0.8 * mid)[..., None]
+
+
+def _dehaze_core(c, amt, ld):
+    """디헤이즈 톤모델(로컬대비0.4/대비0.25/흰베일0.22/채도0.3). ld=로컬대비(휘도, H,W).
+    amt<0(흰 베일) 분기는 np.minimum 으로 스칼라/배열 공통 처리."""
+    a = _b3(amt)
+    c = c + (ld * amt * 0.4)[..., None]
+    c = (c - 0.5) * (1.0 + a * 0.25) + 0.5
+    neg = np.minimum(amt, 0.0)                     # amt<0 부분만(amt≥0 이면 0)
+    c = c + (0.92 - c) * (_b3(-neg) * 0.22)        # 흰 베일(밝아짐)
+    l = (c @ LUMA)[..., None]
+    return l + (c - l) * (1.0 + a * 0.3)
+
+
 def _texture(c, amt, sigma):
-    # 중주파 디테일 = 원본 - 작은반경 가우시안 (셰이더와 동일 강도 1.6)
-    return c + (c - _blur_rgb(c, sigma)) * amt * 1.6
+    # 중주파 디테일 = 원본 - 작은반경 가우시안 (코어 공유)
+    return _texture_core(c, amt, c - _blur_rgb(c, sigma))
 
 
 def _clarity(c, amt, sigma):
     lum = c @ LUMA
-    d = lum - _blur_luma(lum, sigma)
-    mid = 1.0 - np.abs(2.0 * lum - 1.0)
-    return c + (d * amt * 0.8 * mid)[..., None]
+    return _clarity_core(c, amt, lum - _blur_luma(lum, sigma))
 
 
 def _sharpen(c, disp, amt, radius_px, detail, mask, scale):
@@ -82,15 +113,9 @@ def _sharpen(c, disp, amt, radius_px, detail, mask, scale):
 
 
 def _dehaze(c, amt, sigma):
-    """톤 모델 디헤이즈 (프리뷰 셰이더와 동일). +대비/채도/로컬대비, -흰베일·플랫."""
+    """톤 모델 디헤이즈 (프리뷰 셰이더와 동일). +대비/채도/로컬대비, -흰베일·플랫. (코어 공유)"""
     lum = c @ LUMA
-    ld = lum - _blur_luma(lum, sigma)
-    c = c + (ld * amt * 0.4)[..., None]               # 로컬 대비
-    c = (c - 0.5) * (1.0 + amt * 0.25) + 0.5          # 대비
-    if amt < 0:
-        c = c + (0.92 - c) * ((-amt) * 0.22)          # 흰 베일(밝아짐)
-    l = c @ LUMA
-    return l[..., None] + (c - l[..., None]) * (1.0 + amt * 0.3)  # 채도
+    return _dehaze_core(c, amt, lum - _blur_luma(lum, sigma))
 
 
 def _presence(c, sat, vib):
@@ -334,18 +359,13 @@ def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
     hiW = _smoothstep(0.5, 1.0, L1)
     shW = 1.0 - _smoothstep(0.0, 0.5, L1)
     out = out * (np.float32(2.0) ** ((sp["hi"] * hiW + sp["sh"] * shW) * m)[..., None])
-    if sp["texture"] != 0.0 and nd_texhi is not None:          # 텍스처(중주파)
-        out = out + nd_texhi * (sp["texture"] * 1.6) * m1
-    if sp["clarity"] != 0.0 and nd_lc is not None:             # 클래리티(중간톤 로컬대비)
-        l = out @ LUMA
-        out = out + (nd_lc * (sp["clarity"] * 0.8) * (1.0 - np.abs(2.0 * l - 1.0)) * m)[..., None]
-    if sp["dehaze"] != 0.0 and nd_lc is not None:              # 디헤이즈(톤 모델)
-        out = out + (nd_lc * (sp["dehaze"] * 0.4) * m)[..., None]
-        out = (out - 0.5) * (1.0 + sp["dehaze"] * 0.25 * m1) + 0.5
-        if sp["dehaze"] < 0.0:
-            out = out + (0.92 - out) * ((-sp["dehaze"]) * 0.22 * m1)
-        ll = (out @ LUMA)[..., None]
-        out = ll + (out - ll) * (1.0 + sp["dehaze"] * 0.3 * m1)
+    # 로컬대비 3종 — 전역과 동일 코어 공유(계수×마스크를 amt 로, 중성 base 를 로컬대비로 전달).
+    if sp["texture"] != 0.0 and nd_texhi is not None:          # 텍스처(중주파, 중성 고주파)
+        out = _texture_core(out, sp["texture"] * m, nd_texhi)
+    if sp["clarity"] != 0.0 and nd_lc is not None:             # 클래리티(중간톤 로컬대비, 중성)
+        out = _clarity_core(out, sp["clarity"] * m, nd_lc)
+    if sp["dehaze"] != 0.0 and nd_lc is not None:              # 디헤이즈(톤 모델, 중성)
+        out = _dehaze_core(out, sp["dehaze"] * m, nd_lc)
     la = (out @ LUMA)[..., None]                               # 채도
     out = la + (out - la) * (1.0 + sp["sat"] * m1)
     return np.clip(out, 0.0, 1.0).astype(np.float32)

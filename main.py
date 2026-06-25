@@ -691,11 +691,12 @@ class Controller(QObject):
             return
         path = file_url.toLocalFile()
         pdict = {k: params[k] for k in params}     # QVariantMap -> 평범한 dict
+        sky_mask = self._sky_mask                  # 요청 시점 스냅샷(export 중 마스크 변경/이미지 전환과 분리)
         self._exporting = True
         self._set_export_status("Exporting… (full resolution, may take tens of seconds)")
-        threading.Thread(target=self._do_export, args=(path, pdict), daemon=True).start()
+        threading.Thread(target=self._do_export, args=(path, pdict, sky_mask), daemon=True).start()
 
-    def _do_export(self, path: str, params: dict) -> None:
+    def _do_export(self, path: str, params: dict, sky_mask=None) -> None:
         try:
             import pipeline
             lut_arr, lut_n = None, 0
@@ -706,7 +707,7 @@ class Controller(QObject):
             curve_rgb = pipeline.compose_curves(*curves)
             arr = pipeline.render_full(
                 self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb,
-                bitdepth=int(params.get("bitDepth", 8)), sky_mask=self._sky_mask)
+                bitdepth=int(params.get("bitDepth", 8)), sky_mask=sky_mask)
             ok = pipeline.save_image(arr, path)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
@@ -755,11 +756,8 @@ class Controller(QObject):
         """QML 이 grab 한 풀해상도 GPU 결과(QImage) → 지오메트리(크롭/회전) 적용 → 저장."""
         try:
             import pipeline
-            im = qimg.convertToFormat(QImage.Format.Format_RGB888)
-            w, h = im.width(), im.height()
             import numpy as np
-            arr = (np.frombuffer(im.constBits(), np.uint8)
-                   .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3).copy())
+            arr = self._qimage_to_rgb(qimg)
             arr = pipeline._apply_geometry(arr, self._gpu_params)   # 프리뷰/CPU export 와 동일
             # 해상도 프리셋(긴 변) 적용 — GPU grab 은 항상 풀해상도라 여기서 축소.
             out_edge = int(self._gpu_params.get("outEdge", 0) or 0)
@@ -1086,17 +1084,21 @@ class Controller(QObject):
         threading.Thread(target=self._mask_worker,
                          args=(self._sky_seq, list(self._mask_keys)), daemon=True).start()
 
-    @Slot()
-    def selectSky(self) -> None:  # noqa: N802 (QML 슬롯, 하위호환)
-        self.setMaskClasses(["sky"])
+    @staticmethod
+    def _qimage_to_rgb(qimg):
+        """QImage → (H,W,3) uint8 RGB numpy (자체 소유 복사본). bytesPerLine 스트라이드 패딩 처리."""
+        import numpy as np
+        im = qimg.convertToFormat(QImage.Format.Format_RGB888)
+        w, h = im.width(), im.height()
+        if w == 0 or h == 0:
+            return np.zeros((max(h, 0), max(w, 0), 3), np.uint8)
+        return (np.frombuffer(im.constBits(), np.uint8)
+                .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3).copy())
 
     def _sky_input_rgb(self):
         """프록시(헤드룸 카메라네이티브) → 중성(노출0·as-shot WB) display sRGB uint8. 세그 입력."""
         import numpy as np
-        im = self._proxy_img.convertToFormat(QImage.Format.Format_RGB888)
-        w, h = im.width(), im.height()
-        arr = (np.frombuffer(im.constBits(), np.uint8)
-               .reshape(h, im.bytesPerLine())[:, :w * 3].reshape(h, w, 3).astype(np.float32) / 255.0)
+        arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
         disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
         return (disp * 255.0 + 0.5).astype(np.uint8)
 
@@ -1162,6 +1164,12 @@ class Controller(QObject):
         return self._sky_url
 
     skyMaskUrl = Property(str, _get_sky_url, notify=skyMaskChanged)
+
+    def _get_has_sky_mask(self) -> bool:
+        return self._sky_mask is not None
+
+    # 실제 마스크 존재 여부 — 셰이더가 invert 를 마스크 없을 때 전체 적용하지 않도록 게이팅.
+    hasSkyMask = Property(bool, _get_has_sky_mask, notify=skyMaskChanged)
 
     def _get_sky_busy(self) -> bool:
         return self._sky_busy
@@ -1236,9 +1244,18 @@ class Controller(QObject):
         self.wbBaked.emit()              # baked kelvin/tint/matrix 갱신 알림
         self._proxy_w, self._proxy_h = img.width(), img.height()
         self._proxy_img = img            # 세그 입력 디코드용(display sRGB 변환 base)
-        self._seg_probs = None           # 새 이미지 → 추론 캐시 무효화(다음 선택 시 재추론)
+        self._seg_probs = None           # 프록시 바뀜 → 추론 캐시 무효화(재추론 필요)
         self._seg_guide = self._seg_size = None
-        self._clear_sky()                # 새 프록시 → 이전 마스크 폐기
+        prev_mask_keys = list(self._mask_keys)
+        self._sky_seq += 1               # 이전 이미지의 진행 중 세그 워커 결과 폐기(전환 레이스 방지)
+        self._set_sky_mask(None)         # 새 프록시 → 이전 마스크 무효(곧 재생성/복원)
+        # 비-fresh 재디코딩(렌즈 보정·WB 커밋 등)은 editsReady(복원)를 안 거친다 → 활성 마스크가
+        # 있었으면 같은 클래스로 새 프록시에 재생성(렌즈 보정은 기하 변경 → 정렬 위해 재생성 필수).
+        # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.
+        if prev_mask_keys and not self._fresh_load:
+            self.setMaskClasses(prev_mask_keys)
+        else:
+            self._mask_keys = []
         self._update_stamp_layer()       # 날짜 스탬프 프리뷰 레이어(프록시, 우하단)
         self._compute_histogram(img)     # 톤커브 배경 히스토그램(디코딩된 프록시)
         print(f"[load] {self._path}  ({img.width()}x{img.height()})  "

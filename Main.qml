@@ -107,6 +107,40 @@ ApplicationWindow {
         controller.setMaskClasses(a)
     }
 
+    // 마스킹 조정 직렬화 — 단일 진실원(아래 키 목록). editParams/exportParams/applyEdits/editSaveWatch
+    // 가 이 헬퍼로 파생되어 한 곳만 고치면 됨(예전엔 네 곳에 따로 나열 → 누락 시 저장/export 불일치).
+    readonly property var skyAdjustKeys: ["skyExp", "skyTemp", "skyTint", "skySat", "skyHi",
+                                          "skyShadows", "skyTexture", "skyClarity", "skyDehaze"]
+    function _skySlider(key) {
+        switch (key) {
+        case "skyExp": return skyExpSlider;        case "skyTemp": return skyTempSlider
+        case "skyTint": return skyTintSlider;      case "skySat": return skySatSlider
+        case "skyHi": return skyHiSlider;          case "skyShadows": return skyShadowsSlider
+        case "skyTexture": return skyTextureSlider; case "skyClarity": return skyClaritySlider
+        case "skyDehaze": return skyDehazeSlider
+        }
+        return null
+    }
+    // 저장/export 페이로드 조각(maskKeys + invert + 9개 조정값). render_full 은 maskKeys 무시.
+    function skyEditParams() {
+        var o = { "maskKeys": win.maskKeys, "skyInvert": skyInvertCheck.checked }
+        for (var i = 0; i < win.skyAdjustKeys.length; i++) {
+            var k = win.skyAdjustKeys[i]; o[k] = win._skySlider(k).value
+        }
+        return o
+    }
+    // 복원: 조정값 + 선택 클래스. 마스크는 클래스로부터 재생성(setMaskClasses → 재추론).
+    function applySkyEdits(p) {
+        for (var i = 0; i < win.skyAdjustKeys.length; i++) {
+            var k = win.skyAdjustKeys[i]; win._skySlider(k).value = win._ev(p, k, 0.0)
+        }
+        skyInvertCheck.checked = win._ev(p, "skyInvert", false)
+        win.showSkyMask = false
+        var mk = win._ev(p, "maskKeys", []); win.maskKeys = mk.slice()
+        if (mk.length > 0) { win._maskRestore = true; controller.setMaskClasses(mk) }
+        else controller.clearSky()
+    }
+
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
     property int quarterTurns: 0        // 90° 단위 회전 (⟳ CW +1, ⟲ CCW -1, mod 4)
     // 종횡비 콤보 인덱스 -> 비율(가로/세로). aspectCombo 모델과 순서 일치.
@@ -165,7 +199,7 @@ ApplicationWindow {
 
     // 저장 페이로드(원시 컨트롤 값) — 저장/복원의 단일 진실원.
     function editParams() {
-        return {
+        var o = {
             "v": 1,
             "exposure": expSlider.value, "contrast": conSlider.value,
             "highlights": hiSlider.value, "shadows": shSlider.value,
@@ -189,14 +223,12 @@ ApplicationWindow {
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "aspectIndex": aspectCombo.currentIndex, "cropLandscape": cropLandscapeBtn.checked,
             "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value,
-            // 마스킹(선택 클래스 + 로컬 조정). 마스크 픽셀은 저장 안 함 — 로드 시 클래스로 재생성.
-            "maskKeys": win.maskKeys, "skyExp": skyExpSlider.value, "skyTemp": skyTempSlider.value,
-            "skyTint": skyTintSlider.value, "skySat": skySatSlider.value, "skyHi": skyHiSlider.value,
-            "skyShadows": skyShadowsSlider.value, "skyTexture": skyTextureSlider.value,
-            "skyClarity": skyClaritySlider.value, "skyDehaze": skyDehazeSlider.value,
-            "skyInvert": skyInvertCheck.checked
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value
         }
+        // 마스킹(선택 클래스 + 로컬 조정) 병합. 마스크 픽셀은 저장 안 함 — 로드 시 클래스로 재생성.
+        var sk = win.skyEditParams()
+        for (var k in sk) o[k] = sk[k]
+        return o
     }
     function _ev(p, k, d) { return p[k] !== undefined ? p[k] : d }
 
@@ -242,16 +274,7 @@ ApplicationWindow {
         win.setCropRect(_ev(p,"cropX",0.0), _ev(p,"cropY",0.0), _ev(p,"cropW",1.0), _ev(p,"cropH",1.0))
         geoVSlider.value = _ev(p, "geoV", 0); geoHSlider.value = _ev(p, "geoH", 0)
         geoScaleSlider.value = _ev(p, "geoScale", 100)
-        // 마스킹 복원: 조정값 + 선택 클래스. 마스크는 클래스로부터 재생성(setMaskClasses → 재추론).
-        skyExpSlider.value = _ev(p, "skyExp", 0.0); skyTempSlider.value = _ev(p, "skyTemp", 0.0)
-        skyTintSlider.value = _ev(p, "skyTint", 0.0); skySatSlider.value = _ev(p, "skySat", 0.0)
-        skyHiSlider.value = _ev(p, "skyHi", 0.0); skyShadowsSlider.value = _ev(p, "skyShadows", 0.0)
-        skyTextureSlider.value = _ev(p, "skyTexture", 0.0); skyClaritySlider.value = _ev(p, "skyClarity", 0.0)
-        skyDehazeSlider.value = _ev(p, "skyDehaze", 0.0); skyInvertCheck.checked = _ev(p, "skyInvert", false)
-        win.showSkyMask = false
-        var mk = _ev(p, "maskKeys", []); win.maskKeys = mk.slice()
-        if (mk.length > 0) { win._maskRestore = true; controller.setMaskClasses(mk) }
-        else controller.clearSky()
+        win.applySkyEdits(p)   // 마스킹(선택 클래스 + 조정) 복원 — 마스크는 클래스로부터 재생성
     }
 
     // 하늘(로컬) 조정 초기화 — 슬라이더 + 마스크 + 오버레이. 새 파일 로드/Reset 에서 호출.
@@ -381,9 +404,7 @@ ApplicationWindow {
         aspectCombo.currentIndex, cropLandscapeBtn.checked,
         win.cropX, win.cropY, win.cropW, win.cropH,
         geoVSlider.value, geoHSlider.value, geoScaleSlider.value,
-        win.maskKeys, skyExpSlider.value, skyTempSlider.value, skyTintSlider.value,
-        skySatSlider.value, skyHiSlider.value, skyShadowsSlider.value, skyTextureSlider.value,
-        skyClaritySlider.value, skyDehazeSlider.value, skyInvertCheck.checked
+        JSON.stringify(win.skyEditParams())   // 마스킹 값 변경 추적(함수 내부 프로퍼티 읽기까지 추적됨)
     ]
     onEditSaveWatchChanged: win.scheduleSave()
 
@@ -398,7 +419,7 @@ ApplicationWindow {
 
     // Export 파라미터(현상 전효과 + 지오메트리 + 해상도). CPU/GPU export 공용.
     function exportParams() {
-        return {
+        var o = {
             "exposure": expSlider.value, "contrast": conSlider.value,
             "highlights": hiSlider.value, "shadows": shSlider.value,
             "whites": whSlider.value, "blacks": blSlider.value,
@@ -422,14 +443,12 @@ ApplicationWindow {
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
             "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScalePct": geoScaleSlider.value,
-            // 하늘(로컬) 조정 — CPU render_full 이 보관된 마스크(controller._sky_mask)와 함께 적용.
-            "skyExp": skyExpSlider.value, "skyTemp": skyTempSlider.value,
-            "skyTint": skyTintSlider.value, "skySat": skySatSlider.value,
-            "skyHi": skyHiSlider.value, "skyShadows": skyShadowsSlider.value,
-            "skyTexture": skyTextureSlider.value, "skyClarity": skyClaritySlider.value,
-            "skyDehaze": skyDehazeSlider.value, "skyInvert": skyInvertCheck.checked
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScalePct": geoScaleSlider.value
         }
+        // 하늘(로컬) 조정 병합 — CPU render_full 이 보관된 마스크(controller._sky_mask)와 함께 적용.
+        var sk = win.skyEditParams()
+        for (var k in sk) o[k] = sk[k]
+        return o
     }
 
     // (앱 종료 시 편집 플러시 저장은 quitDialog 확인 후 onAccepted 에서 수행)
@@ -1164,6 +1183,7 @@ ApplicationWindow {
                         property real skyClarity: skyClaritySlider.value
                         property real skyDehaze: skyDehazeSlider.value
                         property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
+                        property real skyHasMask: controller.hasSkyMask ? 1.0 : 0.0
                         property real skyShowMask: 0.0
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
@@ -1447,6 +1467,7 @@ ApplicationWindow {
                         property real skyClarity: skyClaritySlider.value
                         property real skyDehaze: skyDehazeSlider.value
                         property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
+                        property real skyHasMask: controller.hasSkyMask ? 1.0 : 0.0
                         property real skyShowMask: win.showSkyMask ? 1.0 : 0.0
 
                         fragmentShader: "shaders/adjust.frag.qsb"

@@ -91,7 +91,7 @@ def ensure_model() -> str:
     if not os.path.exists(MODEL_PATH):
         os.makedirs(MODEL_DIR, exist_ok=True)
         tmp = MODEL_PATH + ".part"
-        urllib.request.urlretrieve(_MODEL_URL, tmp)   # ~14MB
+        urllib.request.urlretrieve(_MODEL_URL, tmp)   # SegFormer-B2 ONNX ~105MB
         os.replace(tmp, MODEL_PATH)                    # 원자적 교체(부분파일 방지)
     return MODEL_PATH
 

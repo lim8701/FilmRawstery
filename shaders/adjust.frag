@@ -60,6 +60,7 @@ layout(std140, binding = 0) uniform buf {
     float skyHi;        // 하늘 하이라이트 국소 노출 (밝은 부분, -1..1)
     float skyInvert;    // 마스크 반전 1/0
     float skyShowMask;  // 마스크 선택영역 오버레이(프리뷰 전용) 1/0
+    float skyHasMask;   // 실제 마스크 존재 1/0 — 0이면 invert 라도 미적용(export 와 정합)
     float skyTint;      // 하늘 틴트 (+마젠타 / -녹, -1..1)
     float skyShadows;   // 하늘 섀도 국소 노출 (어두운 부분, -1..1)
     float skyTexture;   // 하늘 텍스처 (중주파 로컬대비, -1..1)
@@ -338,10 +339,12 @@ void main() {
     // 9.7) 하늘(로컬) 조정 — skyMask(binding 9) 게이팅. display sRGB 공간.
     //      m 스케일이 국소화하므로 별도 mix 불필요(m=0 인 곳은 모든 항이 항등 → 영향 없음).
     //      마스크 없을 때(1x1 검정 텍스처)도 m=0 → 안전. 계수는 라이트룸 비교로 튜닝 대상.
-    if (ubuf.skyShowMask > 0.5 || ubuf.skyExp != 0.0 || ubuf.skyTemp != 0.0
+    // 마스크가 실제로 있을 때만 적용(export 의 sky_mask is not None 게이트와 정합).
+    // 마스크 없으면 invert 라도 전체 적용 금지 → 프리뷰=Export.
+    if (ubuf.skyHasMask > 0.5 && (ubuf.skyShowMask > 0.5 || ubuf.skyExp != 0.0 || ubuf.skyTemp != 0.0
         || ubuf.skyTint != 0.0 || ubuf.skySat != 0.0 || ubuf.skyHi != 0.0
         || ubuf.skyShadows != 0.0 || ubuf.skyTexture != 0.0
-        || ubuf.skyClarity != 0.0 || ubuf.skyDehaze != 0.0) {
+        || ubuf.skyClarity != 0.0 || ubuf.skyDehaze != 0.0)) {
         float m = texture(skyMask, uv).r;
         m = mix(m, 1.0 - m, ubuf.skyInvert);
         if (ubuf.skyShowMask > 0.5) {
