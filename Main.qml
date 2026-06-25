@@ -96,6 +96,8 @@ ApplicationWindow {
     property bool showSkyMask: false
     // 현재 체크된 마스크 클래스 그룹 key 목록(복합 선택). 토글 시 라이브 재조합.
     property var maskKeys: []
+    // 사이드카 복원으로 마스크 재생성 중 — 완료 시 오버레이 자동 표시 억제(로드 시 갑자기 적색 방지).
+    property bool _maskRestore: false
     function toggleMaskKey(key, on) {
         var a = maskKeys.slice()
         var i = a.indexOf(key)
@@ -187,7 +189,13 @@ ApplicationWindow {
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
             "aspectIndex": aspectCombo.currentIndex, "cropLandscape": cropLandscapeBtn.checked,
             "cropX": win.cropX, "cropY": win.cropY, "cropW": win.cropW, "cropH": win.cropH,
-            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value
+            "geoV": geoVSlider.value, "geoH": geoHSlider.value, "geoScale": geoScaleSlider.value,
+            // 마스킹(선택 클래스 + 로컬 조정). 마스크 픽셀은 저장 안 함 — 로드 시 클래스로 재생성.
+            "maskKeys": win.maskKeys, "skyExp": skyExpSlider.value, "skyTemp": skyTempSlider.value,
+            "skyTint": skyTintSlider.value, "skySat": skySatSlider.value, "skyHi": skyHiSlider.value,
+            "skyShadows": skyShadowsSlider.value, "skyTexture": skyTextureSlider.value,
+            "skyClarity": skyClaritySlider.value, "skyDehaze": skyDehazeSlider.value,
+            "skyInvert": skyInvertCheck.checked
         }
     }
     function _ev(p, k, d) { return p[k] !== undefined ? p[k] : d }
@@ -234,7 +242,16 @@ ApplicationWindow {
         win.setCropRect(_ev(p,"cropX",0.0), _ev(p,"cropY",0.0), _ev(p,"cropW",1.0), _ev(p,"cropH",1.0))
         geoVSlider.value = _ev(p, "geoV", 0); geoHSlider.value = _ev(p, "geoH", 0)
         geoScaleSlider.value = _ev(p, "geoScale", 100)
-        win.resetSky()    // 하늘 조정/마스크는 세션 전용(사이드카 미저장) → 로드마다 초기화
+        // 마스킹 복원: 조정값 + 선택 클래스. 마스크는 클래스로부터 재생성(setMaskClasses → 재추론).
+        skyExpSlider.value = _ev(p, "skyExp", 0.0); skyTempSlider.value = _ev(p, "skyTemp", 0.0)
+        skyTintSlider.value = _ev(p, "skyTint", 0.0); skySatSlider.value = _ev(p, "skySat", 0.0)
+        skyHiSlider.value = _ev(p, "skyHi", 0.0); skyShadowsSlider.value = _ev(p, "skyShadows", 0.0)
+        skyTextureSlider.value = _ev(p, "skyTexture", 0.0); skyClaritySlider.value = _ev(p, "skyClarity", 0.0)
+        skyDehazeSlider.value = _ev(p, "skyDehaze", 0.0); skyInvertCheck.checked = _ev(p, "skyInvert", false)
+        win.showSkyMask = false
+        var mk = _ev(p, "maskKeys", []); win.maskKeys = mk.slice()
+        if (mk.length > 0) { win._maskRestore = true; controller.setMaskClasses(mk) }
+        else controller.clearSky()
     }
 
     // 하늘(로컬) 조정 초기화 — 슬라이더 + 마스크 + 오버레이. 새 파일 로드/Reset 에서 호출.
@@ -363,7 +380,10 @@ ApplicationWindow {
         win.quarterTurns, rotAngleSlider.value, flipHBtn.checked, flipVBtn.checked,
         aspectCombo.currentIndex, cropLandscapeBtn.checked,
         win.cropX, win.cropY, win.cropW, win.cropH,
-        geoVSlider.value, geoHSlider.value, geoScaleSlider.value
+        geoVSlider.value, geoHSlider.value, geoScaleSlider.value,
+        win.maskKeys, skyExpSlider.value, skyTempSlider.value, skyTintSlider.value,
+        skySatSlider.value, skyHiSlider.value, skyShadowsSlider.value, skyTextureSlider.value,
+        skyClaritySlider.value, skyDehazeSlider.value, skyInvertCheck.checked
     ]
     onEditSaveWatchChanged: win.scheduleSave()
 
@@ -3311,7 +3331,11 @@ ApplicationWindow {
                             // 선택 '완료'(클리어 제외) → 마스크 오버레이 자동 표시
                             Connections {
                                 target: controller
-                                function onSkySelected() { win.showSkyMask = true }
+                                // 사용자 선택 → 오버레이 자동 표시. 단 사이드카 복원 재생성은 제외.
+                                function onSkySelected() {
+                                    if (win._maskRestore) win._maskRestore = false
+                                    else win.showSkyMask = true
+                                }
                             }
                             RowLayout {
                                 Layout.fillWidth: true; spacing: 6
