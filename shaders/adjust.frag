@@ -76,6 +76,10 @@ layout(std140, binding = 0) uniform buf {
     float toneWhBlK;    // Whites/Blacks 끝단 레벨 이동
     float vignetteK;    // 비네팅 방사 강도
     float grainK;       // 필름 그레인 강도
+    float sharpenK;     // 언샤프 마스크 강도
+    float hslHueDegK;   // HSL hue 시프트 최대(도)
+    float hslLumK;      // HSL 휘도 조정 스케일
+    float colorGradeK;  // 컬러 그레이딩 강도
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -149,9 +153,9 @@ vec3 hslMixer(vec3 rgb) {
     float effS = dot(wa, ubuf.hslSa) + dot(wb, ubuf.hslSb);
     float effL = dot(wa, ubuf.hslLa) + dot(wb, ubuf.hslLb);
     float satW = hsv.y;   // 무채색(회색)엔 색상/채도 조정 영향 최소화
-    hsv.x = fract(hsv.x + effH * (30.0 / 360.0) * satW);
+    hsv.x = fract(hsv.x + effH * (ubuf.hslHueDegK / 360.0) * satW);
     hsv.y = clamp(hsv.y * (1.0 + effS), 0.0, 1.0);
-    hsv.z = clamp(hsv.z * (1.0 + effL * 0.5), 0.0, 1.0);
+    hsv.z = clamp(hsv.z * (1.0 + effL * ubuf.hslLumK), 0.0, 1.0);
     return hsv2rgb(hsv);
 }
 
@@ -296,7 +300,7 @@ void main() {
                  - dot(texture(dispSrc, uv - vec2(0.0, ubuf.texelH)).rgb, LUMA);
         float edge = smoothstep(0.0, 0.06, length(vec2(gx, gy)));
         float mask = mix(1.0, edge, ubuf.sharpenMask);
-        rgb += vec3(hp * ubuf.sharpenAmt * 1.5 * mask);
+        rgb += vec3(hp * ubuf.sharpenAmt * ubuf.sharpenK * mask);
     }
 
     // 6) 디헤이즈 — 톤 모델 (라이트룸 느낌). 전역/하늘 공용 dehazeTone() 사용.
@@ -346,7 +350,7 @@ void main() {
         vec3 dsh  = (hsv2rgb(vec3(ubuf.cgHueSh,  1.0, 1.0)) - 0.5) * ubuf.cgSatSh;
         vec3 dmid = (hsv2rgb(vec3(ubuf.cgHueMid, 1.0, 1.0)) - 0.5) * ubuf.cgSatMid;
         vec3 dhi  = (hsv2rgb(vec3(ubuf.cgHueHi,  1.0, 1.0)) - 0.5) * ubuf.cgSatHi;
-        rgb = clamp(rgb + (dsh * wsh + dmid * wmid + dhi * whi) * 0.5, 0.0, 1.0);
+        rgb = clamp(rgb + (dsh * wsh + dmid * wmid + dhi * whi) * ubuf.colorGradeK, 0.0, 1.0);
     }
 
     // 9.7) 하늘(로컬) 조정 — skyMask(binding 9) 게이팅. display sRGB 공간.

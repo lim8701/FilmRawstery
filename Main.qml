@@ -1233,6 +1233,10 @@ ApplicationWindow {
                         property real toneWhBlK: controller.adjustCoeffs["toneWhBlK"]
                         property real vignetteK: controller.adjustCoeffs["vignetteK"]
                         property real grainK: controller.adjustCoeffs["grainK"]
+                        property real sharpenK: controller.adjustCoeffs["sharpenK"]
+                        property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
+                        property real hslLumK: controller.adjustCoeffs["hslLumK"]
+                        property real colorGradeK: controller.adjustCoeffs["colorGradeK"]
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
                 }}
@@ -1530,6 +1534,10 @@ ApplicationWindow {
                         property real toneWhBlK: controller.adjustCoeffs["toneWhBlK"]
                         property real vignetteK: controller.adjustCoeffs["vignetteK"]
                         property real grainK: controller.adjustCoeffs["grainK"]
+                        property real sharpenK: controller.adjustCoeffs["sharpenK"]
+                        property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
+                        property real hslLumK: controller.adjustCoeffs["hslLumK"]
+                        property real colorGradeK: controller.adjustCoeffs["colorGradeK"]
 
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }

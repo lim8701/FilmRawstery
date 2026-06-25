@@ -26,6 +26,12 @@ TONE_WHBL = 0.3         # Whites/Blacks 끝단 레벨 이동
 VIGNETTE = 0.8          # 비네팅 방사 강도
 GRAIN = 0.12            # 필름 그레인 강도
 
+# 기타 강도 계수 (샤프닝 / HSL 믹서 / 컬러 그레이딩)
+SHARPEN = 1.5           # 언샤프 마스크 강도
+HSL_HUE_DEG = 30.0      # HSL 색상대 hue 시프트 최대(도)
+HSL_LUM = 0.5           # HSL 휘도 조정 스케일
+COLOR_GRADE = 0.5       # 컬러 그레이딩(스플릿 토닝) 강도
+
 
 def as_qml_dict():
     """QML ShaderEffect uniform 바인딩용 (controller.adjustCoeffs). 셰이더 uniform 이름과 일치."""
@@ -36,4 +42,6 @@ def as_qml_dict():
         "skyTempK": SKY_TEMP, "skyTintK": SKY_TINT,
         "toneHiShK": TONE_HISH, "toneWhBlK": TONE_WHBL,
         "vignetteK": VIGNETTE, "grainK": GRAIN,
+        "sharpenK": SHARPEN, "hslHueDegK": HSL_HUE_DEG,
+        "hslLumK": HSL_LUM, "colorGradeK": COLOR_GRADE,
     }

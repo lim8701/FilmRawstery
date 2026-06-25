@@ -110,7 +110,7 @@ def _sharpen(c, disp, amt, radius_px, detail, mask, scale):
     gy = np.roll(Ld, -step, axis=0) - np.roll(Ld, step, axis=0)
     edge = _smoothstep(0.0, 0.06, np.sqrt(gx * gx + gy * gy))
     m = (1.0 - mask) + mask * edge
-    return c + (hp * amt * 1.5 * m)[..., None]
+    return c + (hp * amt * coeffs.SHARPEN * m)[..., None]
 
 
 def _dehaze(c, amt, sigma):
@@ -169,9 +169,9 @@ def _hsl_mixer(c, hsl_h, hsl_s, hsl_l):
     w = np.maximum(0.0, 1.0 - d * 8.0)              # (...,8) 단위분할 가중치
     eff_h = w @ H; eff_s = w @ S; eff_l = w @ L
     sat_w = hsv[..., 1]
-    hsv[..., 0] = (hsv[..., 0] + eff_h * (30.0 / 360.0) * sat_w) % 1.0
+    hsv[..., 0] = (hsv[..., 0] + eff_h * (coeffs.HSL_HUE_DEG / 360.0) * sat_w) % 1.0
     hsv[..., 1] = np.clip(hsv[..., 1] * (1.0 + eff_s), 0.0, 1.0)
-    hsv[..., 2] = np.clip(hsv[..., 2] * (1.0 + eff_l * 0.5), 0.0, 1.0)
+    hsv[..., 2] = np.clip(hsv[..., 2] * (1.0 + eff_l * coeffs.HSL_LUM), 0.0, 1.0)
     return _hsv2rgb(hsv)
 
 
@@ -341,7 +341,7 @@ def _color_grade(c, hue_sh, sat_sh, hue_mid, sat_mid, hue_hi, sat_hi, balance):
     def _tdir(hue, sat):
         return (_hsv2rgb(np.array([hue, 1.0, 1.0], np.float32)) - 0.5) * np.float32(sat)
     dsh, dmid, dhi = _tdir(hue_sh, sat_sh), _tdir(hue_mid, sat_mid), _tdir(hue_hi, sat_hi)
-    delta = (dsh * wsh[..., None] + dmid * wmid[..., None] + dhi * whi[..., None]) * np.float32(0.5)
+    delta = (dsh * wsh[..., None] + dmid * wmid[..., None] + dhi * whi[..., None]) * np.float32(coeffs.COLOR_GRADE)
     return np.clip(c + delta, 0.0, 1.0).astype(np.float32)
 
 
