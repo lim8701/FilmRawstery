@@ -10,7 +10,9 @@ A GPU-accelerated RAW developer and film-simulation editor for the **Fujifilm X1
 Edit interactively on a real-time, shader-driven preview, then export at full resolution through a numpy pipeline that mirrors the shader exactly — *what you see is what you get*.
 
 <p align="center">
-  <img src="screenshot.png" alt="Film Rawstery — file explorer, live preview, and develop panel" width="100%">
+  <img src="screenshot.png" alt="Film Rawstery — develop: file explorer, real-time preview, and develop panel" width="100%">
+  <br><br>
+  <img src="screenshot2.png" alt="Film Rawstery — masking: AI multi-class selection (people masked) with per-mask adjustments" width="100%">
 </p>
 
 > ⚠️ Tuned specifically for the Fuji X100V (X-Trans sensor + lens profile). Other cameras may decode but won't match the lens/color tuning.
@@ -29,6 +31,13 @@ Edit interactively on a real-time, shader-driven preview, then export at full re
 - **Detail** — texture, clarity, dehaze, and **sharpening** (amount / radius / detail / masking)
 - **Effects** — film grain, vignette
 - **Highlight reconstruction** — hue-aware desaturation that neutralizes clipped-highlight color casts (e.g. a fire core) while preserving saturated colored light sources (neon, signs)
+
+### Masking (local adjustments)
+- **AI selection** — ONNX semantic segmentation (SegFormer-B2 / ADE20K) detects regions to mask; the model auto-downloads on first use
+- **Multi-class composite** — tick any combination of **Sky / Vegetation / Building / Ground / Water / Mountain / Person**; the mask is their union, recomposed live from a single cached inference
+- **Edge-refined soft mask** — guided-filter refinement against image luminance for clean branch/edge boundaries, plus invert and a red mask overlay
+- **Per-mask develop** — Exposure / Temp / Tint / Highlights / Shadows / Texture / Clarity / Dehaze / Saturation, applied only to the masked region in both preview and export
+- Masks persist per-image (regenerated from the saved classes on reopen)
 
 ### Film Simulations
 12 Fujifilm looks as 3D LUTs: Provia, Velvia, Astia, Classic Chrome, Classic Negative, Nostalgic Neg, PRO Neg. Hi/Std, Eterna, Reala Ace, Bleach Bypass — with adjustable strength.
@@ -58,14 +67,14 @@ RAF ──rawpy──► camera-native proxy (≤2560px, headroom-encoded)
        QML ShaderEffect pipeline (GPU, proxy-resolution FBO → scaled to screen)
        headroom-decode → WB → cam→sRGB matrix → ×2^exposure → filmic
        → tone zones → texture/clarity/dehaze → sharpen → film-sim LUT
-       → vibrance/sat → HSL mixer → contrast → tone curve → vignette → grain
+       → vibrance/sat → HSL mixer → contrast → tone curve → mask local adjust → vignette → grain
                      │
    live preview (GPU)        Export: pipeline.py (full-res numpy, same steps)
 ```
 
 Key design decisions:
 - **Processing resolution ≠ display resolution** — the pipeline always renders at a fixed proxy resolution and scales to screen, so GPU load is independent of monitor size.
-- **Preview = Export parity** — the GLSL shaders (`shaders/adjust.frag`) and the numpy export (`pipeline.py`) implement the same steps, formulas, and coefficients.
+- **Preview = Export parity** — the GLSL shaders (`shaders/adjust.frag`) and the numpy export (`pipeline.py`) implement the same steps and formulas; strength coefficients live in a single `coeffs.py`, injected into the shader as uniforms so a change updates preview and export together.
 - **Color science first, look-matching second** — algorithms are physically/colorimetrically correct; strengths and curves are then tuned to feel like Adobe Lightroom.
 
 ---
@@ -73,8 +82,9 @@ Key design decisions:
 ## Requirements
 
 - Python 3.13 (3.11+ should work)
-- `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread` (see [`requirements.txt`](requirements.txt))
+- `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `onnxruntime` (see [`requirements.txt`](requirements.txt))
 - A GPU/driver supporting the Qt RHI (OpenGL / Direct3D / Metal / Vulkan)
+- The masking model (SegFormer-B2 ONNX, ~105 MB) auto-downloads to `models/` on first use — needs an internet connection the first time (see [`models/README.md`](models/README.md))
 
 ## Install & Run
 
@@ -94,6 +104,8 @@ Open a `.RAF` from the left file explorer (double-click). Shaders auto-recompile
 | `main.py` | App entry point, controller, image providers (raw / lut / curve / stamp / thumb) |
 | `raw_loader.py` | RAF → display proxy (X-Trans-safe decode, headroom encoding, lens correction) |
 | `pipeline.py` | Full-resolution export — numpy reproduction of the shader pipeline |
+| `sky_seg.py` | ML masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
+| `coeffs.py` | Single source of truth for adjustment strength coefficients (shader uniforms + pipeline) |
 | `wb.py` | White balance (Kelvin/tint), cam→sRGB matrix, filmic curve, auto-exposure |
 | `lens.py` | X100V lens profile (distortion / vignetting / CA) |
 | `lut.py`, `make_luts.py` | `.cube` 3D LUT loading / baking |
@@ -110,6 +122,8 @@ Open a `.RAF` from the left file explorer (double-click). Shaders auto-recompile
 - **Color film-simulation LUTs** — derived from the *FujifilmCameraProfiles* project (sRGB `.cube`)
 - **B&W film-simulation LUTs** (ACROS / Monochrome / Sepia) — [Stuart Sowerby](https://blog.sowerby.me/fuji-film-simulation-profiles/) (Fuji X-Trans III, converted from `.3dl` to N=32 `.cube`)
 - **Date-back font** — [DSEG](https://github.com/keshikan/DSEG) by Keshikan (SIL Open Font License 1.1)
+- **Masking model** — SegFormer-B2 finetuned on ADE20K, ONNX export by [Xenova](https://huggingface.co/Xenova/segformer-b2-finetuned-ade-512-512) (transformers.js). ⚠️ Research-oriented license — verify before commercial use; see [`models/README.md`](models/README.md)
+- **ONNX inference** — [ONNX Runtime](https://onnxruntime.ai/)
 - **RAW decoding** — [rawpy](https://github.com/letmaik/rawpy) / LibRaw
 - **UI & GPU pipeline** — [Qt for Python (PySide6)](https://doc.qt.io/qtforpython/)
 - Plus [NumPy](https://numpy.org/), [SciPy](https://scipy.org/), and [ExifRead](https://github.com/ianare/exif-py)
