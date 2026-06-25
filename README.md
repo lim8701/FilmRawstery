@@ -27,8 +27,6 @@ I shoot a lot with the **Fujifilm X100V** and edit in Lightroom — but I only u
 
 If I pick up another camera down the line, I plan to add support for it too.
 
-Feel free to use it — anyone's welcome. 🙂
-
 ### The name
 
 *Film Rawstery* is a play on **roastery**. A coffee roastery takes raw beans and roasts them into something worth drinking; this app does the same with **RAW** files — raw sensor data developed and refined into a finished photo — hence **Raw**stery. The *Film* nods to the Fujifilm film-simulation looks at its heart.
@@ -56,7 +54,7 @@ Feel free to use it — anyone's welcome. 🙂
 - Masks persist per-image (regenerated from the saved classes on reopen)
 
 ### Film Simulations
-12 Fujifilm looks as 3D LUTs: Provia, Velvia, Astia, Classic Chrome, Classic Negative, Nostalgic Neg, PRO Neg. Hi/Std, Eterna, Reala Ace, Bleach Bypass — with adjustable strength.
+Fujifilm looks as 3D LUTs: Provia, Velvia, Astia, Classic Chrome, Classic Negative, Nostalgic Neg, PRO Neg. Hi/Std, Eterna, Reala Ace, Bleach Bypass — with adjustable strength. The list is driven by the `.cube` files present in `luts/`, so any known LUT you drop in (e.g. B&W ACROS / Monochrome / Sepia) appears automatically, and missing ones are hidden.
 
 ### Geometry
 Crop (aspect-ratio presets + free drag), rotate / straighten, flip, and perspective (vertical / horizontal keystone + scale) — applied identically in preview and export.
@@ -133,10 +131,21 @@ Open a `.RAF` from the left file explorer (double-click). Shaders auto-recompile
 
 ---
 
+## License
+
+A hobby project — shared so others can use and learn from it.
+
+- **Source code & original assets** — [MIT](LICENSE). Use, modify, and redistribute freely (including commercially).
+- **Film-simulation LUTs** (`luts/*.cube`) — **CC BY-NC-SA 4.0** (attribution · **non-commercial** · share-alike), derived from [FujifilmCameraProfiles](https://github.com/abpy/FujifilmCameraProfiles); see [`luts/LICENSE`](luts/LICENSE). The code is reusable commercially, but the bundled LUTs are not.
+- **Masking model** — downloaded at runtime under its own research-oriented license; see [`models/README.md`](models/README.md).
+
+> Bundled third-party components keep their own licenses; the MIT grant covers this project's own code and assets only.
+
+---
+
 ## Credits
 
-- **Color film-simulation LUTs** — derived from the *FujifilmCameraProfiles* project (sRGB `.cube`)
-- **B&W film-simulation LUTs** (ACROS / Monochrome / Sepia) — [Stuart Sowerby](https://blog.sowerby.me/fuji-film-simulation-profiles/) (Fuji X-Trans III, converted from `.3dl` to N=32 `.cube`)
+- **Film-simulation LUTs** — derived from the [*FujifilmCameraProfiles*](https://github.com/abpy/FujifilmCameraProfiles) project (sRGB `.cube`), licensed CC BY-NC-SA 4.0
 - **Date-back font** — [DSEG](https://github.com/keshikan/DSEG) by Keshikan (SIL Open Font License 1.1)
 - **Masking model** — SegFormer-B2 finetuned on ADE20K, ONNX export by [Xenova](https://huggingface.co/Xenova/segformer-b2-finetuned-ade-512-512) (transformers.js). ⚠️ Research-oriented license — verify before commercial use; see [`models/README.md`](models/README.md)
 - **ONNX inference** — [ONNX Runtime](https://onnxruntime.ai/)
