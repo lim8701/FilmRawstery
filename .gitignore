@@ -11,6 +11,15 @@ luts/_approx_backup/
 # ONNX 모델 (용량 큼, 최초 실행 시 자동 다운로드 — 출처/링크는 models/README.md 참조)
 models/*.onnx
 
+# 흑백 필름시뮬 LUT (Stuart Sowerby, All Rights Reserved — 재배포 불가): 로컬 사용만, 커밋 금지.
+# 동적 목록이라 파일만 있으면 앱에 자동 노출됨(없으면 숨김).
+luts/acros.cube
+luts/acros_g.cube
+luts/acros_r.cube
+luts/acros_ye.cube
+luts/monochrome.cube
+luts/sepia.cube
+
 # 패키징 산출물 (FilmRawstery.spec 빌드 레시피는 추적 유지)
 /build/
 /dist/
