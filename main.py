@@ -1176,6 +1176,13 @@ class Controller(QObject):
 
     skyBusy = Property(bool, _get_sky_busy, notify=skyBusyChanged)
 
+    def _get_adjust_coeffs(self):
+        import coeffs
+        return coeffs.as_qml_dict()
+
+    # 현상 계수(coeffs.py 단일 진실원) → 셰이더 uniform 주입. 값 바꾸면 프리뷰=export 동시 반영.
+    adjustCoeffs = Property("QVariantMap", _get_adjust_coeffs, constant=True)
+
     @Slot(bool)
     def setLensCorrection(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
         """X100V 렌즈 보정 on/off (재디코딩)."""

@@ -17,6 +17,7 @@ import rawpy
 from PySide6.QtGui import QImage
 from scipy.ndimage import affine_transform, gaussian_filter, map_coordinates, zoom
 
+import coeffs
 import date_stamp
 import lens
 import raw_loader
@@ -64,27 +65,27 @@ def _b3(x):
 
 
 def _texture_core(c, amt, hi):
-    """텍스처(중주파 가산, 강도 1.6). hi=고주파(원본-블러, H,W,3)."""
-    return c + hi * _b3(amt) * 1.6
+    """텍스처(중주파 가산). hi=고주파(원본-블러, H,W,3). 계수=coeffs.TEXTURE(셰이더와 공유)."""
+    return c + hi * _b3(amt) * coeffs.TEXTURE
 
 
 def _clarity_core(c, amt, d):
-    """클래리티(중간톤 로컬대비 가산, 0.8). d=로컬대비(휘도, H,W). 중간톤 가중은 c 휘도 기준."""
+    """클래리티(중간톤 로컬대비 가산). d=로컬대비(휘도, H,W). 중간톤 가중은 c 휘도 기준."""
     lum = c @ LUMA
     mid = 1.0 - np.abs(2.0 * lum - 1.0)
-    return c + (d * amt * 0.8 * mid)[..., None]
+    return c + (d * amt * coeffs.CLARITY * mid)[..., None]
 
 
 def _dehaze_core(c, amt, ld):
-    """디헤이즈 톤모델(로컬대비0.4/대비0.25/흰베일0.22/채도0.3). ld=로컬대비(휘도, H,W).
+    """디헤이즈 톤모델. ld=로컬대비(휘도, H,W). 계수=coeffs.* (셰이더 dehazeTone 과 공유).
     amt<0(흰 베일) 분기는 np.minimum 으로 스칼라/배열 공통 처리."""
     a = _b3(amt)
-    c = c + (ld * amt * 0.4)[..., None]
-    c = (c - 0.5) * (1.0 + a * 0.25) + 0.5
+    c = c + (ld * amt * coeffs.DEHAZE_LOCAL)[..., None]
+    c = (c - 0.5) * (1.0 + a * coeffs.DEHAZE_CONTRAST) + 0.5
     neg = np.minimum(amt, 0.0)                     # amt<0 부분만(amt≥0 이면 0)
-    c = c + (0.92 - c) * (_b3(-neg) * 0.22)        # 흰 베일(밝아짐)
+    c = c + (0.92 - c) * (_b3(-neg) * coeffs.DEHAZE_VEIL)   # 흰 베일(밝아짐)
     l = (c @ LUMA)[..., None]
-    return l + (c - l) * (1.0 + a * 0.3)
+    return l + (c - l) * (1.0 + a * coeffs.DEHAZE_SAT)
 
 
 def _texture(c, amt, sigma):
@@ -352,9 +353,9 @@ def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
         m = 1.0 - m
     m1 = m[..., None]
     out = c * np.float32(2.0) ** (sp["exp"] * m1)              # 노출
-    out[..., 0] *= (1.0 + sp["temp"] * 0.20 * m)               # 색온도(+따뜻 R↑B↓)
-    out[..., 2] *= (1.0 - sp["temp"] * 0.20 * m)
-    out[..., 1] *= (1.0 - sp["tint"] * 0.15 * m)               # 틴트(+마젠타 G↓)
+    out[..., 0] *= (1.0 + sp["temp"] * coeffs.SKY_TEMP * m)    # 색온도(+따뜻 R↑B↓)
+    out[..., 2] *= (1.0 - sp["temp"] * coeffs.SKY_TEMP * m)
+    out[..., 1] *= (1.0 - sp["tint"] * coeffs.SKY_TINT * m)    # 틴트(+마젠타 G↓)
     L1 = out @ LUMA                                            # 하이라이트/섀도 국소 노출
     hiW = _smoothstep(0.5, 1.0, L1)
     shW = 1.0 - _smoothstep(0.0, 0.5, L1)

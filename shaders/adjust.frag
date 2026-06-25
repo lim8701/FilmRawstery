@@ -66,6 +66,12 @@ layout(std140, binding = 0) uniform buf {
     float skyTexture;   // 하늘 텍스처 (중주파 로컬대비, -1..1)
     float skyClarity;   // 하늘 클래리티 (중간톤 로컬대비, -1..1)
     float skyDehaze;    // 하늘 디헤이즈 (-1..1)
+    // 현상 계수(coeffs.py 단일 진실원, uniform 주입 — pipeline.py 와 값 공유, 셰이더 리터럴 제거).
+    float dehazeKLocal; float dehazeKContrast; float dehazeKVeil; float dehazeKSat;
+    float clarityK;     // 클래리티 강도(전역+하늘 공용)
+    float textureK;     // 텍스처 강도(전역+하늘 공용)
+    float skyTempK;     // 하늘 색온도 채널 게인
+    float skyTintK;     // 하늘 틴트 채널 게인
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -161,6 +167,16 @@ float valueNoise(vec2 p) {
     return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
 
+// 디헤이즈 톤모델 — 전역 dehaze(6단계) + 하늘 dehaze(9.7단계) 공용. amt=강도(하늘은 ×마스크),
+// lc=로컬대비(휘도). 계수는 uniform(coeffs.py). pipeline._dehaze_core 와 동일 수식.
+vec3 dehazeTone(vec3 rgb, float amt, float lc) {
+    rgb += lc * amt * ubuf.dehazeKLocal;                       // 로컬 대비
+    rgb = (rgb - 0.5) * (1.0 + amt * ubuf.dehazeKContrast) + 0.5;  // 대비
+    rgb = mix(rgb, vec3(0.92), max(-amt, 0.0) * ubuf.dehazeKVeil); // 흰 베일(amt<0)
+    float l = dot(rgb, LUMA);
+    return mix(vec3(l), rgb, 1.0 + amt * ubuf.dehazeKSat);     // 채도
+}
+
 // 톤 영역별
 //  - 하이라이트/섀도우 = 국소 노출(멀티플리커티브 게인 c*2^g): 색비·대비 보존, 회색화 방지.
 //    ★마스크는 '국소 평균 휘도'(lb=큰반경 블러 휘도)로 계산 → 라이트룸식 로컬 톤맵.
@@ -252,7 +268,7 @@ void main() {
 
     // 4) 텍스처 — 중주파 디테일 (원본 - 작은반경 블러)
     if (ubuf.texAmt != 0.0) {
-        rgb += (s0 - texture(texBlur, uv).rgb) * ubuf.texAmt * 1.6;
+        rgb += (s0 - texture(texBlur, uv).rgb) * ubuf.texAmt * ubuf.textureK;
     }
 
     // 5) 클래리티 — 중간톤 로컬대비 (휘도, 큰 반경 블러)
@@ -260,7 +276,7 @@ void main() {
         float d = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
         float l = dot(rgb, LUMA);
         float mid = 1.0 - abs(2.0 * l - 1.0);    // 중간톤 가중
-        rgb += d * ubuf.clarity * 0.8 * mid;
+        rgb += d * ubuf.clarity * ubuf.clarityK * mid;
     }
 
     // 5.5) 샤프닝 — 언샤프 마스크(휘도). 반경 블러 고주파 + Detail 미세 고주파,
@@ -279,17 +295,10 @@ void main() {
         rgb += vec3(hp * ubuf.sharpenAmt * 1.5 * mask);
     }
 
-    // 6) 디헤이즈 — 톤 모델 (라이트룸 느낌)
-    //    +: 로컬대비 + 대비 + 채도(안개 걷힘)  /  -: 흰 베일로 밝게 + 대비/채도 ↓(안개)
+    // 6) 디헤이즈 — 톤 모델 (라이트룸 느낌). 전역/하늘 공용 dehazeTone() 사용.
     if (ubuf.dehaze != 0.0) {
         float ld = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
-        rgb += ld * ubuf.dehaze * 0.4;                         // 로컬 대비
-        rgb = (rgb - 0.5) * (1.0 + ubuf.dehaze * 0.25) + 0.5;  // 대비
-        if (ubuf.dehaze < 0.0) {
-            rgb = mix(rgb, vec3(0.92), (-ubuf.dehaze) * 0.22); // 흰 베일(밝아짐)
-        }
-        float l = dot(rgb, LUMA);
-        rgb = mix(vec3(l), rgb, 1.0 + ubuf.dehaze * 0.3);      // 채도
+        rgb = dehazeTone(rgb, ubuf.dehaze, ld);
     }
     rgb = clamp(rgb, 0.0, 1.0);
 
@@ -351,31 +360,26 @@ void main() {
             rgb = mix(rgb, vec3(0.95, 0.25, 0.25), m * 0.5);   // 선택 영역 시각화(프리뷰 전용)
         } else {
             rgb *= exp2(ubuf.skyExp * m);                      // 국소 노출(stop)
-            rgb.r *= (1.0 + ubuf.skyTemp * 0.20 * m);          // 색온도(+따뜻 R↑B↓)
-            rgb.b *= (1.0 - ubuf.skyTemp * 0.20 * m);
-            rgb.g *= (1.0 - ubuf.skyTint * 0.15 * m);          // 틴트(+마젠타 G↓ / -녹)
+            rgb.r *= (1.0 + ubuf.skyTemp * ubuf.skyTempK * m); // 색온도(+따뜻 R↑B↓)
+            rgb.b *= (1.0 - ubuf.skyTemp * ubuf.skyTempK * m);
+            rgb.g *= (1.0 - ubuf.skyTint * ubuf.skyTintK * m); // 틴트(+마젠타 G↓ / -녹)
             // 톤: 하이라이트/섀도 국소 노출(픽셀 휘도 가중)
             float L1 = dot(rgb, LUMA);
             float hiW = smoothstep(0.5, 1.0, L1);
             float shW = 1.0 - smoothstep(0.0, 0.5, L1);
             rgb *= exp2((ubuf.skyHi * hiW + ubuf.skyShadows * shW) * m);
-            // 로컬 대비(중성 dispSrc 기준 — 전역 텍스처/클래리티와 동일 base)
+            // 로컬 대비(중성 dispSrc 기준 — 전역 텍스처/클래리티와 동일 base·계수)
             if (ubuf.skyTexture != 0.0)
-                rgb += (s0 - texture(texBlur, uv).rgb) * ubuf.skyTexture * 1.6 * m;
+                rgb += (s0 - texture(texBlur, uv).rgb) * ubuf.skyTexture * ubuf.textureK * m;
             if (ubuf.skyClarity != 0.0) {
                 float d = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
                 float l = dot(rgb, LUMA);
-                rgb += d * ubuf.skyClarity * 0.8 * (1.0 - abs(2.0 * l - 1.0)) * m;
+                rgb += d * ubuf.skyClarity * ubuf.clarityK * (1.0 - abs(2.0 * l - 1.0)) * m;
             }
-            // 디헤이즈(톤 모델 — 전역 dehaze 와 동일 수식)
+            // 디헤이즈 — 전역과 동일 dehazeTone()(강도 ×마스크)
             if (ubuf.skyDehaze != 0.0) {
                 float ld = dot(s0, LUMA) - dot(texture(claBlur, uv).rgb, LUMA);
-                rgb += ld * ubuf.skyDehaze * 0.4 * m;
-                rgb = (rgb - 0.5) * (1.0 + ubuf.skyDehaze * 0.25 * m) + 0.5;
-                if (ubuf.skyDehaze < 0.0)
-                    rgb = mix(rgb, vec3(0.92), (-ubuf.skyDehaze) * 0.22 * m);
-                float ll = dot(rgb, LUMA);
-                rgb = mix(vec3(ll), rgb, 1.0 + ubuf.skyDehaze * 0.3 * m);
+                rgb = dehazeTone(rgb, ubuf.skyDehaze * m, ld);
             }
             float la = dot(rgb, LUMA);
             rgb = mix(vec3(la), rgb, 1.0 + ubuf.skySat * m);   // 채도

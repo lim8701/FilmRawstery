@@ -1220,6 +1220,15 @@ ApplicationWindow {
                         property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
                         property real skyHasMask: controller.hasSkyMask ? 1.0 : 0.0
                         property real skyShowMask: 0.0
+                        // 현상 계수(coeffs.py 단일 진실원) uniform 주입 — pipeline.py 와 값 공유.
+                        property real dehazeKLocal: controller.adjustCoeffs["dehazeKLocal"]
+                        property real dehazeKContrast: controller.adjustCoeffs["dehazeKContrast"]
+                        property real dehazeKVeil: controller.adjustCoeffs["dehazeKVeil"]
+                        property real dehazeKSat: controller.adjustCoeffs["dehazeKSat"]
+                        property real clarityK: controller.adjustCoeffs["clarityK"]
+                        property real textureK: controller.adjustCoeffs["textureK"]
+                        property real skyTempK: controller.adjustCoeffs["skyTempK"]
+                        property real skyTintK: controller.adjustCoeffs["skyTintK"]
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
                 }}
@@ -1504,6 +1513,15 @@ ApplicationWindow {
                         property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
                         property real skyHasMask: controller.hasSkyMask ? 1.0 : 0.0
                         property real skyShowMask: win.showSkyMask ? 1.0 : 0.0
+                        // 현상 계수(coeffs.py 단일 진실원) uniform 주입 — pipeline.py 와 값 공유.
+                        property real dehazeKLocal: controller.adjustCoeffs["dehazeKLocal"]
+                        property real dehazeKContrast: controller.adjustCoeffs["dehazeKContrast"]
+                        property real dehazeKVeil: controller.adjustCoeffs["dehazeKVeil"]
+                        property real dehazeKSat: controller.adjustCoeffs["dehazeKSat"]
+                        property real clarityK: controller.adjustCoeffs["clarityK"]
+                        property real textureK: controller.adjustCoeffs["textureK"]
+                        property real skyTempK: controller.adjustCoeffs["skyTempK"]
+                        property real skyTintK: controller.adjustCoeffs["skyTintK"]
 
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
