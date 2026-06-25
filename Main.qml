@@ -2014,7 +2014,7 @@ ApplicationWindow {
                     }
                     Label {
                         text: controller.exporting ? "Exporting…"
-                              : (controller.skyBusy ? "Detecting sky…" : "Processing…")
+                              : (controller.skyBusy ? "Detecting mask…" : "Processing…")
                         color: "white"; font.pixelSize: 14
                         Layout.alignment: Qt.AlignHCenter
                     }
@@ -3467,7 +3467,7 @@ ApplicationWindow {
                             SkySlider { id: skySatSlider;     host: win; label: "Saturation" }
                             Label {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
-                                text: "Create a mask (e.g. Select Sky — more selection types coming), then the sliders apply only to the masked region. Applies to both preview and export."
+                                text: "Check one or more classes above to build the mask; the sliders apply only to the masked region. Applies to both preview and export."
                                 color: "#888"; font.pixelSize: 11
                             }
                         }
