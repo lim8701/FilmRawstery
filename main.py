@@ -48,6 +48,7 @@ BASE = app_base()
 SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag"]
 LUTS_DIR = BASE / "luts"
+APP_VERSION = "1.0"
 
 # 필름 시뮬레이션 카탈로그 (key, 표시명, 그룹). 실제 luts/<key>.cube 가 있는 것만 UI 에 노출
 # (identity=None 은 LUT 미적용이라 항상 포함). 흑백 등은 .cube 를 넣으면 자동으로 다시 나타남.
@@ -1423,7 +1424,51 @@ def apply_dark_titlebar(window) -> None:
         print(f"[theme] 다크 타이틀바 적용 실패: {exc}")
 
 
+def _print_banner() -> None:
+    """터미널에서 실행할 때만 보이는 필름-스트립 시작 배너(개발자 이스터에그).
+    GUI 더블클릭 실행 사용자는 콘솔이 없어 못 본다. 버전/PySide 정보는 디버깅에도 약간 유용.
+    ⚠️ 어떤 경우에도 시작을 막지 않도록 전부 try/except — cp949 등 콘솔은 유니코드(●/☕) 인코딩 실패."""
+    try:
+        try:
+            import PySide6
+            pv = PySide6.__version__
+        except Exception:
+            pv = "?"
+        py = "%d.%d.%d" % sys.version_info[:3]
+        # 색은 터미널(tty)일 때만 — 파이프/리다이렉트나 VT 미지원이면 평문(이스케이프 깨짐 방지).
+        color = sys.stdout.isatty()
+        if color and os.name == "nt":               # Windows: VT 처리 활성화 시도
+            try:
+                import ctypes
+                h = ctypes.windll.kernel32.GetStdHandle(-11)
+                mode = ctypes.c_uint()
+                color = bool(ctypes.windll.kernel32.GetConsoleMode(h, ctypes.byref(mode))) and \
+                    bool(ctypes.windll.kernel32.SetConsoleMode(h, mode.value | 0x0004))
+            except Exception:
+                color = False
+        amber = "\033[38;5;214m" if color else ""
+        dim = "\033[2m" if color else ""
+        rst = "\033[0m" if color else ""
+
+        def emit(holes, sep, tail):
+            sys.stdout.write(
+                f"\n   {amber}{holes}{rst}\n"
+                f"\n       {amber}F I L M   R A W S T E R Y{rst}"
+                f"\n       {dim}slow-roasted light, developed into film{rst}\n"
+                f"\n   {amber}{holes}{rst}\n"
+                f"\n   {dim}v{APP_VERSION} {sep} PySide6 {pv} {sep} Python {py}{tail}{rst}\n\n")
+            sys.stdout.flush()
+
+        try:
+            emit(" ".join(["●"] * 22), "·", "  ☕")          # 유니코드(필름 퍼포레이션 + 커피)
+        except UnicodeEncodeError:
+            emit(" ".join(["o"] * 22), "-", "")             # cp949 등 → ASCII 폴백
+    except Exception:
+        pass                                                 # 배너는 부가 기능 — 절대 시작을 막지 않음
+
+
 def main() -> int:
+    _print_banner()
     if PREFER_HIGH_PERF_GPU:
         _prefer_high_performance_gpu()   # 외장 GPU 우선(다음 실행부터). Windows 한정.
 
