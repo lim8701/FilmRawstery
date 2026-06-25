@@ -920,7 +920,8 @@ class Controller(QObject):
             yy = (np.arange(h2, dtype=np.float32) / (h2 - 1)) - 0.5
             xx = (np.arange(w2, dtype=np.float32) / (w2 - 1)) - 0.5
             rr = np.sqrt(yy[:, None] ** 2 + xx[None, :] ** 2) / 0.7071
-            c = np.clip(c * (1.0 + vig * 0.8 * pipeline._smoothstep(0.35, 1.0, rr))[..., None], 0.0, 1.0)
+            import coeffs
+            c = np.clip(c * (1.0 + vig * coeffs.VIGNETTE * pipeline._smoothstep(0.35, 1.0, rr))[..., None], 0.0, 1.0)
         self._histogram = self._hist_of(c)
         self.histogramChanged.emit()
 

@@ -39,12 +39,12 @@ def _tone_zones(c, hi, sh, wh, bl, lb=None):
         lb = c @ LUMA
     sh_m = 1.0 - _smoothstep(0.0, 0.75, lb)   # 라이트룸식 넓은 범위(미드톤 겹침)
     hi_m = _smoothstep(0.25, 1.0, lb)
-    c = c * np.exp2(sh * 1.0 * sh_m + hi * 1.0 * hi_m)[..., None]
+    c = c * np.exp2(sh * coeffs.TONE_HISH * sh_m + hi * coeffs.TONE_HISH * hi_m)[..., None]
     # 화이트/블랙=끝단 레벨(가산, 픽셀 휘도 기준, 좁게 유지).
     l = c @ LUMA
     wh_m = _smoothstep(0.75, 1.0, l)
     bl_m = 1.0 - _smoothstep(0.0, 0.25, l)
-    return c + (wh * 0.3 * wh_m + bl * 0.3 * bl_m)[..., None]
+    return c + (wh * coeffs.TONE_WHBL * wh_m + bl * coeffs.TONE_WHBL * bl_m)[..., None]
 
 
 def _blur_rgb(c, sigma):
@@ -487,7 +487,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         yy = (np.arange(h, dtype=np.float32) / (h - 1)) - 0.5
         xx = (np.arange(w, dtype=np.float32) / (w - 1)) - 0.5
         rr = np.sqrt(yy[:, None] ** 2 + xx[None, :] ** 2) / 0.7071
-        vig_mask = (1.0 + vig * 0.8 * _smoothstep(0.35, 1.0, rr)).astype(np.float32)
+        vig_mask = (1.0 + vig * coeffs.VIGNETTE * _smoothstep(0.35, 1.0, rr)).astype(np.float32)
     else:
         vig_mask = None
 
@@ -551,7 +551,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 필름 그레인 — 맨 끝: 장면과 스탬프 모두에 입혀짐(에멀전 입자, 셰이더와 동일 순서)
     if grain2d is not None:
         f = out.astype(np.float32) / maxv
-        f += grain2d[..., None] * grain_amt * 0.12
+        f += grain2d[..., None] * grain_amt * coeffs.GRAIN
         out = np.rint(np.clip(f, 0.0, 1.0) * maxv).astype(dt)
 
     # === 지오메트리(회전/크롭) — 현상 끝난 이미지에 마지막 적용(프리뷰 뷰 변환과 동일) ===

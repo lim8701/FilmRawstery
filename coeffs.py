@@ -20,6 +20,12 @@ TEXTURE = 1.6           # 텍스처(중주파)
 SKY_TEMP = 0.20         # 하늘 색온도 채널 게인
 SKY_TINT = 0.15         # 하늘 틴트(녹-마젠타) 채널 게인
 
+# 전역 톤(tone_zones / 비네팅 / 그레인). 셰이더 tone_zones·10·12단계 == pipeline._tone_zones / render_full.
+TONE_HISH = 1.0         # Highlights/Shadows 국소 노출 stop 스케일
+TONE_WHBL = 0.3         # Whites/Blacks 끝단 레벨 이동
+VIGNETTE = 0.8          # 비네팅 방사 강도
+GRAIN = 0.12            # 필름 그레인 강도
+
 
 def as_qml_dict():
     """QML ShaderEffect uniform 바인딩용 (controller.adjustCoeffs). 셰이더 uniform 이름과 일치."""
@@ -28,4 +34,6 @@ def as_qml_dict():
         "dehazeKVeil": DEHAZE_VEIL, "dehazeKSat": DEHAZE_SAT,
         "clarityK": CLARITY, "textureK": TEXTURE,
         "skyTempK": SKY_TEMP, "skyTintK": SKY_TINT,
+        "toneHiShK": TONE_HISH, "toneWhBlK": TONE_WHBL,
+        "vignetteK": VIGNETTE, "grainK": GRAIN,
     }

@@ -72,6 +72,10 @@ layout(std140, binding = 0) uniform buf {
     float textureK;     // 텍스처 강도(전역+하늘 공용)
     float skyTempK;     // 하늘 색온도 채널 게인
     float skyTintK;     // 하늘 틴트 채널 게인
+    float toneHiShK;    // Highlights/Shadows 국소 노출 stop 스케일
+    float toneWhBlK;    // Whites/Blacks 끝단 레벨 이동
+    float vignetteK;    // 비네팅 방사 강도
+    float grainK;       // 필름 그레인 강도
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -187,11 +191,11 @@ vec3 tone_zones(vec3 c, float lb, float hi, float sh, float wh, float bl) {
     // 라이트룸식: 범위를 넓혀 미드톤(0.25~0.75)에서 shadows/highlights 가 겹치게.
     float shMask = 1.0 - smoothstep(0.0, 0.75, lb);
     float hiMask = smoothstep(0.25, 1.0, lb);
-    c *= exp2(sh * 1.0 * shMask + hi * 1.0 * hiMask);     // 국소 노출(stop)
+    c *= exp2(sh * ubuf.toneHiShK * shMask + hi * ubuf.toneHiShK * hiMask);   // 국소 노출(stop)
     float l = dot(c, LUMA);
     float whMask = smoothstep(0.75, 1.0, l);              // 화이트/블랙은 끝단(좁게) 유지
     float blMask = 1.0 - smoothstep(0.0, 0.25, l);
-    c += vec3(wh * 0.3 * whMask + bl * 0.3 * blMask);     // 끝단 레벨 이동
+    c += vec3(wh * ubuf.toneWhBlK * whMask + bl * ubuf.toneWhBlK * blMask);   // 끝단 레벨 이동
     return c;
 }
 
@@ -390,7 +394,7 @@ void main() {
     // 10) 비네팅 (방사형)
     if (ubuf.vignette != 0.0) {
         float r = length(uv - 0.5) / 0.7071;
-        rgb *= 1.0 + ubuf.vignette * 0.8 * smoothstep(0.35, 1.0, r);
+        rgb *= 1.0 + ubuf.vignette * ubuf.vignetteK * smoothstep(0.35, 1.0, r);
     }
 
     // 11) 날짜 스탬프 (필름 데이트백) — 하이브리드 합성:
@@ -410,7 +414,7 @@ void main() {
         float gridN = mix(1500.0, 500.0, ubuf.grainSize);
         vec2 gco = uv * vec2(gridN, gridN / ubuf.grainAspect);
         float n = valueNoise(gco) - 0.5;
-        rgb += n * ubuf.grainAmt * 0.12;
+        rgb += n * ubuf.grainAmt * ubuf.grainK;
     }
 
     rgb = clamp(rgb, 0.0, 1.0);

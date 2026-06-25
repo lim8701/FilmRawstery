@@ -1229,6 +1229,10 @@ ApplicationWindow {
                         property real textureK: controller.adjustCoeffs["textureK"]
                         property real skyTempK: controller.adjustCoeffs["skyTempK"]
                         property real skyTintK: controller.adjustCoeffs["skyTintK"]
+                        property real toneHiShK: controller.adjustCoeffs["toneHiShK"]
+                        property real toneWhBlK: controller.adjustCoeffs["toneWhBlK"]
+                        property real vignetteK: controller.adjustCoeffs["vignetteK"]
+                        property real grainK: controller.adjustCoeffs["grainK"]
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
                 }}
@@ -1522,6 +1526,10 @@ ApplicationWindow {
                         property real textureK: controller.adjustCoeffs["textureK"]
                         property real skyTempK: controller.adjustCoeffs["skyTempK"]
                         property real skyTintK: controller.adjustCoeffs["skyTintK"]
+                        property real toneHiShK: controller.adjustCoeffs["toneHiShK"]
+                        property real toneWhBlK: controller.adjustCoeffs["toneWhBlK"]
+                        property real vignetteK: controller.adjustCoeffs["vignetteK"]
+                        property real grainK: controller.adjustCoeffs["grainK"]
 
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
