@@ -104,7 +104,42 @@ ApplicationWindow {
         if (on && i < 0) a.push(key)
         else if (!on && i >= 0) a.splice(i, 1)
         maskKeys = a
-        controller.setMaskClasses(a)
+        maskApplyTimer.restart()   // 디바운스: 빠른 연속 토글을 한 번의 재조합으로 합침
+    }
+    // 체크박스 토글 코얼레싱 — 마지막 토글 후 잠깐 뒤 한 번만 세그/재조합 실행(스레드 폭증 방지).
+    Timer {
+        id: maskApplyTimer
+        interval: 220
+        onTriggered: controller.setMaskClasses(win.maskKeys)
+    }
+
+    // 마스킹 조정 슬라이더(라벨 + -1..1 슬라이더 + 더블클릭 리셋 + 조정 중 오버레이 끄기) 공용 컴포넌트.
+    // host=win 주입(인라인 컴포넌트는 외부 id 접근 불가). value 는 alias 라 id 로 .value 참조 가능.
+    component SkySlider: ColumnLayout {
+        id: skyRoot
+        property alias value: skySld.value
+        property string label: ""
+        property string suffix: ""
+        property real defaultValue: 0.0
+        property var host: null
+        Layout.fillWidth: true
+        spacing: 2
+        Label {
+            text: skyRoot.label + ":  " + skySld.value.toFixed(2) + skyRoot.suffix
+            color: "white"
+        }
+        Slider {
+            id: skySld
+            Layout.fillWidth: true
+            from: -1.0; to: 1.0; value: 0.0
+            property real _lastPressMs: 0
+            property bool _pendingReset: false
+            onPressedChanged: {
+                if (pressed) _pendingReset = skyRoot.host.isDblPress(skySld)
+                else if (_pendingReset) { value = skyRoot.defaultValue; _pendingReset = false }
+            }
+            onMoved: skyRoot.host.showSkyMask = false   // 조정 중엔 오버레이 끄고 실제 효과 보기
+        }
     }
 
     // 마스킹 조정 직렬화 — 단일 진실원(아래 키 목록). editParams/exportParams/applyEdits/editSaveWatch
@@ -3387,132 +3422,15 @@ ApplicationWindow {
                                 color: "#8ab4f8"; font.pixelSize: 12; font.bold: true
                                 font.capitalization: Font.AllUppercase
                             }
-                            Label { text: "Exposure:  " + skyExpSlider.value.toFixed(2) + "  (stop)"; color: "white" }
-                            Slider {
-                                id: skyExpSlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skyExpSlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false   // 조정 중엔 오버레이 끄고 실제 효과 보기
-                            }
-                            Label { text: "Temp:  " + skyTempSlider.value.toFixed(2) + "  (− cool / + warm)"; color: "white" }
-                            Slider {
-                                id: skyTempSlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skyTempSlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false
-                            }
-                            Label { text: "Tint:  " + skyTintSlider.value.toFixed(2) + "  (− green / + magenta)"; color: "white" }
-                            Slider {
-                                id: skyTintSlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skyTintSlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false
-                            }
-                            Label { text: "Highlights:  " + skyHiSlider.value.toFixed(2); color: "white" }
-                            Slider {
-                                id: skyHiSlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skyHiSlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false
-                            }
-                            Label { text: "Shadows:  " + skyShadowsSlider.value.toFixed(2); color: "white" }
-                            Slider {
-                                id: skyShadowsSlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skyShadowsSlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false
-                            }
-                            Label { text: "Texture:  " + skyTextureSlider.value.toFixed(2); color: "white" }
-                            Slider {
-                                id: skyTextureSlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skyTextureSlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false
-                            }
-                            Label { text: "Clarity:  " + skyClaritySlider.value.toFixed(2); color: "white" }
-                            Slider {
-                                id: skyClaritySlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skyClaritySlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false
-                            }
-                            Label { text: "Dehaze:  " + skyDehazeSlider.value.toFixed(2); color: "white" }
-                            Slider {
-                                id: skyDehazeSlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skyDehazeSlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false
-                            }
-                            Label { text: "Saturation:  " + skySatSlider.value.toFixed(2); color: "white" }
-                            Slider {
-                                id: skySatSlider
-                                Layout.fillWidth: true
-                                from: -1.0; to: 1.0; value: 0.0
-                                property real defaultValue: 0.0
-                                property real _lastPressMs: 0
-                                property bool _pendingReset: false
-                                onPressedChanged: {
-                                    if (pressed) _pendingReset = win.isDblPress(skySatSlider)
-                                    else if (_pendingReset) { value = defaultValue; _pendingReset = false }
-                                }
-                                onMoved: win.showSkyMask = false
-                            }
+                            SkySlider { id: skyExpSlider;     host: win; label: "Exposure"; suffix: "  (stop)" }
+                            SkySlider { id: skyTempSlider;    host: win; label: "Temp"; suffix: "  (− cool / + warm)" }
+                            SkySlider { id: skyTintSlider;    host: win; label: "Tint"; suffix: "  (− green / + magenta)" }
+                            SkySlider { id: skyHiSlider;      host: win; label: "Highlights" }
+                            SkySlider { id: skyShadowsSlider; host: win; label: "Shadows" }
+                            SkySlider { id: skyTextureSlider; host: win; label: "Texture" }
+                            SkySlider { id: skyClaritySlider; host: win; label: "Clarity" }
+                            SkySlider { id: skyDehazeSlider;  host: win; label: "Dehaze" }
+                            SkySlider { id: skySatSlider;     host: win; label: "Saturation" }
                             Label {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
                                 text: "Create a mask (e.g. Select Sky — more selection types coming), then the sliders apply only to the masked region. Applies to both preview and export."
