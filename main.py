@@ -556,6 +556,8 @@ class Controller(QObject):
         self._stamp_text = ""       # 날짜 스탬프 텍스트 ('YY MM DD)
         self._stamp_url = "image://stamp/s?v=0"
         self._stamp_counter = 0
+        self._stamp_wr = 0.0        # 스프라이트 (W,H)/짧은변 비율 — QML 오버레이 크기 산출용
+        self._stamp_hr = 0.0
         self._proxy_w = 0           # 마지막 프록시 크기(스탬프 레이어 재렌더용)
         self._proxy_h = 0
         self._histogram = []        # 256-bin 휘도 히스토그램(0..1 정규화)
@@ -782,6 +784,12 @@ class Controller(QObject):
             import numpy as np
             arr = self._qimage_to_rgb(qimg)
             arr = pipeline._apply_geometry(arr, self._gpu_params)   # 프리뷰/CPU export 와 동일
+            # 날짜 스탬프 — 크롭/회전 후 '최종 프레임'에 찍는다(CPU export·프리뷰와 동일 위치/합성).
+            #   pipeFull 셰이더는 스탬프를 굽지 않음(stampOn=0). 해상도 축소 전에 찍어 상대크기 유지.
+            import date_stamp
+            _st = str(self._gpu_params.get("stampText", "") or "")
+            if bool(self._gpu_params.get("dateStamp", False)) and _st:
+                date_stamp.stamp_export(arr, _st)
             # 해상도 프리셋(긴 변) 적용 — GPU grab 은 항상 풀해상도라 여기서 축소.
             out_edge = int(self._gpu_params.get("outEdge", 0) or 0)
             if out_edge > 0 and max(arr.shape[:2]) > out_edge:
@@ -843,8 +851,16 @@ class Controller(QObject):
     def _get_stamp_text(self) -> str:
         return self._stamp_text
 
+    def _get_stamp_wr(self) -> float:
+        return self._stamp_wr
+
+    def _get_stamp_hr(self) -> float:
+        return self._stamp_hr
+
     stampUrl = Property(str, _get_stamp_url, notify=stampChanged)
     stampText = Property(str, _get_stamp_text, notify=stampChanged)
+    stampWRatio = Property(float, _get_stamp_wr, notify=stampChanged)   # 스프라이트 W/짧은변
+    stampHRatio = Property(float, _get_stamp_hr, notify=stampChanged)   # 스프라이트 H/짧은변
 
     def _compute_histogram(self, img: QImage) -> None:
         """프록시 QImage → 히스토그램용 축소본 캐시 + 기준(입력) 히스토그램.
@@ -1073,15 +1089,17 @@ class Controller(QObject):
         self._update_stamp_layer()
 
     def _update_stamp_layer(self) -> None:
-        """현재 _stamp_text + 프록시 크기로 스탬프 프리뷰 레이어를 갱신."""
+        """현재 _stamp_text 로 타이트 스프라이트 + 크기 비율을 갱신. 프록시 크기와 무관(비율 기반).
+        QML 이 cropClip(=최종 프레임) 위에 source-over 오버레이로 표시 → 위치/크기 최종 사이즈 기준."""
         if self._stamp_provider is None:
             return
-        if self._stamp_text and self._proxy_w and self._proxy_h:
-            layer = date_stamp.preview_layer_qimage(
-                self._stamp_text, self._proxy_w, self._proxy_h)
+        if self._stamp_text:
+            layer, wr, hr = date_stamp.sprite_layer(self._stamp_text)
+            self._stamp_wr, self._stamp_hr = wr, hr
         else:
             layer = QImage(1, 1, QImage.Format.Format_ARGB32)
-            layer.fill(0)            # 투명 1x1 — 셰이더 sampler 항상 유효하게 유지
+            layer.fill(0)            # 투명 1x1 — sampler/Image 항상 유효하게 유지
+            self._stamp_wr = self._stamp_hr = 0.0
         self._stamp_provider.set_image(layer)
         self._stamp_counter += 1
         self._stamp_url = f"image://stamp/s?v={self._stamp_counter}"

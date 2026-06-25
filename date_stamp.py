@@ -38,9 +38,10 @@ C_CORE = np.array([1.00, 0.95, 0.76], np.float32)   # 노출 과다된 뜨거운
 C_MID = np.array([1.00, 0.54, 0.16], np.float32)    # 앰버
 C_HALO = np.array([0.94, 0.24, 0.06], np.float32)   # 적주황 외곽 번짐
 # source-over(알파) 합성의 불투명도 배율. 배경 밝기와 무관하게 일정한 룩.
-STAMP_STRENGTH = 0.92   # 셰이더 ubuf.stampStrength = QML pipe.stampStrength 와 일치
-STAMP_CORE_OPACITY = 0.70  # 코어(숫자) 최대 불투명도 (<1 이면 배경이 비침). 셰이더 리터럴과 일치
-STAMP_GLOW_GAIN = 1.2      # screen 글로우(빛 가산) 게인 — 클수록 더 밝게 탐. 셰이더 리터럴과 일치
+# 스탬프는 크롭/회전이 끝난 '최종 프레임'에 source-over 로 찍는다(export=numpy, 프리뷰=QML
+# Image 오버레이 동일 합성). 스프라이트 RGBA 에 핫코어→앰버→헤일로 글로우가 이미 베이크돼 있어
+# 단순 source-over 로도 빛나는 데이트백 룩이 난다.
+STAMP_STRENGTH = 0.92   # 프리뷰 stampOverlay.opacity 와 일치
 
 
 def font_family():
@@ -115,10 +116,25 @@ def render_sprite(text, text_h_px):
                 (H / gh, W / gw), order=1)[:H, :W]
     glow = (w_mid + w_halo + w_band) * (0.78 + 0.22 * nlow)
     inten = np.clip(w_core + glow, 0.0, 1.0)
+    col = np.clip(rgb, 0.0, 1.0)
+
+    # 단순 source-over(프리뷰 QML Image + export numpy 동일 합성)만으로도 예전 '하이브리드'(코어
+    # source-over + screen 글로우) 룩이 나도록, '검은 배경 위 하이브리드 결과'를 스프라이트에 미리
+    # 베이크한다. 알파 = 그 결과의 밝기(피크 채널) → 어두운 배경에선 예전과 동일, 밝은 배경에선
+    # screen 처럼 빛을 더한다. STAMP_STRENGTH 는 합성 때 알파에 곱해지므로 여기서 함께 반영.
+    s = STAMP_STRENGTH
+    aa = np.clip(inten * s, 0.0, 1.0)[..., None]
+    t = np.clip((aa - 0.45) / 0.40, 0.0, 1.0)
+    coreA = (t * t * (3.0 - 2.0 * t)) * 0.70                       # smoothstep(0.45,0.85,aa)*0.70
+    core_black = col * coreA                                       # 코어 over black
+    g = col * np.clip(aa * (1.0 - coreA * 0.5) * 1.2, 0.0, 1.0)    # screen 글로우 항
+    ob = 1.0 - (1.0 - core_black) * (1.0 - g)                      # 예전 하이브리드 over black
+    A2 = np.clip(ob.max(axis=2, keepdims=True), 0.0, 1.0)         # 알파 = 밝기(피크 채널)
+    col2 = ob / np.maximum(A2, 1e-4)                              # 색(피크 정규화 → 핫 휴 유지)
 
     rgba = np.empty((H, W, 4), np.float32)
-    rgba[..., :3] = np.clip(rgb, 0.0, 1.0)
-    rgba[..., 3] = inten
+    rgba[..., :3] = np.clip(col2, 0.0, 1.0)
+    rgba[..., 3] = np.clip(A2[..., 0] / s, 0.0, 1.0)             # 합성 때 ×s → 실효 알파 = A2
     return rgba
 
 
@@ -132,8 +148,9 @@ def _placement(sprite, img_w, img_h, margin_px):
 
 
 def stamp_export(out, text):
-    """export(풀해상도) 합성: out (H,W,3) 의 '우하단 코너에만' 하이브리드 합성.
-    코어=source-over(배경무관 일관), 헤일로=screen 가산(빛 번짐) — 셰이더와 동일.
+    """크롭/회전까지 끝난 '최종 프레임' out (H,W,3) 의 우하단 코너에 날짜 스프라이트를
+    source-over 합성(in-place). 위치/크기는 out(=최종 프레임) 짧은 변 기준이라 크롭 후에도
+    프레임 코너에 일정 비율로 찍힌다. 프리뷰 QML Image 오버레이와 동일 합성(프리뷰=export).
     out 의 dtype 으로 비트깊이 자동 인식(uint8=255, uint16=65535)."""
     mx = 65535.0 if out.dtype == np.uint16 else 255.0
     H, W, _ = out.shape
@@ -142,33 +159,29 @@ def stamp_export(out, text):
     x0, y0, sp = _placement(sprite, W, H, int(round(MARGIN_FRAC * short)))
     sh, sw, _ = sp.shape
     col = sp[..., :3]
-    a = np.clip(sp[..., 3] * STAMP_STRENGTH, 0.0, 1.0)       # (h,w)
-    t = np.clip((a - 0.45) / (0.85 - 0.45), 0.0, 1.0)
-    coreA = (t * t * (3.0 - 2.0 * t))[..., None] * STAMP_CORE_OPACITY   # 코어 불투명도(배경 비침)
+    a = np.clip(sp[..., 3:4] * STAMP_STRENGTH, 0.0, 1.0)     # (h,w,1)
     region = out[y0:y0 + sh, x0:x0 + sw, :].astype(np.float32) / mx
-    region = region * (1.0 - coreA) + col * coreA            # 코어 source-over
-    glow = col * np.clip(a[..., None] * (1.0 - coreA * 0.5) * STAMP_GLOW_GAIN, 0.0, 1.0)
-    region = 1.0 - (1.0 - region) * (1.0 - glow)             # screen 가산(코어도 일부 태움)
+    region = region * (1.0 - a) + col * a                    # source-over
     out[y0:y0 + sh, x0:x0 + sw, :] = np.rint(np.clip(region, 0.0, 1.0) * mx).astype(out.dtype)
     return out
 
 
-def preview_layer_qimage(text, img_w, img_h):
-    """프리뷰용: (img_w,img_h) 투명 RGBA QImage 에 우하단 스탬프 합성 → QImage(ARGB32).
-    pipeView 에 그대로 stretch 하면 export 와 동일 위치/상대크기로 정합."""
-    short = min(img_w, img_h)
-    sprite = render_sprite(text, TEXT_FRAC * short)
-    margin = int(round(MARGIN_FRAC * short))
-    x0, y0, sp = _placement(sprite, img_w, img_h, margin)
+def sprite_layer(text, ref_short=1000.0):
+    """프리뷰 오버레이용 '타이트' 날짜 스프라이트(글로우 패딩 포함) → (QImage, wRatio, hRatio).
+    wRatio/hRatio = 스프라이트 (W,H) / 짧은 변. QML 이 cropClip(=최종 프레임) 짧은 변에 이 비율을
+    곱해 Image 크기를, MARGIN_FRAC 로 우하단 마진을 잡으면 export(stamp_export, 동일 TEXT_FRAC/
+    MARGIN_FRAC) 와 같은 위치/상대크기·source-over 합성이 된다(프리뷰=export).
+    ref_short 는 스프라이트 렌더 해상도 기준일 뿐(비율은 무관) — 표시 시 cropClip 크기로 스케일."""
+    sp = render_sprite(text, TEXT_FRAC * ref_short)   # (H,W,4) float, 글로우 패딩 포함
     sh, sw, _ = sp.shape
-
-    u8 = np.zeros((img_h, img_w, 4), np.uint8)        # ARGB32(LE)=B,G,R,A
-    u8[y0:y0 + sh, x0:x0 + sw, 0] = np.clip(sp[..., 2], 0, 1) * 255  # B
-    u8[y0:y0 + sh, x0:x0 + sw, 1] = np.clip(sp[..., 1], 0, 1) * 255  # G
-    u8[y0:y0 + sh, x0:x0 + sw, 2] = np.clip(sp[..., 0], 0, 1) * 255  # R
-    u8[y0:y0 + sh, x0:x0 + sw, 3] = np.clip(sp[..., 3], 0, 1) * 255  # A
+    u8 = np.empty((sh, sw, 4), np.uint8)              # ARGB32(LE)=B,G,R,A
+    u8[..., 0] = np.clip(sp[..., 2], 0, 1) * 255      # B
+    u8[..., 1] = np.clip(sp[..., 1], 0, 1) * 255      # G
+    u8[..., 2] = np.clip(sp[..., 0], 0, 1) * 255      # R
+    u8[..., 3] = np.clip(sp[..., 3], 0, 1) * 255      # A
     u8 = np.ascontiguousarray(u8)
-    return QImage(u8.data, img_w, img_h, 4 * img_w, QImage.Format.Format_ARGB32).copy()
+    img = QImage(u8.data, sw, sh, 4 * sw, QImage.Format.Format_ARGB32).copy()
+    return img, sw / float(ref_short), sh / float(ref_short)
 
 
 def stamp_text_from_date(date_str):

@@ -1175,7 +1175,7 @@ ApplicationWindow {
                         property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
                         property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
                         property real camM6: win.camM[6]; property real camM7: win.camM[7]; property real camM8: win.camM[8]
-                        property real stampOn: (win.dateStamp && controller.stampText !== "") ? 1.0 : 0.0
+                        property real stampOn: 0.0   // 스탬프는 셰이더(원본 코너)가 아니라 cropClip 위 stampOverlay 가 최종 프레임 기준으로 그림
                         property real stampStrength: 0.92
                         property real exposure: expSlider.value
                         property real contrast: conSlider.value
@@ -1474,7 +1474,7 @@ ApplicationWindow {
                         property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
                         property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
                         property real camM6: win.camM[6]; property real camM7: win.camM[7]; property real camM8: win.camM[8]
-                        property real stampOn: (win.dateStamp && controller.stampText !== "") ? 1.0 : 0.0
+                        property real stampOn: 0.0   // 스탬프는 셰이더(원본 코너)가 아니라 cropClip 위 stampOverlay 가 최종 프레임 기준으로 그림
                         property real stampStrength: 0.92
                         property real exposure: expSlider.value
                         property real contrast: conSlider.value
@@ -1625,6 +1625,29 @@ ApplicationWindow {
                                     }
                                 ]
                             }
+                        }
+
+                        // 날짜 스탬프(필름 데이트백) 오버레이 — cropClip(=최종 크롭 프레임) 우하단에
+                        // source-over 합성. 위치/크기는 '최종(크롭) 프레임' 짧은 변 기준이라 크롭해도
+                        // 프레임 코너에 일정 비율로 붙는다(원본 코너 기준 X). cropClip 자식이라 줌/팬에
+                        // 함께 스케일. export(date_stamp.stamp_export, 동일 비율·source-over)와 정합.
+                        //   - wRatio/hRatio = 스프라이트 (W,H)/짧은변 (TEXT_FRAC·글로우 패딩 포함)
+                        //   - 마진 0.030 = date_stamp.MARGIN_FRAC, opacity 0.92 = STAMP_STRENGTH
+                        // 크롭 편집 중·원본 비교 중에는 숨김.
+                        Image {
+                            id: stampOverlay
+                            source: controller.stampUrl
+                            cache: false; smooth: true
+                            visible: win.dateStamp && controller.stampText !== ""
+                                     && !viewport.cropEdit && !win.compareOn
+                            opacity: 0.92
+                            property real shortEdge: Math.min(cropClip.width, cropClip.height)
+                            width: controller.stampWRatio * shortEdge
+                            height: controller.stampHRatio * shortEdge
+                            anchors.right: parent.right
+                            anchors.bottom: parent.bottom
+                            anchors.rightMargin: 0.030 * shortEdge
+                            anchors.bottomMargin: 0.030 * shortEdge
                         }
                     }
 

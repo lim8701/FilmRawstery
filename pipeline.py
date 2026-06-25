@@ -544,11 +544,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * maxv).astype(dt)
 
-    # 날짜 스탬프(필름 데이트백) — 비네팅 뒤 우하단 코너 가산(렌즈 비네팅 영향 없음)
-    if do_stamp:
-        date_stamp.stamp_export(out, stamp_text)   # dtype(8/16bit) 자동 인식, 코너만 in-place
-
-    # 필름 그레인 — 맨 끝: 장면과 스탬프 모두에 입혀짐(에멀전 입자, 셰이더와 동일 순서)
+    # 필름 그레인 — 장면(에멀전 입자, 셰이더와 동일). 스탬프는 크롭 후 최종 프레임에 찍는다.
     if grain2d is not None:
         f = out.astype(np.float32) / maxv
         f += grain2d[..., None] * grain_amt * coeffs.GRAIN
@@ -556,6 +552,12 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
 
     # === 지오메트리(회전/크롭) — 현상 끝난 이미지에 마지막 적용(프리뷰 뷰 변환과 동일) ===
     out = _apply_geometry(out, p)
+
+    # 날짜 스탬프(필름 데이트백) — 크롭/회전까지 끝난 '최종 프레임'의 우하단에 찍는다.
+    #   → 위치·크기가 최종(크롭) 사이즈 기준이 됨. (크롭 전 원본 코너 기준이면 크롭 시 어긋남)
+    #   비네팅 뒤(LED는 렌즈를 거치지 않음). 프리뷰는 cropClip 위 오버레이로 동일 위치/합성.
+    if do_stamp:
+        date_stamp.stamp_export(out, stamp_text)   # dtype(8/16bit) 자동 인식, 코너만 in-place
 
     return out
 
