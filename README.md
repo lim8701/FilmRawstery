@@ -19,6 +19,22 @@ Edit interactively on a real-time, shader-driven preview, then export at full re
 
 ---
 
+## Why I built this
+
+A hobby project, built for my own use.
+
+I shoot a lot with the **Fujifilm X100V** and edit in Lightroom — but I only use a few of its features, so paying for a subscription felt hard to justify. Film Rawstery bundles just the features I actually need into a workflow tuned the way I like it.
+
+If I pick up another camera down the line, I plan to add support for it too.
+
+Feel free to use it — anyone's welcome. 🙂
+
+### The name
+
+*Film Rawstery* is a play on **roastery**. A coffee roastery takes raw beans and roasts them into something worth drinking; this app does the same with **RAW** files — raw sensor data developed and refined into a finished photo — hence **Raw**stery. The *Film* nods to the Fujifilm film-simulation looks at its heart.
+
+---
+
 ## Features
 
 ### Develop
