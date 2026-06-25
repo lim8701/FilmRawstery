@@ -49,6 +49,28 @@ SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag"]
 LUTS_DIR = BASE / "luts"
 
+# 필름 시뮬레이션 카탈로그 (key, 표시명, 그룹). 실제 luts/<key>.cube 가 있는 것만 UI 에 노출
+# (identity=None 은 LUT 미적용이라 항상 포함). 흑백 등은 .cube 를 넣으면 자동으로 다시 나타남.
+FILM_SIM_CATALOG = [
+    ("identity", "None", 0),
+    ("provia", "Provia / Standard", 1), ("velvia", "Velvia", 1), ("astia", "Astia", 1),
+    ("classic_chrome", "Classic Chrome", 2), ("classic_neg", "Classic Negative", 2),
+    ("nostalgic_neg", "Nostalgic Neg", 2), ("pro_neg_hi", "PRO Neg. Hi", 2),
+    ("pro_neg_std", "PRO Neg. Std", 2),
+    ("eterna", "Eterna", 3), ("reala_ace", "Reala Ace", 3), ("bleach_bypass", "Bleach Bypass", 3),
+    ("acros", "ACROS", 4), ("acros_ye", "ACROS + Ye", 4), ("acros_r", "ACROS + R", 4),
+    ("acros_g", "ACROS + G", 4), ("monochrome", "Monochrome", 4), ("sepia", "Sepia", 4),
+]
+
+
+def available_film_sims():
+    """카탈로그 중 luts/<key>.cube 가 실제 존재하는 것만 [{key,label,group}] 로. identity 는 항상 포함."""
+    out = []
+    for key, label, group in FILM_SIM_CATALOG:
+        if key == "identity" or (LUTS_DIR / f"{key}.cube").exists():
+            out.append({"key": key, "label": label, "group": group})
+    return out
+
 # 사이드카(폴더당 데이터) 파일/폴더 이름. 구 이름(.camraw*)은 폴더 접근 시 1회 자동 마이그레이션.
 EDITS_DIR_NAME = ".filmrawsteryedits"
 LIKES_FILE_NAME = ".filmrawsterylikes.json"
@@ -1183,6 +1205,12 @@ class Controller(QObject):
 
     # 현상 계수(coeffs.py 단일 진실원) → 셰이더 uniform 주입. 값 바꾸면 프리뷰=export 동시 반영.
     adjustCoeffs = Property("QVariantMap", _get_adjust_coeffs, constant=True)
+
+    def _get_film_sims(self):
+        return available_film_sims()
+
+    # 사용 가능한 필름시뮬 목록(luts/*.cube 존재 기준) → QML 이 콤보/simKeys/구분선 구성. 시작 시 1회.
+    filmSims = Property("QVariantList", _get_film_sims, constant=True)
 
     @Slot(bool)
     def setLensCorrection(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)

@@ -240,6 +240,9 @@ ApplicationWindow {
             "highlights": hiSlider.value, "shadows": shSlider.value,
             "whites": whSlider.value, "blacks": blSlider.value,
             "temp": tempSlider.value, "tint": tintSlider.value,
+            // simKey(문자열)=복원 기준(목록 변동에 안전). simIndex=구버전 폴백용 유지.
+            "simKey": (simCombo.currentIndex >= 0 && simCombo.currentIndex < win.simKeys.length)
+                      ? win.simKeys[simCombo.currentIndex] : "identity",
             "simIndex": simCombo.currentIndex, "simStrength": simStrengthSlider.value,
             "texture": texSlider.value, "clarity": claritySlider.value, "dehaze": dehazeSlider.value,
             "vibrance": vibSlider.value, "saturation": satSlider.value,
@@ -274,7 +277,13 @@ ApplicationWindow {
         whSlider.value = _ev(p, "whites", 0.0); blSlider.value = _ev(p, "blacks", 0.0)
         tempSlider.value = _ev(p, "temp", controller.asShotKelvin)
         tintSlider.value = _ev(p, "tint", controller.asShotTint)
-        simCombo.currentIndex = _ev(p, "simIndex", 0); simStrengthSlider.value = _ev(p, "simStrength", 1.0)
+        // 필름시뮬 복원: simKey(문자열) 우선 → 현재 목록에서 인덱스 역추적(없으면 None). 구버전은 simIndex.
+        var _sk = _ev(p, "simKey", "")
+        var _si
+        if (_sk !== "") { _si = win.simKeys.indexOf(_sk); if (_si < 0) _si = 0 }   // 목록에 없는 LUT → None
+        else { _si = _ev(p, "simIndex", 0); if (_si < 0 || _si >= win.simKeys.length) _si = 0 }
+        simCombo.currentIndex = _si
+        simStrengthSlider.value = _ev(p, "simStrength", 1.0)
         texSlider.value = _ev(p, "texture", 0.0); claritySlider.value = _ev(p, "clarity", 0.0)
         dehazeSlider.value = _ev(p, "dehaze", 0.0)
         vibSlider.value = _ev(p, "vibrance", 0.0); satSlider.value = _ev(p, "saturation", 0.0)
@@ -511,15 +520,17 @@ ApplicationWindow {
     readonly property var exportEdges: [0, 4096, 3840, 2560, 2048, 1920, 1280]
 
     // 콤보 인덱스 -> luts/<key>.cube 파일명. 0(identity)=필름시뮬 미적용.
-    readonly property var simKeys: [
-        "identity", "provia", "velvia", "astia",
-        "classic_chrome", "classic_neg", "nostalgic_neg",
-        "pro_neg_hi", "pro_neg_std", "eterna",
-        "reala_ace", "bleach_bypass",
-        // 흑백: luts/<key>.cube (N=32) 필요
-        "acros", "acros_ye", "acros_r", "acros_g",
-        "monochrome", "sepia"
-    ]
+    // controller.filmSims(=luts/*.cube 존재하는 것만)에서 파생 → 흑백 등 .cube 넣으면 자동 노출.
+    readonly property var simKeys: {
+        var k = []; var sims = controller.filmSims
+        for (var i = 0; i < sims.length; i++) k.push(sims[i].key)
+        return k
+    }
+    readonly property var simLabels: {
+        var l = []; var sims = controller.filmSims
+        for (var i = 0; i < sims.length; i++) l.push(sims[i].label)
+        return l
+    }
 
     function planckXY(T) {
         var x
@@ -2239,31 +2250,17 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     currentIndex: 0
                     onActivated: win.refreshHistogram()
-                    // 순서가 위 simKeys 와 정확히 일치해야 함(인덱스→simKeys[i]→image://lut/<key>)
-                    model: [
-                        "None",
-                        "Provia / Standard",
-                        "Velvia",
-                        "Astia",
-                        "Classic Chrome",
-                        "Classic Negative",
-                        "Nostalgic Neg",
-                        "PRO Neg. Hi",
-                        "PRO Neg. Std",
-                        "Eterna",
-                        "Reala Ace",
-                        "Bleach Bypass",
-                        "ACROS",
-                        "ACROS + Ye",
-                        "ACROS + R",
-                        "ACROS + G",
-                        "Monochrome",
-                        "Sepia"
-                    ]
+                    // 라벨은 win.simLabels(= controller.filmSims 파생). 인덱스→simKeys[i]→image://lut/<key>
+                    model: win.simLabels
                     // 그룹 구분선: 행(인덱스)을 추가하지 않고 그룹 시작 항목 위에 선만 그림
                     // → simKeys 매핑·저장된 simIndex(사이드카) 그대로 호환.
-                    // 그룹: [None] | [Provia·Velvia·Astia] | [Classic Chrome·Neg·Nostalgic·PRO Neg] | [Eterna·Reala·Bleach] | [B&W]
-                    readonly property var simGroupStarts: [1, 4, 9, 12]
+                    // 그룹 구분선: controller.filmSims 의 group 이 바뀌는 인덱스(존재하는 시뮬 기준 자동).
+                    readonly property var simGroupStarts: {
+                        var arr = []; var sims = controller.filmSims
+                        for (var i = 1; i < sims.length; i++)
+                            if (sims[i].group !== sims[i - 1].group) arr.push(i)
+                        return arr
+                    }
                     delegate: ItemDelegate {
                         id: simDel
                         width: ListView.view ? ListView.view.width : simCombo.width
