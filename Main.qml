@@ -357,6 +357,22 @@ ApplicationWindow {
         win.resetSky()
     }
 
+    // 수동 Reset 버튼: 모든 편집 초기화 + 사이드카 삭제(+썸네일 파일명 앰버 해제).
+    // 자동저장(editSaveWatch→editSaveTimer)이 기본값 사이드카를 다시 만들지 않도록 _applying 으로
+    // 감싸고(변경 onChanged 동기 억제) 보류 중 저장 타이머도 멈춘다. _applying 중 막힌 WB/커브는
+    // paste/undo 와 동일하게 직접 반영. 리셋 상태는 undo 스텝으로 push(되돌리면 사이드카 복원).
+    function resetAndClearEdits() {
+        win._applying = true
+        win.resetAllEdits()
+        win._applying = false
+        editSaveTimer.stop()                              // 보류 중 자동저장 취소(기본값 재생성 방지)
+        controller.setWb(tempSlider.value, tintSlider.value)
+        controller.setCurve(curveEditor.allLuts())
+        controller.deleteEdits()                          // 사이드카 삭제 + 썸네일 배지(파일명 앰버) 해제
+        win.refreshHistogram()
+        win.histPush(JSON.stringify(win.editParams()))    // 리셋 상태 = undo 스텝(undo 시 편집 복원)
+    }
+
     // ===== 편집 복사/붙여넣기 (이미지 간) =====
     // 클립보드는 editParams 스냅샷(JSON 딥카피 — 이후 원본 편집 변경에 영향 안 받게).
     property var _editClipboard: null
@@ -960,7 +976,13 @@ ApplicationWindow {
                                 Label {
                                     Layout.fillWidth: true
                                     text: modelData.name
-                                    color: "#e6e6e6"
+                                    // 편집 사이드카(.filmrawsteryedits/<name>.json)가 있으면 파일명을 앰버로
+                                    // 표시(저장된 편집 표시). editsRevision 참조로 저장/폴더 변경 시 갱신.
+                                    color: {
+                                        controller.editsRevision
+                                        return (!modelData.isDir && controller.hasEdits(modelData.path))
+                                               ? "#E0A226" : "#e6e6e6"
+                                    }
                                     font.pixelSize: 12
                                     elide: Text.ElideMiddle
                                     maximumLineCount: 2
@@ -2110,7 +2132,7 @@ ApplicationWindow {
                         font.pixelSize: 14
                         ToolTip.visible: hovered
                         ToolTip.text: "Reset (clear adjustments — including geometry)"
-                        onClicked: win.resetAllEdits()   // 모든 편집 + 회전/크롭/지오메트리 초기화
+                        onClicked: win.resetAndClearEdits()   // 모든 편집 초기화 + 사이드카 삭제(파일명 앰버 해제)
                     }
                     // 편집 복사/붙여넣기 메뉴(이미지 간) — Reset 우측 "⋯" 드롭다운.
                     Button {

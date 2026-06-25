@@ -503,6 +503,7 @@ class Controller(QObject):
     busyChanged = Signal()       # 디코딩(렌즈 보정 포함) 진행 중 표시
     folderChanged = Signal()     # 좌측 file explorer 현재 폴더/파일목록 갱신 알림
     likesChanged = Signal()      # 좋아요(셀렉트) 상태 변경 알림 (썸네일 하트 반영용)
+    editsChanged = Signal()      # 편집 사이드카 유무 변경 알림 (썸네일 편집 배지 반영용)
     flushEdits = Signal()        # 이미지 전환 직전: QML 이 *이전* 파일로 편집 저장(플러시)
     fullChanged = Signal()       # GPU export: 풀해상도 src URL 갱신(QML Image 재로드용)
     fullReady = Signal()         # GPU export: 풀해상도 디코드 완료(QML 이 grab 준비)
@@ -571,6 +572,9 @@ class Controller(QObject):
         self._likes = set()         # 현재 폴더에서 좋아요된 파일명 집합
         self._likes_folder = ""     # _likes 가 속한 폴더(저장 대상 경로)
         self._like_rev = 0          # 좋아요 변경 리비전(QML 바인딩 재평가용)
+        self._edited = set()        # 현재 폴더에서 편집 사이드카가 있는 파일명 집합(썸네일 배지)
+        self._edited_folder = ""    # _edited 가 속한 폴더
+        self._edit_rev = 0          # 편집 사이드카 유무 변경 리비전(QML 바인딩 재평가용)
         self._pending_edits = {}    # 현재 파일의 사이드카 편집(로드 시 1회 읽어 둠, editsForCurrent 반환용)
         self._ui_path = ""          # UI 가 현재 반영 중인 파일(=복원 완료된 파일). 저장은 이 경로 기준.
         self._fresh_load = False    # 새 파일 로드의 첫 디코딩 대기 중(완료 시 editsReady 발화)
@@ -675,6 +679,23 @@ class Controller(QObject):
         except Exception:
             return {}
 
+    @staticmethod
+    def _load_edited_names(folder: str) -> set:
+        """폴더의 .filmrawsteryedits/ 에 사이드카(<파일명>.json)가 있는 RAF 파일명 집합을 반환.
+        썸네일 '편집됨' 배지 표시용(없거나 오류면 빈 집합)."""
+        try:
+            d = Controller._edits_dir(folder)
+            if not d.is_dir():
+                return set()
+            return {f.name[:-5] for f in d.glob("*.json")}   # "DSCF1.RAF.json" → "DSCF1.RAF"
+        except Exception:
+            return set()
+
+    @Slot(str, result=bool)
+    def hasEdits(self, path: str) -> bool:  # noqa: N802 (QML 슬롯)
+        """파일에 저장된 편집 사이드카가 있는지(현재 폴더 캐시 기준). 썸네일 배지용."""
+        return Path(path).name in self._edited
+
     @Slot("QVariantMap")
     def saveEdits(self, params) -> None:  # noqa: N802 (QML 슬롯)
         """UI 가 반영 중인 파일(_ui_path)의 편집을 사이드카 JSON 으로 저장. 크래시 안전.
@@ -690,8 +711,33 @@ class Controller(QObject):
             with open(d / f"{p.name}.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             self._pending_edits = data               # 현재 파일 캐시 동기화
+            # 썸네일 편집 배지 즉시 반영(현재 탐색기 폴더 파일일 때)
+            if str(p.parent) == self._edited_folder and p.name not in self._edited:
+                self._edited.add(p.name)
+                self._edit_rev += 1
+                self.editsChanged.emit()
         except Exception as exc:
             print(f"[edits] 저장 실패: {exc}")
+
+    @Slot()
+    def deleteEdits(self) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 UI 파일(_ui_path)의 편집 사이드카를 삭제(수동 Reset). 캐시/썸네일 배지도 갱신.
+        ⚠️ saveEdits 와 동일하게 _ui_path 기준(반영 완료된 파일)."""
+        if not self._ui_path:
+            return
+        p = Path(self._ui_path)
+        try:
+            ep = self._edits_path(str(p.parent), p.name)
+            if ep.is_file():
+                ep.unlink()
+        except Exception as exc:
+            print(f"[edits] 삭제 실패: {exc}")
+        self._pending_edits = {}                  # 현재 파일 편집 캐시 비움
+        # 썸네일 편집 배지(파일명 앰버) 해제 — 현재 폴더 파일이면 캐시에서 제거 + 리비전 증가
+        if str(p.parent) == self._edited_folder and p.name in self._edited:
+            self._edited.discard(p.name)
+            self._edit_rev += 1
+            self.editsChanged.emit()
 
     @Slot(result="QVariantMap")
     def editsForCurrent(self):  # noqa: N802 (QML 슬롯)
@@ -1041,8 +1087,13 @@ class Controller(QObject):
         self._likes = self._load_likes(self._folder)
         self._likes_folder = self._folder
         self._like_rev += 1
+        # 편집 사이드카(.filmrawsteryedits/<name>.json) 유무 -> 썸네일 편집 배지 반영
+        self._edited = self._load_edited_names(self._folder)
+        self._edited_folder = self._folder
+        self._edit_rev += 1
         self.folderChanged.emit()
         self.likesChanged.emit()
+        self.editsChanged.emit()
 
     @Slot(QUrl)
     def setFolder(self, url: QUrl) -> None:  # noqa: N802 (QML 슬롯, FolderDialog)
@@ -1071,9 +1122,13 @@ class Controller(QObject):
     def _get_like_rev(self) -> int:
         return self._like_rev
 
+    def _get_edit_rev(self) -> int:
+        return self._edit_rev
+
     currentFolder = Property(str, _get_folder, notify=folderChanged)
     fileList = Property("QVariantList", _get_files, notify=folderChanged)
     likeRevision = Property(int, _get_like_rev, notify=likesChanged)
+    editsRevision = Property(int, _get_edit_rev, notify=editsChanged)
 
     @Slot(float, float)
     def setWb(self, kelvin: float, tint: float) -> None:  # noqa: N802 (QML 슬롯)
