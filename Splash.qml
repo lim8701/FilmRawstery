@@ -14,28 +14,22 @@ Rectangle {
     border.color: "#3d3d40"
     border.width: 1
 
-    // 상단 필름 퍼포레이션 스트립(앰버)
-    Row {
-        anchors.top: parent.top
-        anchors.topMargin: 20
-        anchors.horizontalCenter: parent.horizontalCenter
-        spacing: 9
-        Repeater {
-            model: 13
-            Rectangle { width: 16; height: 10; radius: 2; color: "#E0A226" }
-        }
+    // 상단 필름 퍼포레이션 스트립(앰버) — 스플래시 폭을 길게 채움
+    FilmStrip {
+        anchors.top: parent.top; anchors.topMargin: 20
+        anchors.left: parent.left; anchors.right: parent.right
+        anchors.leftMargin: 16; anchors.rightMargin: 16
+        height: 12
+        holeW: 16; holeH: 10
     }
 
     // 하단 필름 퍼포레이션 스트립(앰버) — 필름 프레임처럼 위아래 대칭
-    Row {
-        anchors.bottom: parent.bottom
-        anchors.bottomMargin: 20
-        anchors.horizontalCenter: parent.horizontalCenter
-        spacing: 9
-        Repeater {
-            model: 13
-            Rectangle { width: 16; height: 10; radius: 2; color: "#E0A226" }
-        }
+    FilmStrip {
+        anchors.bottom: parent.bottom; anchors.bottomMargin: 20
+        anchors.left: parent.left; anchors.right: parent.right
+        anchors.leftMargin: 16; anchors.rightMargin: 16
+        height: 12
+        holeW: 16; holeH: 10
     }
 
     Column {

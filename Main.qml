@@ -674,24 +674,17 @@ ApplicationWindow {
         contentItem: ColumnLayout {
             spacing: 0
 
-            // 상단 필름 퍼포레이션 스트립(앰버)
-            Item {
+            // 상단 필름 퍼포레이션 스트립(앰버) — 대화상자 폭을 가득 채움(좌우 여백은 둥근 모서리 회피).
+            FilmStrip {
                 Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
                 Layout.preferredHeight: 26
-                Row {
-                    anchors.centerIn: parent
-                    spacing: 9
-                    Repeater {
-                        model: 9
-                        Rectangle { width: 14; height: 9; radius: 2; color: "#E0A226" }
-                    }
-                }
             }
 
             ColumnLayout {
                 Layout.fillWidth: true
+                // 위/아래 여백 동일(24) → 콘텐츠가 상·하 필름 스트립 사이 중앙에 위치(위쏠림 방지)
                 Layout.margins: 24
-                Layout.topMargin: 6
                 spacing: 12
 
                 Label {
@@ -736,6 +729,13 @@ ApplicationWindow {
                         }
                     }
                 }
+            }
+
+            // 하단 필름 퍼포레이션 스트립 — 상단과 대칭(필름 프레임)
+            FilmStrip {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
             }
         }
     }
@@ -1986,7 +1986,7 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             spacing: 3
                             Label {
-                                text: "Shooting Info"
+                                text: "Shooting Info  (I)"
                                 color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
                                 font.capitalization: Font.AllUppercase
                                 Layout.bottomMargin: 3
@@ -2512,7 +2512,7 @@ ApplicationWindow {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "Clipping warning  — J  (highlights red / shadows blue)"
+                        text: "Clipping warning  (J) — highlights red / shadows blue"
                         color: "white"; font.pixelSize: 12
                         verticalAlignment: Text.AlignVCenter
                     }
@@ -3104,7 +3104,7 @@ ApplicationWindow {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "Film date stamp  — D"
+                        text: "Film date stamp  (D)"
                         color: stampCheck.enabled ? "white" : "#777"
                         font.pixelSize: 12
                         verticalAlignment: Text.AlignVCenter
