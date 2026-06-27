@@ -510,9 +510,11 @@ class Controller(QObject):
     skyMaskChanged = Signal()    # 하늘 마스크 텍스처 갱신 알림(생성/클리어 모두)
     skySelected = Signal()       # 하늘 마스크 '생성 완료'만(클리어 제외) → QML 이 오버레이 자동 표시
     skyBusyChanged = Signal()    # 하늘 세그멘테이션(추론) 진행 중 표시
+    segStatusChanged = Signal()  # 세그 상태 문구(예: 모델 다운로드 중) 갱신 알림
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
+    _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
@@ -528,6 +530,7 @@ class Controller(QObject):
         self._sky_counter = 0
         self._sky_seq = 0           # 비동기 세그/재조합 순번(오래된 결과 폐기)
         self._sky_busy = False      # 세그 추론/재조합 진행 중
+        self._seg_status = ""       # 세그 상태 문구(모델 다운로드 중 등). 빈 문자열=없음
         self._sky_mask = None       # 마지막 마스크 (numpy float32 [0,1], 프록시 해상도) — CPU export 용
         self._proxy_img = None      # 마지막 프록시 QImage(세그 입력 디코드용)
         self._seg_probs = None      # 캐시된 150클래스 softmax(저해상도) — 이미지당 추론 1회
@@ -581,6 +584,7 @@ class Controller(QObject):
         self._renderReady.connect(self._on_render_ready)
         self._fullDecoded.connect(self._on_full_decoded)
         self._skyReady.connect(self._on_sky_ready)
+        self._segStatusSig.connect(self._on_seg_status)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -1200,11 +1204,17 @@ class Controller(QObject):
         return (disp * 255.0 + 0.5).astype(np.uint8)
 
     def _mask_worker(self, seq: int, keys) -> None:
+        import os
         import numpy as np
         import sky_seg
         mask = None
         try:
             if self._seg_probs is None:                 # 이미지당 추론 1회 → 캐시
+                # 모델이 아직 없으면 최초 1회 다운로드(~105MB) → 다운로드 구간에만 문구 표시.
+                if not os.path.exists(sky_seg.MODEL_PATH):
+                    self._segStatusSig.emit("Downloading sky model… (first use, ~105MB)")
+                    sky_seg.ensure_model()               # 실제 다운로드(블로킹)
+                    self._segStatusSig.emit("")          # 다운로드 끝 → 이후는 'Detecting mask…'
                 rgb8 = self._sky_input_rgb()
                 probs, hw = sky_seg.infer_softmax(rgb8)
                 self._seg_probs = probs
@@ -1215,6 +1225,7 @@ class Controller(QObject):
                 mask = sky_seg.compose_mask(self._seg_probs, self._seg_size, ids, self._seg_guide)
         except Exception as exc:
             print(f"[mask] 세그 실패: {exc}")
+            self._segStatusSig.emit("")                  # 실패(다운로드 포함) 시에도 문구 제거
         self._skyReady.emit((seq, mask))
 
     @Slot(object)
@@ -1272,6 +1283,18 @@ class Controller(QObject):
         return self._sky_busy
 
     skyBusy = Property(bool, _get_sky_busy, notify=skyBusyChanged)
+
+    @Slot(str)
+    def _on_seg_status(self, s: str) -> None:
+        """워커 스레드 → 메인 스레드: 세그 상태 문구 갱신(모델 다운로드 중 등)."""
+        if s != self._seg_status:
+            self._seg_status = s
+            self.segStatusChanged.emit()
+
+    def _get_seg_status(self) -> str:
+        return self._seg_status
+
+    segStatus = Property(str, _get_seg_status, notify=segStatusChanged)
 
     def _get_adjust_coeffs(self):
         import coeffs

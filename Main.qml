@@ -2073,7 +2073,8 @@ ApplicationWindow {
                         implicitWidth: 64; implicitHeight: 64
                     }
                     Label {
-                        text: controller.exporting ? "Exporting…"
+                        text: controller.segStatus !== "" ? controller.segStatus
+                              : controller.exporting ? "Exporting…"
                               : (controller.skyBusy ? "Detecting mask…" : "Processing…")
                         color: "white"; font.pixelSize: 14
                         Layout.alignment: Qt.AlignHCenter
