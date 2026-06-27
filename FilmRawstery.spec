@@ -2,25 +2,44 @@
 # Build:  .\.venv\Scripts\pyinstaller.exe FilmRawstery.spec --noconfirm
 # 디버그 시 아래 CONSOLE = True 로 두고 빌드(누락 DLL/플러그인 에러를 콘솔로 확인),
 # 검증 후 CONSOLE = False 로 바꿔 재빌드(릴리스: 콘솔창 없음).
-from PyInstaller.utils.hooks import collect_data_files
+import os
+from PyInstaller.utils.hooks import collect_data_files, collect_all
 
 CONSOLE = False
 
-datas = [
-    ("Main.qml", "."),
-    ("Splash.qml", "."),
-    ("PreviewWindow.qml", "."),
-    ("CurveEditor.qml", "."),
-    ("shaders", "shaders"),     # .frag + 미리 컴파일된 .qsb
-    ("luts", "luts"),           # *.cube (+ _approx_backup)
-    ("fonts", "fonts"),         # DSEG7Classic-Bold.ttf
+# --- QML (개별 명시: 새 .qml 추가 시 여기에 등록) ---
+QML = ["Main.qml", "Splash.qml", "PreviewWindow.qml", "CurveEditor.qml", "FilmStrip.qml"]
+datas = [(q, ".") for q in QML]
+datas += [
+    ("shaders", "shaders"),   # .frag + 미리 컴파일된 .qsb (frozen 은 런타임 재컴파일 안 함)
+    ("fonts", "fonts"),       # DSEG7Classic-Bold.ttf
 ]
-datas += collect_data_files("rawpy")   # libraw 네이티브 DLL
+
+# --- LUT: ARR(Stuart Sowerby) 흑백 LUT 는 재배포 금지 → 번들에서 제외 ---
+_ARR_LUTS = {"acros.cube", "acros_g.cube", "acros_r.cube", "acros_ye.cube",
+             "monochrome.cube", "sepia.cube"}
+for fn in sorted(os.listdir("luts")):
+    if fn.endswith(".cube") and fn not in _ARR_LUTS:
+        datas.append((os.path.join("luts", fn), "luts"))
+for extra in ("LICENSE", "README.md"):       # LUT 출처/라이선스 동봉(있으면)
+    p = os.path.join("luts", extra)
+    if os.path.exists(p):
+        datas.append((p, "luts"))
+
+# ⚠️ models/*.onnx 는 번들하지 않음 — sky_seg.ensure_model() 이 최초 사용 시 자동 다운로드
+#    (zip 으로 배포 → 압축 푼 폴더가 쓰기 가능하므로 다운로드 성공).
+
+datas += collect_data_files("rawpy")          # libraw 네이티브 DLL
+
+# onnxruntime(하늘 세그 sky_seg 런타임) — 네이티브 DLL + capi 전량 수집
+ort_datas, ort_binaries, ort_hidden = collect_all("onnxruntime")
+datas += ort_datas
 
 hiddenimports = [
-    "scipy.ndimage",            # lazy `from scipy.ndimage import ...`
-    # numpy / rawpy / exifread 는 일반 import → 자동 탐지
-]
+    "scipy.ndimage",     # lazy `from scipy.ndimage import ...`
+    "sky_seg", "coeffs", # main/pipeline 에서 지연 import 되는 로컬 모듈(명시로 보장)
+] + ort_hidden
+# numpy / rawpy / exifread / onnxruntime 본체는 일반 import → 자동 탐지
 
 excludes = [  # 미사용 Qt 모듈 제거(용량↓). 문제 생기면 먼저 excludes 완화
     "PySide6.QtWebEngineCore", "PySide6.QtWebEngineQuick", "PySide6.QtWebEngineWidgets",
@@ -41,7 +60,7 @@ excludes = [  # 미사용 Qt 모듈 제거(용량↓). 문제 생기면 먼저 e
 a = Analysis(
     ["main.py"],
     pathex=[],
-    binaries=[],
+    binaries=ort_binaries,
     datas=datas,
     hiddenimports=hiddenimports,
     excludes=excludes,
