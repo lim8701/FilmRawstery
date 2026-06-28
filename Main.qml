@@ -506,7 +506,7 @@ ApplicationWindow {
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "lutEnabled": simCombo.currentIndex !== 0, "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
-            "dateStamp": win.dateStamp, "stampText": stampField.text,
+            "dateStamp": win.dateStamp, "stampText": stampField.text, "stampRot": controller.stampRot,
             "outEdge": win.exportEdges[resCombo.currentIndex], "lensCorrection": lensCheck.checked,
             "bitDepth": bitDepth16Check.checked ? 16 : 8,   // 16=TIFF/PNG 16bit(CPU 전용)
             // 지오메트리(현상 뒤 적용): 플립 -> 90° -> 스트레이튼(회전+채움줌) -> 종횡비 중앙크롭
@@ -1708,10 +1708,12 @@ ApplicationWindow {
                             property real shortEdge: Math.min(cropClip.width, cropClip.height)
                             width: controller.stampWRatio * shortEdge
                             height: controller.stampHRatio * shortEdge
-                            anchors.right: parent.right
-                            anchors.bottom: parent.bottom
-                            anchors.rightMargin: 0.030 * shortEdge
-                            anchors.bottomMargin: 0.030 * shortEdge
+                            // 촬영 방향에 따른 코너 배치(데이트백 현실 반영) — 스프라이트는 이미
+                            // controller 에서 회전돼 있어 여기선 코너 x/y 만 잡는다(export 와 동일).
+                            property string corner: controller.stampCorner   // br/bl/tl/tr
+                            property real margin: 0.030 * shortEdge
+                            x: (corner === "br" || corner === "tr") ? parent.width - width - margin : margin
+                            y: (corner === "br" || corner === "bl") ? parent.height - height - margin : margin
                         }
                     }
 

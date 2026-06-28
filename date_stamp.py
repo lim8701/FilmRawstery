@@ -31,7 +31,7 @@ _family = None
 
 # --- 이미지 상대 기하/룩 (프리뷰·export 단일 소스) ---
 # 기준은 '짧은 변' -> 가로/세로 방향 무관하게 같은 상대 크기.
-TEXT_FRAC = 0.040       # 숫자 높이 = 짧은 변의 4.0%
+TEXT_FRAC = 0.032       # 숫자 높이 = 짧은 변의 3.2% (실제 필름 데이트백에 가까운 크기)
 MARGIN_FRAC = 0.030     # 우/하 여백 = 짧은 변의 3.0%
 # 필름 광학 각인의 색: 핫코어(밝은 주황-노랑) → 앰버 → 적주황 헤일로로 번짐.
 C_CORE = np.array([1.00, 0.95, 0.76], np.float32)   # 노출 과다된 뜨거운 중심(흰빛쪽, 더 밝게)
@@ -138,25 +138,54 @@ def render_sprite(text, text_h_px):
     return rgba
 
 
-def _placement(sprite, img_w, img_h, margin_px):
-    """sprite 를 우하단에 둘 때의 (x0,y0,sprite_clipped)."""
+# --- 촬영 방향(데이트백 현실 반영) ---
+# 실제 쿼츠 데이트백은 '센서(가로) 프레임의 우하단'에 각인된다. 세로로 촬영하면(센서를 회전)
+# 업라이트로 볼 때 각인이 90° 돌아간 채 대응 코너로 이동한다. EXIF Orientation 으로 센서→업라이트
+# 회전(CW)을 구해 스프라이트를 같은 각도로 돌리고 대응 코너에 배치한다(프리뷰=export 동일).
+_ROT_FROM_ORI = {1: 0, 3: 180, 6: 90, 8: 270}      # EXIF Orientation -> 업라이트로 만든 CW 회전(도)
+_ROT_CORNER = {0: "br", 90: "bl", 180: "tl", 270: "tr"}  # 그 회전 후 센서 우하단이 오는 코너
+
+
+def rot_from_orientation(ori) -> int:
+    """EXIF Orientation(1~8) -> 센서(가로)를 업라이트로 만든 CW 회전(0/90/180/270). 미러는 0 폴백."""
+    try:
+        return _ROT_FROM_ORI.get(int(ori), 0)
+    except Exception:
+        return 0
+
+
+def corner_for_rot(rot) -> str:
+    """CW 회전(도) -> 업라이트 프레임에서 데이트백이 오는 코너('br'/'bl'/'tl'/'tr')."""
+    return _ROT_CORNER.get(int(rot) % 360, "br")
+
+
+def _rotate_sprite(sprite, rot):
+    """스프라이트(가로 텍스트)를 CW 회전(도)만큼 회전. np.rot90 은 CCW 라 k=-회전/90."""
+    k = (int(rot) // 90) % 4
+    return sprite if k == 0 else np.ascontiguousarray(np.rot90(sprite, k=-k))
+
+
+def _placement(sprite, img_w, img_h, margin_px, corner="br"):
+    """sprite 를 지정 코너에 둘 때의 (x0,y0,sprite_clipped). corner='br'/'bl'/'tl'/'tr'."""
     sh, sw, _ = sprite.shape
-    x0 = max(0, img_w - margin_px - sw)
-    y0 = max(0, img_h - margin_px - sh)
+    right = corner in ("br", "tr")
+    bottom = corner in ("br", "bl")
+    x0 = max(0, img_w - margin_px - sw) if right else min(margin_px, max(0, img_w - sw))
+    y0 = max(0, img_h - margin_px - sh) if bottom else min(margin_px, max(0, img_h - sh))
     sp = sprite[:img_h - y0, :img_w - x0]
     return x0, y0, sp
 
 
-def stamp_export(out, text):
-    """크롭/회전까지 끝난 '최종 프레임' out (H,W,3) 의 우하단 코너에 날짜 스프라이트를
-    source-over 합성(in-place). 위치/크기는 out(=최종 프레임) 짧은 변 기준이라 크롭 후에도
-    프레임 코너에 일정 비율로 찍힌다. 프리뷰 QML Image 오버레이와 동일 합성(프리뷰=export).
-    out 의 dtype 으로 비트깊이 자동 인식(uint8=255, uint16=65535)."""
+def stamp_export(out, text, rot=0):
+    """크롭/회전까지 끝난 '최종 프레임' out (H,W,3) 의 코너에 날짜 스프라이트를 source-over
+    합성(in-place). rot=촬영 방향(센서→업라이트 CW 회전) — 데이트백을 센서 우하단 각인처럼
+    회전·코너 배치(세로 사진은 90° 돌아간 코너). 위치/크기는 out 짧은 변 기준(크롭 후에도 일정).
+    프리뷰 QML Image 오버레이와 동일 합성·회전(프리뷰=export). dtype 으로 비트깊이 자동 인식."""
     mx = 65535.0 if out.dtype == np.uint16 else 255.0
     H, W, _ = out.shape
     short = min(H, W)
-    sprite = render_sprite(text, TEXT_FRAC * short)
-    x0, y0, sp = _placement(sprite, W, H, int(round(MARGIN_FRAC * short)))
+    sprite = _rotate_sprite(render_sprite(text, TEXT_FRAC * short), rot)
+    x0, y0, sp = _placement(sprite, W, H, int(round(MARGIN_FRAC * short)), corner_for_rot(rot))
     sh, sw, _ = sp.shape
     col = sp[..., :3]
     a = np.clip(sp[..., 3:4] * STAMP_STRENGTH, 0.0, 1.0)     # (h,w,1)
@@ -166,13 +195,13 @@ def stamp_export(out, text):
     return out
 
 
-def sprite_layer(text, ref_short=1000.0):
+def sprite_layer(text, ref_short=1000.0, rot=0):
     """프리뷰 오버레이용 '타이트' 날짜 스프라이트(글로우 패딩 포함) → (QImage, wRatio, hRatio).
-    wRatio/hRatio = 스프라이트 (W,H) / 짧은 변. QML 이 cropClip(=최종 프레임) 짧은 변에 이 비율을
-    곱해 Image 크기를, MARGIN_FRAC 로 우하단 마진을 잡으면 export(stamp_export, 동일 TEXT_FRAC/
-    MARGIN_FRAC) 와 같은 위치/상대크기·source-over 합성이 된다(프리뷰=export).
-    ref_short 는 스프라이트 렌더 해상도 기준일 뿐(비율은 무관) — 표시 시 cropClip 크기로 스케일."""
-    sp = render_sprite(text, TEXT_FRAC * ref_short)   # (H,W,4) float, 글로우 패딩 포함
+    rot=촬영 방향(센서→업라이트 CW 회전)으로 스프라이트를 미리 회전(export 와 동일 픽셀).
+    wRatio/hRatio = (회전 후) 스프라이트 (W,H) / 짧은 변. QML 이 cropClip 짧은 변에 이 비율을 곱해
+    Image 크기를, controller.stampCorner 코너에 MARGIN_FRAC 마진으로 배치하면 export(stamp_export,
+    동일 TEXT_FRAC/MARGIN_FRAC·회전·코너)와 같은 위치/상대크기·source-over 합성이 된다(프리뷰=export)."""
+    sp = _rotate_sprite(render_sprite(text, TEXT_FRAC * ref_short), rot)   # (H,W,4) float
     sh, sw, _ = sp.shape
     u8 = np.empty((sh, sw, 4), np.uint8)              # ARGB32(LE)=B,G,R,A
     u8[..., 0] = np.clip(sp[..., 2], 0, 1) * 255      # B

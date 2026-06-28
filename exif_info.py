@@ -32,6 +32,23 @@ def _read_embedded_jpeg(raf_path, max_bytes=512 * 1024):
         return f.read(min(length, max_bytes))  # EXIF APP1 은 JPEG 앞쪽
 
 
+def read_orientation(raf_path) -> int:
+    """RAF 임베드 JPEG 의 EXIF Image Orientation(1~8) 반환. 실패/없음 시 1(가로).
+    날짜 스탬프를 촬영 방향(센서 가로 프레임)에 맞춰 배치하는 데 쓴다."""
+    if exifread is None:
+        return 1
+    try:
+        jpeg = _read_embedded_jpeg(raf_path)
+        if not jpeg:
+            return 1
+        tags = exifread.process_file(io.BytesIO(jpeg), details=False)
+        ori = tags.get("Image Orientation")
+        v = int(ori.values[0]) if ori and ori.values else 1
+        return v if v in (1, 2, 3, 4, 5, 6, 7, 8) else 1
+    except Exception:
+        return 1
+
+
 def _ratio(v):
     try:
         return float(v.num) / float(v.den) if v.den else None

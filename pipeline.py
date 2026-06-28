@@ -439,6 +439,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     hsl_l = p.get("hslL", [0.0] * 8)
     stamp_text = str(p.get("stampText", "") or "")
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
+    stamp_rot = int(p.get("stampRot", 0))   # 촬영 방향(센서→업라이트 CW 회전) — 데이트백 회전/코너
     # 하늘(로컬) 조정 — 마스크는 프록시 해상도라 풀해상도로 업샘플(부드러운 알파 → bilinear OK).
     sky = {"exp": float(p.get("skyExp", 0)), "temp": float(p.get("skyTemp", 0)),
            "tint": float(p.get("skyTint", 0)), "sat": float(p.get("skySat", 0)),
@@ -557,7 +558,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     #   → 위치·크기가 최종(크롭) 사이즈 기준이 됨. (크롭 전 원본 코너 기준이면 크롭 시 어긋남)
     #   비네팅 뒤(LED는 렌즈를 거치지 않음). 프리뷰는 cropClip 위 오버레이로 동일 위치/합성.
     if do_stamp:
-        date_stamp.stamp_export(out, stamp_text)   # dtype(8/16bit) 자동 인식, 코너만 in-place
+        date_stamp.stamp_export(out, stamp_text, rot=stamp_rot)   # dtype 자동, 회전·코너 in-place
 
     return out
 

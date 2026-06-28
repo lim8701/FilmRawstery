@@ -592,6 +592,7 @@ class Controller(QObject):
         self._stamp_counter = 0
         self._stamp_wr = 0.0        # 스프라이트 (W,H)/짧은변 비율 — QML 오버레이 크기 산출용
         self._stamp_hr = 0.0
+        self._stamp_rot = 0         # 촬영 방향(센서→업라이트 CW 회전, 0/90/180/270) — 데이트백 배치
         self._proxy_w = 0           # 마지막 프록시 크기(스탬프 레이어 재렌더용)
         self._proxy_h = 0
         self._histogram = []        # 256-bin 휘도 히스토그램(0..1 정규화)
@@ -877,7 +878,7 @@ class Controller(QObject):
             import date_stamp
             _st = str(self._gpu_params.get("stampText", "") or "")
             if bool(self._gpu_params.get("dateStamp", False)) and _st:
-                date_stamp.stamp_export(arr, _st)
+                date_stamp.stamp_export(arr, _st, rot=int(self._gpu_params.get("stampRot", 0)))
             # 해상도 프리셋(긴 변) 적용 — GPU grab 은 항상 풀해상도라 여기서 축소.
             out_edge = int(self._gpu_params.get("outEdge", 0) or 0)
             if out_edge > 0 and max(arr.shape[:2]) > out_edge:
@@ -980,10 +981,19 @@ class Controller(QObject):
     def _get_stamp_hr(self) -> float:
         return self._stamp_hr
 
+    def _get_stamp_rot(self) -> int:
+        return self._stamp_rot
+
+    def _get_stamp_corner(self) -> str:
+        import date_stamp
+        return date_stamp.corner_for_rot(self._stamp_rot)
+
     stampUrl = Property(str, _get_stamp_url, notify=stampChanged)
     stampText = Property(str, _get_stamp_text, notify=stampChanged)
     stampWRatio = Property(float, _get_stamp_wr, notify=stampChanged)   # 스프라이트 W/짧은변
     stampHRatio = Property(float, _get_stamp_hr, notify=stampChanged)   # 스프라이트 H/짧은변
+    stampRot = Property(int, _get_stamp_rot, notify=stampChanged)       # 촬영 방향 CW 회전(export 전달)
+    stampCorner = Property(str, _get_stamp_corner, notify=stampChanged)  # 데이트백 코너(프리뷰 배치)
 
     def _compute_histogram(self, img: QImage) -> None:
         """프록시 QImage → 히스토그램용 축소본 캐시 + 기준(입력) 히스토그램.
@@ -1121,6 +1131,8 @@ class Controller(QObject):
             self._tint = 0.0
         # 촬영정보는 경로에만 의존 -> 로드 시 1회 읽음(WB 변경 재디코딩과 무관)
         self._exif_fields, self._exif_summary = read_shooting_info(path)
+        # 촬영 방향(EXIF Orientation) → 데이트백을 센서 우하단 각인처럼 회전/코너 배치(세로 사진).
+        self._stamp_rot = date_stamp.rot_from_orientation(read_orientation(path))
         date_val = next((f["value"] for f in self._exif_fields
                          if f["label"] == "Date"), "")
         self._stamp_text = date_stamp.stamp_text_from_date(date_val)
@@ -1226,7 +1238,7 @@ class Controller(QObject):
         if self._stamp_provider is None:
             return
         if self._stamp_text:
-            layer, wr, hr = date_stamp.sprite_layer(self._stamp_text)
+            layer, wr, hr = date_stamp.sprite_layer(self._stamp_text, rot=self._stamp_rot)
             self._stamp_wr, self._stamp_hr = wr, hr
         else:
             layer = QImage(1, 1, QImage.Format.Format_ARGB32)
@@ -1525,10 +1537,10 @@ def _load_heavy_modules() -> None:
     이 임포트들을 모듈 최상단에 두면 splash 가 뜨기 전에 다 로드돼 대기 구간이
     길어진다(특히 콜드 스타트). splash 가 보인 뒤로 미뤄 체감 시작 시간을 줄인다.
     여기서 module-global 로 바인딩하므로 이후 Controller/provider 들이 그대로 참조한다."""
-    global date_stamp, make_luts, read_shooting_info, _read_embedded_jpeg
+    global date_stamp, make_luts, read_shooting_info, read_orientation, _read_embedded_jpeg
     global wb, atlas_qimage, load_cube, PROXY_HEADROOM, load_full, load_proxy
     import date_stamp, make_luts, wb                                  # noqa: E401
-    from exif_info import read_shooting_info, _read_embedded_jpeg
+    from exif_info import read_shooting_info, read_orientation, _read_embedded_jpeg
     from lut import atlas_qimage, load_cube
     from raw_loader import PROXY_HEADROOM, load_full, load_proxy
 
