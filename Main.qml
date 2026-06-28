@@ -45,6 +45,9 @@ ApplicationWindow {
     property bool compareOn: false
     Shortcut { sequence: "\\"; onActivated: win.compareOn = !win.compareOn }
 
+    // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정, display_cm.py). Ctrl+Shift+M 토글. export 불변.
+    property bool displayCM: true
+
     // 클리핑 경고 오버레이(프리뷰): 하이라이트=빨강 / 섀도=파랑. J 키로 토글(라이트룸과 동일).
     property bool clipWarn: false
     Shortcut { sequence: "J"; onActivated: win.clipWarn = !win.clipWarn }
@@ -55,6 +58,9 @@ ApplicationWindow {
     Shortcut { sequence: "Ctrl+1"; onActivated: win.activePanel = 0 }
     Shortcut { sequence: "Ctrl+2"; onActivated: win.activePanel = 1 }
     Shortcut { sequence: "Ctrl+3"; onActivated: win.activePanel = 2 }
+
+    // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정) 토글.
+    Shortcut { sequence: "Ctrl+Shift+M"; onActivated: win.displayCM = !win.displayCM }
 
 
     // 컬러 그레이딩 Hue 슬라이더 위에 두는 무지개 스펙트럼 막대(슬라이더 위치↔색상 가이드).
@@ -1125,6 +1131,15 @@ ApplicationWindow {
                 source: "image://lut/" + win.simKeys[simCombo.currentIndex]
             }
 
+            // 디스플레이 색관리 LUT 아틀라스(sRGB→모니터). 수동 트라이리니어라 smooth:false 필수.
+            Image {
+                id: cmLutImage
+                visible: false
+                cache: false
+                smooth: false
+                source: controller.cmLutUrl
+            }
+
             // 톤 커브 1D LUT 텍스처 (256x1). 보간 위해 smooth:true.
             Image {
                 id: curveImage
@@ -1226,6 +1241,9 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: width / Math.max(1, height)
                         property real clipWarn: 0.0   // export 는 클리핑 오버레이 미적용
+                        property real displayCM: 0.0  // export 는 디스플레이 색관리 미적용(표준 sRGB)
+                        property variant cmLut: cmLutImage
+                        property real cmLutSize: controller.cmLutN
                         // 컬러 그레이딩 — 프리뷰(pipe)와 동일 바인딩(export 일치).
                         property real cgHueSh: cgShHueSlider.value / 360.0
                         property real cgSatSh: cgShSatSlider.value
@@ -1400,6 +1418,18 @@ ApplicationWindow {
                         hideSource: true; live: true; smooth: true
                     }
 
+                    // Compare original 모드용: 무편집 display sRGB(dispPre)에 디스플레이 색관리만 적용.
+                    // pipe 와 동일한 CM 을 거쳐 'before' 도 광색역 패널에서 정확히 표시(프리뷰 일관).
+                    ShaderEffect {
+                        id: comparePipe; visible: false
+                        width: viewport.procW; height: viewport.procH
+                        property variant src: dispSrcTex
+                        property variant cmLut: cmLutImage
+                        property real displayCM: (win.displayCM && controller.hasDisplayCM) ? 1.0 : 0.0
+                        property real cmLutSize: controller.cmLutN
+                        fragmentShader: "shaders/displaycm.frag.qsb"
+                    }
+
                     // --- 로컬대비용 가우시안 블러 (dispSrc 에만 의존 -> 로드 시 1회 계산) ---
                     // 텍스처: 작은 반경, 풀 프록시 해상도
                     ShaderEffect {
@@ -1526,6 +1556,10 @@ ApplicationWindow {
                         property real grainSize: grainSizeSlider.value
                         property real grainAspect: viewport.procW / Math.max(1, viewport.procH)
                         property real clipWarn: win.clipWarn ? 1.0 : 0.0   // 클리핑 경고 오버레이(프리뷰 전용)
+                        // 디스플레이 색관리(프리뷰 전용): 토글 ON + 유효 CM LUT 있을 때만.
+                        property real displayCM: (win.displayCM && controller.hasDisplayCM) ? 1.0 : 0.0
+                        property variant cmLut: cmLutImage
+                        property real cmLutSize: controller.cmLutN
                         // 컬러 그레이딩(스플릿 토닝): hue 슬라이더(도) → 0..1 정규화.
                         property real cgHueSh: cgShHueSlider.value / 360.0
                         property real cgSatSh: cgShSatSlider.value
@@ -1617,7 +1651,7 @@ ApplicationWindow {
                             ShaderEffectSource {
                                 id: pipeView
                                 // 원본 비교 중에는 무편집 현상(dispPre)을 같은 변환/크롭으로 표시.
-                                sourceItem: win.compareOn ? dispPre : pipe
+                                sourceItem: win.compareOn ? comparePipe : pipe
                                 textureSize: Qt.size(viewport.procW, viewport.procH)
                                 width: viewport.procW
                                 height: viewport.procH
@@ -2170,7 +2204,12 @@ ApplicationWindow {
                         text: "Export…"
                         Layout.fillWidth: true
                         enabled: controller.imagePath !== ""
-                        onClicked: saveDialog.open()
+                        onClicked: {
+                            // 기본 파일명 = '<원본이름>_exported.png' (원본과 같은 폴더)
+                            var u = controller.suggestedExportUrl()
+                            if (u != "") saveDialog.selectedFile = u
+                            saveDialog.open()
+                        }
                     }
                     Button {
                         id: exportOptBtn
@@ -2559,6 +2598,25 @@ ApplicationWindow {
                     Label {
                         Layout.fillWidth: true
                         text: "Clipping warning  (J) — highlights red / shadows blue"
+                        color: "white"; font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+
+                // 디스플레이 색관리(프리뷰 전용): 광색역 모니터에서 sRGB 를 정확히 표시.
+                // 모니터 ICC 프로파일이 광색역일 때만 노출(sRGB 모니터에선 무의미).
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    visible: controller.hasDisplayCM
+                    CheckBox {
+                        id: displayCmCheck
+                        checked: win.displayCM
+                        onToggled: win.displayCM = checked
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "Display color management  (Ctrl+Shift+M) — match monitor gamut"
                         color: "white"; font.pixelSize: 12
                         verticalAlignment: Text.AlignVCenter
                     }

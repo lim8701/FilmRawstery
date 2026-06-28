@@ -46,7 +46,7 @@ def app_base() -> Path:
 
 BASE = app_base()
 SHADERS_DIR = BASE / "shaders"
-SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag"]
+SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag"]
 LUTS_DIR = BASE / "luts"
 APP_VERSION = "1.0"
 
@@ -277,6 +277,29 @@ class LutProvider(QQuickImageProvider):
     def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
         key = image_id.split("?", 1)[0]  # 쿼리스트링 제거
         return self._atlases.get(key, QImage())
+
+
+class DisplayCmProvider(QQuickImageProvider):
+    """디스플레이 색관리 LUT 아틀라스를 'image://displaycm/...' 로 제공(프리뷰 전용).
+
+    현재 모니터 ICC 에서 구운 sRGB→디스플레이 3D LUT(아틀라스). 색관리 불필요(sRGB
+    모니터/프로파일 없음)면 1x1 더미를 두고 size=0 → 셰이더가 미적용."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._atlas = QImage(1, 1, QImage.Format.Format_RGB888)
+        self.size = 0  # LUT 한 변 N (0=항등/미적용)
+
+    def set_atlas(self, atlas: QImage, n: int) -> None:
+        if atlas is None or n <= 1:
+            self._atlas = QImage(1, 1, QImage.Format.Format_RGB888)
+            self.size = 0
+        else:
+            self._atlas = atlas
+            self.size = n
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
+        return self._atlas
 
 
 class CurveProvider(QQuickImageProvider):
@@ -511,6 +534,7 @@ class Controller(QObject):
     skySelected = Signal()       # 하늘 마스크 '생성 완료'만(클리어 제외) → QML 이 오버레이 자동 표시
     skyBusyChanged = Signal()    # 하늘 세그멘테이션(추론) 진행 중 표시
     segStatusChanged = Signal()  # 세그 상태 문구(예: 모델 다운로드 중) 갱신 알림
+    cmChanged = Signal()         # 디스플레이 색관리 LUT 갱신 알림(모니터 전환/로드)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
@@ -519,9 +543,15 @@ class Controller(QObject):
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
                  full_provider: "RawFullProvider" = None,
-                 sky_provider: "SkyMaskProvider" = None):
+                 sky_provider: "SkyMaskProvider" = None,
+                 cm_provider: "DisplayCmProvider" = None):
         super().__init__()
         self._provider = provider
+        self._cm_provider = cm_provider          # 디스플레이 색관리 LUT(프리뷰 전용)
+        self._cm_n = 0                           # CM LUT 한 변 N (0=미적용)
+        self._has_cm = False                     # 유효 CM LUT 존재(=광색역 모니터)
+        self._cm_url = "image://displaycm/c?v=0"
+        self._cm_counter = 0
         self._curve_provider = curve_provider
         self._stamp_provider = stamp_provider
         self._full_provider = full_provider     # GPU export 풀해상도 src
@@ -759,6 +789,14 @@ class Controller(QObject):
         self._curve_url = f"image://curve/c?v={self._curve_counter}"
         self.curveChanged.emit()
 
+    @Slot(result=QUrl)
+    def suggestedExportUrl(self) -> QUrl:  # noqa: N802 (QML 슬롯)
+        """Export 기본 파일명: 원본과 같은 폴더의 '<원본이름>_exported.png'."""
+        if not self._path:
+            return QUrl()
+        p = Path(self._path)
+        return QUrl.fromLocalFile(str(p.with_name(p.stem + "_exported.png")))
+
     @Slot(QUrl, "QVariantMap")
     def exportImage(self, file_url: QUrl, params) -> None:  # noqa: N802 (QML 슬롯)
         """현재 조정값으로 풀해상도 현상 후 파일 저장 (백그라운드 스레드)."""
@@ -860,6 +898,41 @@ class Controller(QObject):
                 self._full_provider.clear()    # 풀해상도 메모리 해제
         print(f"[export-gpu] {msg}")
         self._set_export_status(msg)
+
+    @Slot(str)
+    def refreshDisplayCm(self, device_name: str = "") -> None:  # noqa: N802 (QML 슬롯)
+        """현재 모니터의 ICC 프로파일로 sRGB→디스플레이 CM LUT 재생성(프리뷰 전용).
+        device_name 예: '\\\\.\\DISPLAY1'(QScreen.name()). 모니터 전환/시작 시 호출."""
+        if self._cm_provider is None:
+            return
+        try:
+            import display_cm
+            icc = display_cm.display_icc_path(device_name or None)
+            atlas, n = display_cm.build_cm_atlas(icc, 33)
+        except Exception as exc:
+            print(f"[display-cm] 실패: {exc}")
+            atlas, n, icc = None, 0, None
+        self._cm_provider.set_atlas(atlas, n)
+        self._cm_n = self._cm_provider.size
+        self._has_cm = self._cm_n > 1
+        self._cm_counter += 1
+        self._cm_url = f"image://displaycm/c?v={self._cm_counter}"
+        self.cmChanged.emit()
+        print(f"[display-cm] {'적용' if self._has_cm else '항등(sRGB/없음)'} "
+              f"N={self._cm_n} dev={device_name or 'primary'} icc={icc}")
+
+    def _get_cm_n(self) -> int:
+        return self._cm_n
+
+    def _get_has_cm(self) -> bool:
+        return self._has_cm
+
+    def _get_cm_url(self) -> str:
+        return self._cm_url
+
+    cmLutN = Property(int, _get_cm_n, notify=cmChanged)
+    hasDisplayCM = Property(bool, _get_has_cm, notify=cmChanged)
+    cmLutUrl = Property(str, _get_cm_url, notify=cmChanged)
 
     def _get_full_url(self) -> str:
         return self._full_url
@@ -1602,7 +1675,11 @@ def main() -> int:
     sky_provider = SkyMaskProvider()
     engine.addImageProvider("skymask", sky_provider)
 
-    controller = Controller(provider, curve_provider, stamp_provider, full_provider, sky_provider)
+    cm_provider = DisplayCmProvider()
+    engine.addImageProvider("displaycm", cm_provider)
+
+    controller = Controller(provider, curve_provider, stamp_provider, full_provider,
+                            sky_provider, cm_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)
@@ -1614,6 +1691,13 @@ def main() -> int:
     root = engine.rootObjects()[0]
     apply_dark_titlebar(root)                      # OS 타이틀바 다크 모드(Windows)
     _close_splash_when_ready(root, splash)         # 메인 창 첫 프레임에 스플래시 닫기
+
+    # 디스플레이 색관리(프리뷰 전용): 현재 모니터 ICC 로 CM LUT 생성 + 모니터 전환 시 재생성.
+    def _refresh_cm(*_):
+        scr = root.screen()
+        controller.refreshDisplayCm(scr.name() if scr is not None else "")
+    _refresh_cm()
+    root.screenChanged.connect(_refresh_cm)
 
     # 시작 경로: 인자 > 개발용 샘플(있으면) > 사용자 Pictures 폴더(배포 기본)
     if len(sys.argv) > 1:
