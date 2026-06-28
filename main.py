@@ -1699,23 +1699,26 @@ def main() -> int:
     _refresh_cm()
     root.screenChanged.connect(_refresh_cm)
 
-    # 시작 경로: 인자 > 개발용 샘플(있으면) > 사용자 Pictures 폴더(배포 기본)
+    # 시작 동작: 인자로 파일/폴더를 주면 그대로 따르고, 인자가 없으면 **사진을 자동 로드하지 않고**
+    # 폴더만 탐색기에 연다(사용자가 직접 더블클릭해 로드). 기본 폴더 = 개발 샘플 폴더(있으면) > Pictures.
     if len(sys.argv) > 1:
         start_path = sys.argv[1]
-    elif Path(DEFAULT_RAF).is_file():
-        start_path = DEFAULT_RAF
+        if Path(start_path).is_file():
+            controller.load(QUrl.fromLocalFile(start_path))   # load() 가 부모폴더도 scan
+        elif Path(start_path).is_dir():
+            controller.setFolderPath(start_path)
+        else:
+            print(f"[init] 시작 경로 없음: {start_path}")
+            controller.setFolderPath(str(Path(start_path).parent))
     else:
-        from PySide6.QtCore import QStandardPaths
-        pics = QStandardPaths.writableLocation(
-            QStandardPaths.StandardLocation.PicturesLocation)
-        start_path = pics or str(Path.home())
-    if Path(start_path).is_file():
-        controller.load(QUrl.fromLocalFile(start_path))   # load() 가 부모폴더도 scan
-    elif Path(start_path).is_dir():
-        controller.setFolderPath(start_path)              # 폴더(Pictures 등)를 탐색기로 열기
-    else:
-        print(f"[init] 시작 경로 없음: {start_path}")
-        controller.setFolderPath(str(Path(start_path).parent))
+        if Path(DEFAULT_RAF).is_file():
+            start_folder = str(Path(DEFAULT_RAF).parent)      # 개발 샘플 폴더만 열기(자동 로드 X)
+        else:
+            from PySide6.QtCore import QStandardPaths
+            pics = QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.PicturesLocation)
+            start_folder = pics or str(Path.home())
+        controller.setFolderPath(start_folder)
 
     return app.exec()
 

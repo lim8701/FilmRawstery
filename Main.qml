@@ -654,15 +654,23 @@ ApplicationWindow {
         function onAsShotKelvinChanged() {
             // 저장된 편집이 있는 파일은 복원될 WB 를 유지(as-shot 으로 덮어쓰지 않음).
             if (win._hasSavedEdits()) return
+            // _applying 가드: as-shot 으로 슬라이더를 맞추는 것은 '편집'이 아니므로 자동저장
+            // 예약(editSaveWatch→scheduleSave)·WB 재디코딩(wbTimer)을 억제 → 새 사진에 불필요한
+            // 사이드카(주황 배지)가 생기지 않게 한다.
+            win._applying = true
             tempSlider.value = controller.asShotKelvin
             tintSlider.value = controller.asShotTint   // off-locus(불빛 등) as-shot tint 반영
+            win._applying = false
         }
         // 로드/WB 커밋(재디코딩)으로 프록시가 갱신되면 조절 반영 히스토그램 재계산.
         function onImageChanged() { win.refreshHistogram(); viewport.resetZoom() }
-        // 이미지 전환 직전: 이전 파일(controller._path 아직 이전값)로 편집 플러시 저장.
+        // 이미지 전환 직전: 이전 파일(controller._ui_path)로 편집 플러시 저장.
+        // ⚠️보류 중(editSaveTimer.running=미저장 변경 있음)일 때만 저장 — 그렇지 않으면 이미
+        // 저장됐거나 reset 으로 삭제된 상태라, 무조건 저장하면 기본값 사이드카를 되살린다(주황 재발).
         function onFlushEdits() {
+            if (editSaveTimer.running && controller.imagePath !== "")
+                controller.saveEdits(win.editParams())
             editSaveTimer.stop()
-            if (controller.imagePath !== "") controller.saveEdits(win.editParams())
         }
     }
 
@@ -3257,6 +3265,9 @@ ApplicationWindow {
                             stampField.text = controller.stampText
                         }
                         win._applying = false
+                        // 로드 전환 중 예약됐을 수 있는 자동저장 취소(fresh-load 는 사이드카를 새로
+                        // 만들지 않는다 — 저장본 있으면 복원만, 없으면 기본값 유지). 주황 배지 오발 방지.
+                        editSaveTimer.stop()
                         win.refreshHistogram()
                         win.histReset(JSON.stringify(win.editParams()))   // 로드 상태 = undo baseline
                     }
