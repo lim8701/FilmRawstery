@@ -22,8 +22,18 @@
 - UI: 우측 패널 "Display color management" 체크박스(광색역 모니터에서만 노출) + **Ctrl+Shift+M** 토글.
   기본 ON. `win.displayCM && controller.hasDisplayCM` 일 때만 셰이더에서 적용.
 
+## 해결됨: Compare original 하이라이트(구름) 색끼 차이 (2026-06)
+- 증상: 무편집 상태에서 메인 프리뷰와 `Compare original`(\\)이 **밝은 쿨 하이라이트(하늘/구름)** 에서
+  색끼가 달랐다(예: DSCF8012.RAF 구름).
+- 원인: 메인 파이프라인(`adjust.frag`)은 `filmic` 직후 **쿨 하이라이트 디새추레이션**(센서클립 청록기
+  제거 → 중성, 0.5 단계, 항상 켜진 베이스 처리)을 적용하는데, Compare 표시본 `dispPre`(`convert.frag`)
+  에는 그 단계가 없어 구름에 색끼가 남았다. WB·filmic·톤커브는 동일했으므로 이 디새추가 유일한 차이.
+- 해결: Compare 전용 패스 `displaycm.frag`(comparePipe 사용)에 **동일한 디새추를 CM 앞에 추가** →
+  Compare original = 무편집 프리뷰 픽셀 일치. 블러 base(`dispSrcTex`)·일반 프리뷰는 불변.
+
 ## 한계 / 메모
 - `Compare original`(\\) 모드도 CM 적용됨: `dispPre`(블러 base, sRGB 유지)는 그대로 두고,
-  CM 전용 패스 `comparePipe`(`shaders/displaycm.frag`)가 dispPre 에 CM 만 입혀 표시(before/after 일관).
+  CM 전용 패스 `comparePipe`(`shaders/displaycm.frag`)가 dispPre 에 CM(+위 하이라이트 디새추)만
+  입혀 표시(before/after 일관).
 - Windows "자동 색 관리(ACM)" 를 켜면 이중 보정 → 앱 토글과 둘 중 하나만 사용.
 - 정확도는 모니터 ICC 프로파일 품질에 의존(XPS 기본 `Final_ICM_..._SHP1516.icm` 로 검증, 완전 일치).
