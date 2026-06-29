@@ -37,7 +37,7 @@ datas += ort_datas
 
 hiddenimports = [
     "scipy.ndimage",     # lazy `from scipy.ndimage import ...`
-    "sky_seg", "coeffs", # main/pipeline 에서 지연 import 되는 로컬 모듈(명시로 보장)
+    "sky_seg", "coeffs", "display_cm",  # main/pipeline 에서 지연 import 되는 로컬 모듈(명시로 보장)
 ] + ort_hidden
 # numpy / rawpy / exifread / onnxruntime 본체는 일반 import → 자동 탐지
 
