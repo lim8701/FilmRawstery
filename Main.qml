@@ -696,7 +696,11 @@ ApplicationWindow {
         }
 
         function doQuit() {
-            if (controller.imagePath !== "") controller.saveEdits(win.editParams())  // 편집 플러시 저장
+            // 보류 중(editSaveTimer.running=미저장 변경 있음)일 때만 저장 — 편집이 전혀 없거나
+            // reset 으로 삭제된 사진에 종료 시 기본값 사이드카가 생기지 않게 한다(주황 배지 오발 방지).
+            if (editSaveTimer.running && controller.imagePath !== "")
+                controller.saveEdits(win.editParams())
+            editSaveTimer.stop()
             win.allowClose = true
             Qt.quit()
         }
