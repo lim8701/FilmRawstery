@@ -47,6 +47,16 @@ vec3 apply_cm_lut(vec3 col, float N) {
 
 void main() {
     vec3 rgb = texture(src, qt_TexCoord0).rgb;
+
+    // 하이라이트 디새추레이션(쿨 하이라이트 → 중성): adjust.frag 0.5 단계와 동일 수식.
+    // src(dispPre/convert.frag)는 이 단계가 없으므로 Compare original 이 무편집 pipe 와 어긋났다
+    // (밝은 쿨 하이라이트=하늘/구름에서 색끼 차이). 여기서 같은 디새추를 거쳐 정합시킨다.
+    {
+        float mx = max(rgb.r, max(rgb.g, rgb.b));
+        float cool = max(rgb.g, rgb.b) - rgb.r;
+        rgb = mix(rgb, vec3(mx), smoothstep(0.95, 1.0, mx) * smoothstep(0.05, 0.35, cool));
+    }
+
     if (ubuf.displayCM > 0.5 && ubuf.cmLutSize > 1.5) {
         rgb = clamp(apply_cm_lut(rgb, ubuf.cmLutSize), 0.0, 1.0);
     }
