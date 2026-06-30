@@ -518,6 +518,7 @@ class Controller(QObject):
     wbBaked = Signal()          # 재디코딩 완료(=baked WB 갱신) 알림
     curveChanged = Signal()     # 톤 커브 LUT 갱신 알림
     exportStatusChanged = Signal()
+    exportProgressChanged = Signal()   # CPU export 진행률(0..1) 갱신 알림(필름 카운터 오버레이용)
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
     stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
     editsReady = Signal()       # 새 파일 디코딩 완료 -> QML 이 저장 편집 복원(또는 기본값 리셋)
@@ -539,6 +540,7 @@ class Controller(QObject):
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
+    _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
@@ -584,6 +586,7 @@ class Controller(QObject):
         self._curve_url = "image://curve/c?v=0"
         self._curve_counter = 0
         self._export_status = ""
+        self._export_progress = 0.0   # CPU export 진행률(0..1). 워커가 _exportProgressSig 로 갱신.
         self._exporting = False
         self._exif_fields = []      # [{"label","value"}, ...] 패널용
         self._exif_summary = ""     # 오버레이용 2줄 요약
@@ -616,6 +619,7 @@ class Controller(QObject):
         self._fullDecoded.connect(self._on_full_decoded)
         self._skyReady.connect(self._on_sky_ready)
         self._segStatusSig.connect(self._on_seg_status)
+        self._exportProgressSig.connect(self._on_export_progress)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -807,6 +811,8 @@ class Controller(QObject):
         pdict = {k: params[k] for k in params}     # QVariantMap -> 평범한 dict
         sky_mask = self._sky_mask                  # 요청 시점 스냅샷(export 중 마스크 변경/이미지 전환과 분리)
         self._exporting = True
+        self._export_progress = 0.0
+        self.exportProgressChanged.emit()
         self._set_export_status("Exporting… (full resolution, may take tens of seconds)")
         threading.Thread(target=self._do_export, args=(path, pdict, sky_mask), daemon=True).start()
 
@@ -821,7 +827,8 @@ class Controller(QObject):
             curve_rgb = pipeline.compose_curves(*curves)
             arr = pipeline.render_full(
                 self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb,
-                bitdepth=int(params.get("bitDepth", 8)), sky_mask=sky_mask)
+                bitdepth=int(params.get("bitDepth", 8)), sky_mask=sky_mask,
+                progress=lambda f: self._exportProgressSig.emit(f))
             ok = pipeline.save_image(arr, path)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
@@ -841,6 +848,8 @@ class Controller(QObject):
         self._gpu_path = file_url.toLocalFile()
         self._gpu_params = {k: params[k] for k in params}
         self._exporting = True
+        self._export_progress = 0.0   # GPU 는 진행률 콜백 없음 → 0 유지(오버레이는 인디터미닛 표시)
+        self.exportProgressChanged.emit()
         self._set_export_status("GPU exporting… (full-resolution decode)")
         threading.Thread(target=self._do_full_decode, daemon=True).start()
 
@@ -948,6 +957,18 @@ class Controller(QObject):
         return self._export_status
 
     exportStatus = Property(str, _get_export_status, notify=exportStatusChanged)
+
+    @Slot(float)
+    def _on_export_progress(self, frac: float) -> None:
+        """워커 스레드의 render_full progress 콜백 → 메인 스레드에서 진행률 갱신."""
+        self._export_progress = max(0.0, min(1.0, float(frac)))
+        self.exportProgressChanged.emit()
+
+    def _get_export_progress(self) -> float:
+        return self._export_progress
+
+    # CPU export 진행률(0..1). GPU export 는 갱신 안 함(빠른 경로) → 0 유지.
+    exportProgress = Property(float, _get_export_progress, notify=exportProgressChanged)
 
     def _get_exporting(self) -> bool:
         return self._exporting

@@ -2106,23 +2106,110 @@ ApplicationWindow {
                 }
             }
 
-            // 진행 중 스피너 오버레이 (이미지 위): export / 디코딩(렌즈 보정) / 하늘 세그멘테이션
+            // 진행 중 오버레이 (이미지 위): export / 디코딩(렌즈 보정) / 하늘 세그멘테이션
             Rectangle {
                 anchors.fill: parent
                 visible: controller.exporting || controller.busy || controller.skyBusy
                 color: "#aa000000"
                 MouseArea { anchors.fill: parent }   // 진행 중 이미지 입력 차단
+
+                // ── Export: 필름 프레임 카운터 (실제 진행률 controller.exportProgress 반영) ──
+                // 위/아래 앰버 퍼포레이션이 끊김없이 와인딩(필름 감기는 느낌). 가운데 'DEVELOPING'
+                // 라벨 + 큰 % 카운터 + 진행 바. CPU export 는 진행률이 차오르고, GPU(빠른 경로)는
+                // 진행률 0 유지라 '···' 로 표시(필름은 계속 감김). 셰이더/파이프라인 결과 불변.
+                Rectangle {
+                    id: filmCell
+                    visible: controller.exporting
+                    anchors.centerIn: parent
+                    width: 320; height: 156
+                    radius: 10
+                    color: "#1b1b1d"
+                    border.color: "#E0A226"; border.width: 1
+
+                    // 끊김없는 스프로킷 행: 한 피치(구멍폭+간격)만큼 무한 이동 → 패턴이 주기적이라 이음매 X.
+                    component Perforation: Item {
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: 11
+                        clip: true
+                        Row {
+                            id: holesRow
+                            spacing: 9
+                            readonly property real pitch: 14 + spacing   // 구멍폭 + 간격
+                            Repeater {
+                                model: Math.ceil(filmCell.width / holesRow.pitch) + 2
+                                Rectangle { width: 14; height: 9; radius: 2; color: "#E0A226" }
+                            }
+                            NumberAnimation on x {
+                                running: controller.exporting
+                                from: 0; to: -holesRow.pitch
+                                duration: 650; loops: Animation.Infinite
+                            }
+                        }
+                    }
+
+                    ColumnLayout {
+                        anchors.fill: parent
+                        anchors.margins: 14
+                        spacing: 10
+                        Perforation {}
+                        ColumnLayout {
+                            id: devInfo
+                            Layout.alignment: Qt.AlignHCenter
+                            spacing: 6
+                            // 진행률이 알려진 상태(>0)면 결정형(%·채움), 아니면(디코드 중·GPU) 인디터미닛.
+                            readonly property bool determinate: controller.exportProgress > 0.0
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                text: "DEVELOPING"
+                                color: "#9a9a9a"; font.pixelSize: 11; font.letterSpacing: 4
+                                font.weight: Font.Bold
+                            }
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                visible: devInfo.determinate
+                                text: Math.round(controller.exportProgress * 100) + "%"
+                                color: "#f2f2f2"; font.pixelSize: 34; font.weight: Font.Bold
+                                font.letterSpacing: 1
+                            }
+                            // 진행 바: 결정형=앰버 채움(부드럽게), 인디터미닛=앰버 세그먼트 좌→우 반복.
+                            Rectangle {
+                                id: progTrack
+                                Layout.alignment: Qt.AlignHCenter
+                                width: 200; height: 4; radius: 2; color: "#3a3a3d"; clip: true
+                                Rectangle {   // 결정형 채움
+                                    visible: devInfo.determinate
+                                    width: progTrack.width * Math.max(0, Math.min(1, controller.exportProgress))
+                                    height: parent.height; radius: 2; color: "#E0A226"
+                                    Behavior on width { NumberAnimation { duration: 250; easing.type: Easing.OutCubic } }
+                                }
+                                Rectangle {   // 인디터미닛 스윕
+                                    id: sweepSeg
+                                    visible: !devInfo.determinate
+                                    width: 64; height: parent.height; radius: 2; color: "#E0A226"
+                                    NumberAnimation on x {
+                                        running: controller.exporting && !devInfo.determinate
+                                        from: -sweepSeg.width; to: progTrack.width
+                                        duration: 1000; loops: Animation.Infinite
+                                    }
+                                }
+                            }
+                        }
+                        Perforation {}
+                    }
+                }
+
+                // ── 그 외(디코드·세그): 기존 스피너 ──
                 ColumnLayout {
+                    visible: !controller.exporting
                     anchors.centerIn: parent
                     spacing: 12
                     BusyIndicator {
-                        running: controller.exporting || controller.busy || controller.skyBusy
+                        running: (controller.busy || controller.skyBusy) && !controller.exporting
                         Layout.alignment: Qt.AlignHCenter
                         implicitWidth: 64; implicitHeight: 64
                     }
                     Label {
                         text: controller.segStatus !== "" ? controller.segStatus
-                              : controller.exporting ? "Exporting…"
                               : (controller.skyBusy ? "Detecting mask…" : "Processing…")
                         color: "white"; font.pixelSize: 14
                         Layout.alignment: Qt.AlignHCenter

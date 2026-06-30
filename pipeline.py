@@ -373,9 +373,16 @@ def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
 
 
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
-                proxy_edge=2560, strip=256, bitdepth=8, sky_mask=None):
+                proxy_edge=2560, strip=256, bitdepth=8, sky_mask=None, progress=None):
     """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) RGB 로 반환.
-    bitdepth=8 -> uint8, 16 -> uint16(계조/헤드룸 보존, TIFF/PNG 16bit 저장용)."""
+    bitdepth=8 -> uint8, 16 -> uint16(계조/헤드룸 보존, TIFF/PNG 16bit 저장용).
+    progress: 선택적 콜백(0..1). 디코드/공간단계/스트립 루프 경계에서 호출(픽셀 결과 불변)."""
+    def _prog(f):
+        if progress is not None:
+            try:
+                progress(f)
+            except Exception:
+                pass   # 진행률 보고는 부수효과일 뿐 — 실패해도 export 본체는 진행
     with rawpy.imread(path) as raw:
         cam = np.array(raw.rgb_xyz_matrix)[:3, :3]
         ref = np.array(raw.daylight_whitebalance)[:3]
@@ -394,6 +401,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     rgb16 = _downscale_to_edge(rgb16, int(p.get("outEdge", 0) or 0))
     if p.get("lensCorrection", True):
         rgb16 = lens.apply(rgb16)      # X100V 렌즈 프로파일(프록시와 동일, 색공간 무관)
+    _prog(0.30)   # 디코드 + 다운스케일 + 렌즈 보정 완료(가장 큰 단일 비용)
 
     h, w, _ = rgb16.shape
     scale = max(h, w) / float(proxy_edge)     # 프록시 텍셀 반경 -> 풀해상도 px
@@ -482,6 +490,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     if deh != 0.0:
         c = _dehaze(c, deh, sigma_cla)
     np.clip(c, 0.0, 1.0, out=c)
+    _prog(0.55)   # 전역/공간 단계(블러·텍스처·클래리티·샤프닝·디헤이즈·NR) 완료
 
     # 비네팅 마스크(정규화 좌표, 해상도 무관)
     if vig != 0.0:
@@ -544,6 +553,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * maxv).astype(dt)
+        _prog(0.55 + 0.40 * min(1.0, (y + strip) / float(h)))   # LUT/대비/커브/비네팅 스트립 진행
 
     # 필름 그레인 — 장면(에멀전 입자, 셰이더와 동일). 스탬프는 크롭 후 최종 프레임에 찍는다.
     if grain2d is not None:
@@ -551,6 +561,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         f += grain2d[..., None] * grain_amt * coeffs.GRAIN
         out = np.rint(np.clip(f, 0.0, 1.0) * maxv).astype(dt)
 
+    _prog(0.97)   # 그레인 완료 — 남은 건 지오메트리/스탬프/저장(빠름)
     # === 지오메트리(회전/크롭) — 현상 끝난 이미지에 마지막 적용(프리뷰 뷰 변환과 동일) ===
     out = _apply_geometry(out, p)
 
