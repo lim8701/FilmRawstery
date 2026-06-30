@@ -1,0 +1,59 @@
+Film Rawstery — Third-Party Notices and Distribution Terms
+==========================================================
+
+The application source code and the author's own assets are licensed under
+the MIT License (see LICENSE). However, the distributable package bundles
+additional assets and libraries under other licenses. Because of those, the
+PACKAGE AS A WHOLE may be redistributed for NON-COMMERCIAL use only, with
+attribution. (The MIT-licensed source code itself remains reusable, including
+commercially, when taken on its own — see LICENSE.)
+
+The two components that make the bundled package non-commercial are:
+  - the film-simulation LUTs (CC BY-NC-SA 4.0), and
+  - the sky-segmentation model (NVIDIA research license, non-commercial),
+    which is downloaded at runtime and is NOT part of this package.
+
+Components and licenses
+-----------------------
+1. Application code + identity.cube
+   MIT License — Copyright (c) 2026 lim.sungjune — see LICENSE
+
+2. Film-simulation LUTs  (luts/*.cube, except identity.cube)
+   CC BY-NC-SA 4.0 (Attribution, NonCommercial, ShareAlike)
+   Source: abpy/FujifilmCameraProfiles — https://github.com/abpy/FujifilmCameraProfiles
+   See luts/LICENSE (bundled). NOTE: the Stuart Sowerby B&W LUTs
+   (acros*/monochrome/sepia) are All-Rights-Reserved and are intentionally
+   NOT bundled.
+
+3. Sky-segmentation ONNX model  (downloaded at runtime; NOT in this package)
+   NVIDIA research license — non-commercial. See models/README.md.
+
+4. PySide6 / Qt 6
+   GNU LGPL v3. Copyright (c) The Qt Company Ltd.
+   https://www.qt.io  ·  License text: https://www.gnu.org/licenses/lgpl-3.0.html
+   Relinking (LGPL §4): this is an onedir build — the Qt/PySide6 DLLs are
+   separate files under lib/ and may be replaced by the recipient.
+
+5. LibRaw  (RAW decoding, via rawpy)
+   LGPL-2.1 or CDDL-1.0. See THIRD_PARTY_LICENSES/LibRaw-LGPL-2.1.txt
+
+6. rawpy        — MIT  — see THIRD_PARTY_LICENSES/rawpy-LICENSE.txt
+7. NumPy        — BSD-3-Clause — THIRD_PARTY_LICENSES/numpy-LICENSE.txt
+8. SciPy        — BSD-3-Clause — THIRD_PARTY_LICENSES/scipy-LICENSE.txt
+9. ONNX Runtime — MIT — THIRD_PARTY_LICENSES/onnxruntime-LICENSE.txt
+                       (+ onnxruntime-ThirdPartyNotices.txt)
+10. ExifRead    — see THIRD_PARTY_LICENSES/exifread-LICENSE.txt
+
+11. DSEG7 font  (fonts/DSEG7Classic-Bold.ttf)
+    SIL Open Font License 1.1 — Copyright (c) keshikan
+    https://github.com/keshikan/DSEG  ·  https://openfontlicense.org
+
+The canonical license texts are bundled in THIRD_PARTY_LICENSES/:
+  - LGPLv3.txt   (Qt/PySide6)        — GNU LGPL v3
+  - OFL.txt      (DSEG7 font)        — SIL Open Font License 1.1
+  - LibRaw-LGPL-2.1.txt, rawpy-LICENSE.txt, numpy-LICENSE.txt,
+    scipy-LICENSE.txt, onnxruntime-LICENSE.txt (+ ThirdPartyNotices),
+    exifread-LICENSE.txt
+
+Summary: share NON-COMMERCIALLY, keep this NOTICE and the license files with
+the package, and credit the sources above.

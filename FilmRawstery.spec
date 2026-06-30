@@ -13,6 +13,10 @@ datas = [(q, ".") for q in QML]
 datas += [
     ("shaders", "shaders"),   # .frag + 미리 컴파일된 .qsb (frozen 은 런타임 재컴파일 안 함)
     ("fonts", "fonts"),       # DSEG7Classic-Bold.ttf
+    # 라이선스/고지(비상업 배포 시 동봉 의무) — MIT + 제3자 라이선스 + 종합 NOTICE.
+    ("LICENSE", "."),
+    ("NOTICE.txt", "."),
+    ("THIRD_PARTY_LICENSES", "THIRD_PARTY_LICENSES"),
 ]
 
 # --- LUT: ARR(Stuart Sowerby) 흑백 LUT 는 재배포 금지 → 번들에서 제외 ---

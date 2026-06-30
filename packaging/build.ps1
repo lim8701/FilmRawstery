@@ -15,6 +15,9 @@ $zip  = Join-Path $proj 'FilmRawstery-win64.zip'
 if (-not (Test-Path $venvPy)) { throw "venv python not found: $venvPy" }
 if (-not (Test-Path $spec))   { throw "spec not found: $spec" }
 
+# spec 은 상대경로(luts/shaders/fonts 등)를 쓰므로 호출 위치와 무관하게 항상 프로젝트 루트에서 빌드.
+Set-Location $proj
+
 Write-Host "[1/4] stopping any running app + cleaning dist..."
 Get-Process FilmRawstery -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 400
