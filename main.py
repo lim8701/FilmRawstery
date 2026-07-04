@@ -809,6 +809,18 @@ class Controller(QObject):
             self._edit_rev += 1
             self.editsChanged.emit()
 
+    @Slot(str, str, str, result=str)
+    def batchExportUrl(self, folder_url: str, src_path: str, ext: str) -> str:  # noqa: N802
+        """배치 export 대상 파일 URL: <선택 폴더>/<원본이름>_exported.<ext>.
+        경로 조립(백슬래시/URL 인코딩)은 Python 이 담당 — QML 문자열 연산의 함정 회피."""
+        try:
+            folder = QUrl(folder_url).toLocalFile() if folder_url else ""
+            name = f"{Path(src_path).stem}_exported.{ext}"
+            return QUrl.fromLocalFile(str(Path(folder) / name)).toString()
+        except Exception as exc:
+            print(f"[batch] URL 조립 실패: {exc}")
+            return ""
+
     @Slot(result="QVariantMap")
     def editsForCurrent(self):  # noqa: N802 (QML 슬롯)
         """현재 파일의 저장된 편집 dict 반환(없으면 빈 dict). _load 에서 읽어둔 캐시 사용."""

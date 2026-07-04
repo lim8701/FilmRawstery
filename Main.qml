@@ -412,6 +412,99 @@ ApplicationWindow {
         win.refreshHistogram()
     }
 
+    // ===== 배치 export (탐색기 체크박스로 선택한 파일들, 순차) =====
+    // 기존 단일 흐름을 파일마다 그대로 재사용: loadPath(사이드카 WB 선설정·디코딩)
+    // → editsReady(편집 복원 or 기본값·마스크 재생성) → exportParams() → exportImage(CPU).
+    // 별도 파라미터 재구성 경로가 없어 프리뷰=Export 정합이 단일 export 와 동일하게 유지.
+    // 편집 없는 파일은 기존 핸들러가 기본값으로 초기화 → 기본 현상으로 export 됨.
+    property bool batchSelectMode: false      // 탐색기 체크박스 모드 토글
+    property var batchChecked: ({})           // path -> true (체크된 파일)
+    property int batchCheckedRev: 0           // 변경 리비전(카운트/체크표시 재평가용)
+    readonly property int batchCheckedCount: { batchCheckedRev; return Object.keys(batchChecked).length }
+    function batchToggle(path) {
+        if (batchChecked[path]) delete batchChecked[path]
+        else batchChecked[path] = true
+        batchCheckedRev++
+    }
+    function batchClearChecked() { batchChecked = ({}); batchCheckedRev++ }
+
+    property bool batchActive: false
+    property var batchQueue: []
+    property int batchIndex: 0
+    property int batchFails: 0
+    property bool batchCancel: false          // 요청 시 현재 파일까지만 하고 중단
+    property string batchDestUrl: ""          // 저장 폴더(QUrl 문자열)
+    property string batchExt: "jpg"
+    // 단계: 1=디코딩/복원 대기(editsReady) → 2=마스크/재디코딩 대기 → 3=export 완료 대기
+    property int batchPhase: 0
+    property real batchPhaseT0: 0
+    property string batchResult: ""           // 완료 요약("Batch: 5 saved, 1 failed")
+
+    function batchStart(destUrl, ext) {
+        if (win.batchActive) return
+        var q = Object.keys(win.batchChecked).sort()
+        if (q.length === 0) return
+        win.batchQueue = q; win.batchIndex = 0; win.batchFails = 0
+        win.batchCancel = false; win.batchDestUrl = destUrl; win.batchExt = ext
+        win.batchResult = ""
+        win.batchActive = true
+        win.batchLoadNext()
+    }
+    function batchLoadNext() {
+        if (win.batchCancel || win.batchIndex >= win.batchQueue.length) { win.batchFinish(); return }
+        win.batchPhase = 1; win.batchPhaseT0 = Date.now()
+        controller.loadPath(win.batchQueue[win.batchIndex])
+    }
+    function batchFinish() {
+        var attempted = win.batchIndex
+        var saved = attempted - win.batchFails
+        win.batchActive = false; win.batchPhase = 0
+        win.batchResult = "Batch: " + saved + " saved"
+                        + (win.batchFails > 0 ? ", " + win.batchFails + " failed" : "")
+                        + (win.batchCancel ? " (cancelled)" : "")
+    }
+    // editsReady = 이 파일의 복원 완료 신호. 위 메인 핸들러(편집 복원)가 같은 시그널로 먼저
+    // 실행되므로 callLater 로 그 뒤에 단계 전환(선언 순서 의존 제거).
+    Connections {
+        target: controller
+        function onEditsReady() {
+            if (win.batchActive && win.batchPhase === 1)
+                Qt.callLater(function() { win.batchPhase = 2; win.batchPhaseT0 = Date.now() })
+        }
+    }
+    Timer {
+        id: batchTick
+        interval: 250; repeat: true
+        running: win.batchActive
+        onTriggered: {
+            var waited = Date.now() - win.batchPhaseT0
+            if (win.batchPhase === 1) {
+                // 디코딩 실패 등으로 editsReady 가 안 오면 30초 후 실패 처리하고 다음으로.
+                if (waited > 30000) { win.batchFails++; win.batchIndex++; win.batchLoadNext() }
+            } else if (win.batchPhase === 2) {
+                // 재디코딩(WB/렌즈)·마스크 재생성(세그) 완료 대기. 마스크가 있어야 하는데
+                // 20초 내 안 오면(세그 실패) 마스크 없이 진행(단일 export 와 동일 폴백).
+                var maskPending = win.maskKeys.length > 0 && !controller.hasSkyMask
+                if (!controller.busy && !controller.skyBusy && (!maskPending || waited > 20000)) {
+                    var url = controller.batchExportUrl(
+                        win.batchDestUrl, win.batchQueue[win.batchIndex], win.batchExt)
+                    if (url === "") { win.batchFails++; win.batchIndex++; win.batchLoadNext(); return }
+                    controller.exportImage(url, win.exportParams())
+                    if (!controller.exporting) {   // 슬롯 가드에 걸림(비정상) → 실패 처리
+                        win.batchFails++; win.batchIndex++; win.batchLoadNext(); return
+                    }
+                    win.batchPhase = 3; win.batchPhaseT0 = Date.now()
+                }
+            } else if (win.batchPhase === 3) {
+                if (!controller.exporting) {
+                    if (controller.exportStatus.indexOf("Saved:") !== 0) win.batchFails++
+                    win.batchIndex++
+                    win.batchLoadNext()
+                }
+            }
+        }
+    }
+
     // ===== Undo / Redo (편집 스냅샷 스택) =====
     // editParams() JSON 스냅샷을 쌓는다. 자동저장(editSaveTimer 디바운스) 시점마다 1개 push
     // → 슬라이더 드래그 1회 = 1 스텝(중간 프레임 무시). 새 파일 로드 시 baseline 으로 리셋.
@@ -680,6 +773,13 @@ ApplicationWindow {
         onAccepted: controller.setFolder(selectedFolder)   // QUrl -> Python .toLocalFile()
     }
 
+    // 배치 export 저장 폴더 선택 → 즉시 시작
+    FolderDialog {
+        id: batchDestDialog
+        title: "Select Export Destination"
+        onAccepted: win.batchStart(selectedFolder.toString(), batchFmtCombo.currentText)
+    }
+
     // 종료 확인 대화상자 (앱 컨셉: 다크 + 필름 퍼포레이션 + 앰버 강조, 커스텀 스타일)
     Popup {
         id: quitDialog
@@ -834,6 +934,7 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.margins: 8
                 spacing: 6
+                enabled: !win.batchActive   // 배치 중 파일 전환/폴더 변경 차단(취소는 오버레이 버튼)
 
                 // 헤더: 상위 폴더 / 폴더 선택
                 RowLayout {
@@ -879,6 +980,35 @@ ApplicationWindow {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
                             onClicked: win.showLikedOnly = !win.showLikedOnly
+                        }
+                    }
+                    // 배치 export 선택(체크박스) 모드 토글 — 켜면 파일 클릭=체크, 하단에 Export 바.
+                    Rectangle {
+                        id: selModeBtn
+                        Layout.preferredWidth: 36
+                        Layout.preferredHeight: folderBtn.height
+                        Layout.alignment: Qt.AlignVCenter
+                        radius: 5
+                        color: win.batchSelectMode ? "#2e3a2a"
+                             : (smHover.hovered ? "#3a3f4b" : "transparent")
+                        border.color: win.batchSelectMode ? "#9fd39f" : "#555555"
+                        border.width: 1
+                        ToolTip.visible: smHover.hovered
+                        ToolTip.text: "Select files for batch export"
+                        Text {
+                            anchors.centerIn: parent
+                            text: "☑"
+                            color: win.batchSelectMode ? "#9fd39f" : "#cfcfcf"
+                            font.pixelSize: 17
+                        }
+                        HoverHandler { id: smHover }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                win.batchSelectMode = !win.batchSelectMode
+                                if (!win.batchSelectMode) win.batchClearChecked()
+                            }
                         }
                     }
                 }
@@ -989,6 +1119,28 @@ ApplicationWindow {
                                                    && controller.isLiked(modelData.path)
                                         }
                                     }
+                                    // 배치 선택 체크박스(선택 모드에서만, 파일 전용) — 좌상단
+                                    Rectangle {
+                                        visible: win.batchSelectMode && !modelData.isDir
+                                        anchors.left: parent.left
+                                        anchors.top: parent.top
+                                        width: 16; height: 16; radius: 3
+                                        readonly property bool checked: {
+                                            win.batchCheckedRev
+                                            return win.batchChecked[modelData.path] === true
+                                        }
+                                        color: checked ? "#9fd39f" : "#cc1e1e1e"
+                                        border.color: checked ? "#9fd39f" : "#888888"
+                                        border.width: 1
+                                        Text {
+                                            anchors.centerIn: parent
+                                            visible: parent.checked
+                                            text: "✓"
+                                            color: "#1e1e1e"
+                                            font.pixelSize: 12
+                                            font.weight: Font.Bold
+                                        }
+                                    }
                                 }
 
                                 Label {
@@ -1046,6 +1198,8 @@ ApplicationWindow {
                                     fileListView.currentIndex = row.index
                                     if (!row.modelData.isDir)
                                         ctxMenu.popup()             // 우클릭 = 컨텍스트 메뉴
+                                } else if (win.batchSelectMode && !row.modelData.isDir) {
+                                    win.batchToggle(row.modelData.path)       // 선택 모드 = 체크 토글
                                 } else {
                                     fileListView.currentIndex = row.index     // 좌클릭 = 선택만
                                 }
@@ -1053,11 +1207,78 @@ ApplicationWindow {
                             onDoubleClicked: {
                                 if (row.modelData.isDir)
                                     controller.setFolderPath(row.modelData.path)
-                                else
+                                else if (!win.batchSelectMode)
                                     controller.loadPath(row.modelData.path)    // 로컬경로 디코딩 로드
                             }
                         }
                     }
+                }
+
+                // 배치 export 바(선택 모드에서만): 체크 수 + Export(포맷 → 폴더 → 시작)
+                Rectangle {
+                    Layout.fillWidth: true; height: 1; color: "#444"
+                    visible: win.batchSelectMode
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    visible: win.batchSelectMode
+                    spacing: 6
+                    Label {
+                        Layout.fillWidth: true
+                        text: win.batchCheckedCount + " selected"
+                        color: win.batchCheckedCount > 0 ? "#9fd39f" : "#9a9a9a"
+                        font.pixelSize: 12
+                        elide: Text.ElideRight
+                    }
+                    Button {
+                        text: "Export…"
+                        enabled: win.batchCheckedCount > 0 && !win.batchActive
+                                 && !controller.exporting
+                        onClicked: batchFmtPopup.open()
+                        Popup {
+                            id: batchFmtPopup
+                            y: -height - 4
+                            x: parent.width - width
+                            width: 210
+                            padding: 10
+                            modal: false
+                            closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+                            background: Rectangle { color: "#2b2b2b"; border.color: "#555"; border.width: 1; radius: 6 }
+                            contentItem: ColumnLayout {
+                                spacing: 8
+                                RowLayout {
+                                    Layout.fillWidth: true; spacing: 6
+                                    Label { text: "Format"; color: "white"; font.pixelSize: 12 }
+                                    ComboBox {
+                                        id: batchFmtCombo
+                                        Layout.fillWidth: true
+                                        currentIndex: 0
+                                        model: ["jpg", "png", "tif"]
+                                    }
+                                }
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: "Uses current Export options (resolution · 16-bit). Saved as <name>_exported." + batchFmtCombo.currentText
+                                    color: "#9a9a9a"; font.pixelSize: 10
+                                    wrapMode: Text.WordWrap
+                                }
+                                Button {
+                                    Layout.fillWidth: true
+                                    text: "Choose folder && start"
+                                    onClicked: { batchFmtPopup.close(); batchDestDialog.open() }
+                                }
+                            }
+                        }
+                    }
+                }
+                // 완료 요약("Batch: 5 saved, 1 failed")
+                Label {
+                    Layout.fillWidth: true
+                    visible: win.batchSelectMode && win.batchResult !== ""
+                    text: win.batchResult
+                    color: "#9fd39f"
+                    font.pixelSize: 11
+                    wrapMode: Text.WrapAnywhere
                 }
 
                 // 푸터: GitHub 저장소 링크 (클릭 시 외부 브라우저로 열기)
@@ -2132,22 +2353,22 @@ ApplicationWindow {
                 }
             }
 
-            // 진행 중 오버레이 (이미지 위): export / 디코딩(렌즈 보정) / 하늘 세그멘테이션
+            // 진행 중 오버레이 (이미지 위): export / 배치 / 디코딩(렌즈 보정) / 하늘 세그멘테이션
             Rectangle {
                 anchors.fill: parent
-                visible: controller.exporting || controller.busy || controller.skyBusy
+                visible: controller.exporting || win.batchActive || controller.busy || controller.skyBusy
                 color: "#aa000000"
                 MouseArea { anchors.fill: parent }   // 진행 중 이미지 입력 차단
 
                 // ── Export: 필름 프레임 카운터 (실제 진행률 controller.exportProgress 반영) ──
                 // 위/아래 앰버 퍼포레이션이 끊김없이 와인딩(필름 감기는 느낌). 가운데 'DEVELOPING'
-                // 라벨 + 큰 % 카운터 + 진행 바. CPU export 는 진행률이 차오르고, GPU(빠른 경로)는
-                // 진행률 0 유지라 '···' 로 표시(필름은 계속 감김). 셰이더/파이프라인 결과 불변.
+                // 라벨 + 큰 % 카운터 + 진행 바. 진행률 모르는 구간(디코드·GPU)은 인디터미닛 스윕.
+                // 배치 중엔 파일 전환(디코드/마스크) 구간에도 유지되고 FRAME i/N 카운트업.
                 Rectangle {
                     id: filmCell
-                    visible: controller.exporting
+                    visible: controller.exporting || win.batchActive
                     anchors.centerIn: parent
-                    width: 320; height: 156
+                    width: 320; height: win.batchActive ? 176 : 156
                     radius: 10
                     color: "#1b1b1d"
                     border.color: "#E0A226"; border.width: 1
@@ -2166,7 +2387,7 @@ ApplicationWindow {
                                 Rectangle { width: 14; height: 9; radius: 2; color: "#E0A226" }
                             }
                             NumberAnimation on x {
-                                running: controller.exporting
+                                running: controller.exporting || win.batchActive
                                 from: 0; to: -holesRow.pitch
                                 duration: 650; loops: Animation.Infinite
                             }
@@ -2182,8 +2403,18 @@ ApplicationWindow {
                             id: devInfo
                             Layout.alignment: Qt.AlignHCenter
                             spacing: 6
-                            // 진행률이 알려진 상태(>0)면 결정형(%·채움), 아니면(디코드 중·GPU) 인디터미닛.
-                            readonly property bool determinate: controller.exportProgress > 0.0
+                            // 진행률이 알려진 상태(export 중 & >0)면 결정형(%·채움), 아니면 인디터미닛.
+                            // (배치의 디코드/마스크 구간은 exporting=false — 이전 파일 % 잔상 방지)
+                            readonly property bool determinate: controller.exporting
+                                                                && controller.exportProgress > 0.0
+                            Text {
+                                Layout.alignment: Qt.AlignHCenter
+                                visible: win.batchActive
+                                text: "FRAME " + Math.min(win.batchIndex + 1, win.batchQueue.length)
+                                      + " / " + win.batchQueue.length
+                                color: "#E0A226"; font.pixelSize: 12; font.letterSpacing: 2
+                                font.weight: Font.Bold
+                            }
                             Text {
                                 Layout.alignment: Qt.AlignHCenter
                                 text: "DEVELOPING"
@@ -2213,7 +2444,7 @@ ApplicationWindow {
                                     visible: !devInfo.determinate
                                     width: 64; height: parent.height; radius: 2; color: "#E0A226"
                                     NumberAnimation on x {
-                                        running: controller.exporting && !devInfo.determinate
+                                        running: (controller.exporting || win.batchActive) && !devInfo.determinate
                                         from: -sweepSeg.width; to: progTrack.width
                                         duration: 1000; loops: Animation.Infinite
                                     }
@@ -2224,9 +2455,20 @@ ApplicationWindow {
                     }
                 }
 
+                // 배치 취소 — 현재 파일까지 마치고 중단(진행 중 render_full 은 중단 불가)
+                Button {
+                    visible: win.batchActive
+                    anchors.top: filmCell.bottom
+                    anchors.topMargin: 12
+                    anchors.horizontalCenter: filmCell.horizontalCenter
+                    text: win.batchCancel ? "Cancelling…" : "Cancel batch"
+                    enabled: !win.batchCancel
+                    onClicked: win.batchCancel = true
+                }
+
                 // ── 그 외(디코드·세그): 기존 스피너 ──
                 ColumnLayout {
-                    visible: !controller.exporting
+                    visible: !controller.exporting && !win.batchActive
                     anchors.centerIn: parent
                     spacing: 12
                     BusyIndicator {
@@ -2249,6 +2491,7 @@ ApplicationWindow {
             Layout.preferredWidth: 300
             Layout.fillHeight: true
             color: "#2b2b2b"
+            enabled: !win.batchActive   // 배치 중 슬라이더 변경 → 배치 파일 사이드카 오염 방지
 
             ColumnLayout {
                 anchors.fill: parent
