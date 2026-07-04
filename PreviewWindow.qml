@@ -30,13 +30,19 @@ Item {
         return currentPath !== "" && controller.isLiked(currentPath)
     }
 
+    // 닫힐 때 마지막으로 보던 사진 경로 전달 → Main 이 탐색기에서 선택(로드 아님)로 이어감.
+    signal closedAt(string path)
+
     function open(list, startIdx) {
         rafList = list
         idx = startIdx
         visible = true
         keyScope.forceActiveFocus()
     }
-    function close() { visible = false }
+    function close() {
+        visible = false
+        closedAt(currentPath)
+    }
     function prev() { if (idx > 0) idx-- }
     function next() { if (idx < rafList.length - 1) idx++ }
 

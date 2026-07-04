@@ -19,7 +19,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from PySide6.QtCore import (Property, QBuffer, QFileSystemWatcher, QObject,
-                            QSize, Qt, QTimer, Signal, Slot, QUrl)
+                            QSettings, QSize, Qt, QTimer, Signal, Slot, QUrl)
 from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QTransform
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuick import QQuickImageProvider
@@ -658,6 +658,8 @@ class Controller(QObject):
         self._rescan_timer.setSingleShot(True)
         self._rescan_timer.setInterval(400)   # 연속 변화/중복 이벤트 합치기
         self._rescan_timer.timeout.connect(self._do_auto_rescan)
+        # 마지막 탐색 폴더 영구 저장(재시작 시 복원 + 폴더 대화상자 시작 위치)
+        self._settings = QSettings("FilmRawstery", "FilmRawstery")
 
     def _update_watcher(self, folder: str) -> None:
         old = self._watcher.directories()
@@ -1249,6 +1251,7 @@ class Controller(QObject):
         self.folderChanged.emit()
         self.likesChanged.emit()
         self.editsChanged.emit()
+        self._settings.setValue("explorer/lastFolder", self._folder)   # 재시작 복원용
 
     @Slot(QUrl)
     def setFolder(self, url: QUrl) -> None:  # noqa: N802 (QML 슬롯, FolderDialog)
@@ -1280,7 +1283,12 @@ class Controller(QObject):
     def _get_edit_rev(self) -> int:
         return self._edit_rev
 
+    def _get_folder_url(self) -> str:
+        """현재 폴더의 QUrl 문자열 — FolderDialog.currentFolder 시작 위치용."""
+        return QUrl.fromLocalFile(self._folder).toString() if self._folder else ""
+
     currentFolder = Property(str, _get_folder, notify=folderChanged)
+    currentFolderUrl = Property(str, _get_folder_url, notify=folderChanged)
     fileList = Property("QVariantList", _get_files, notify=folderChanged)
     likeRevision = Property(int, _get_like_rev, notify=likesChanged)
     editsRevision = Property(int, _get_edit_rev, notify=editsChanged)
@@ -1854,7 +1862,12 @@ def main() -> int:
             print(f"[init] 시작 경로 없음: {start_path}")
             controller.setFolderPath(str(Path(start_path).parent))
     else:
-        if Path(DEFAULT_RAF).is_file():
+        # 마지막 탐색 폴더 복원(종료 후에도 기억) > 개발 샘플 폴더 > Pictures.
+        last = str(QSettings("FilmRawstery", "FilmRawstery")
+                   .value("explorer/lastFolder", "") or "")
+        if last and Path(last).is_dir():
+            start_folder = last
+        elif Path(DEFAULT_RAF).is_file():
             start_folder = str(Path(DEFAULT_RAF).parent)      # 개발 샘플 폴더만 열기(자동 로드 X)
         else:
             from PySide6.QtCore import QStandardPaths

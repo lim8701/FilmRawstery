@@ -875,7 +875,40 @@ ApplicationWindow {
     }
 
     // 프리뷰 모드 오버레이(탐색기에서 RAF 우클릭 → 메뉴 Preview 로 염). 메인 창 위를 꽉 덮음.
-    PreviewWindow { id: previewWin }
+    // 닫으면 마지막으로 보던 사진을 탐색기에서 선택(하이라이트+스크롤)만 한다 — 로드는 안 함.
+    PreviewWindow {
+        id: previewWin
+        onClosedAt: (path) => win.selectInExplorer(path)
+    }
+
+    // 탐색기 선택 항목 + Enter: 파일=프리뷰 진입, 폴더=진입. 텍스트 입력(날짜)·프리뷰 표시 중·
+    // 배치 중에는 비활성(Enter 가 각자의 용도로 쓰이거나 조작 차단 상태).
+    Shortcut {
+        sequences: ["Return", "Enter"]
+        enabled: win.showExplorer && fileListView.currentIndex >= 0
+                 && !previewWin.visible && !stampField.activeFocus && !win.batchActive
+        onActivated: {
+            var it = win.explorerFiles[fileListView.currentIndex]
+            if (!it) return
+            if (it.isDir) controller.setFolderPath(it.path)
+            else win.openPreview(it.path)
+        }
+    }
+
+    // 탐색기에서 해당 경로 항목을 선택(하이라이트)하고 보이도록 스크롤. 없으면(필터 등) 무시.
+    // 포커스도 리스트로 → 이어서 방향키 탐색 가능(위로가기/프리뷰 닫기 직후 흐름).
+    function selectInExplorer(path) {
+        if (!path) return
+        var files = win.explorerFiles
+        for (var i = 0; i < files.length; i++) {
+            if (files[i].path === path) {
+                fileListView.currentIndex = i
+                fileListView.positionViewAtIndex(i, ListView.Center)
+                fileListView.forceActiveFocus()
+                return
+            }
+        }
+    }
 
     // 탐색기에서 우클릭한 파일을 프리뷰 창으로 연다.
     // 현재 폴더의 RAF(디렉터리 제외)만 경로 배열로 만들어 좌/우 네비 대상으로 넘긴다.
@@ -895,9 +928,17 @@ ApplicationWindow {
     }
 
     // 폴더가 바뀌면 좌측 리스트 선택 하이라이트 초기화(잔상 방지).
+    // 단, 위로가기로 올라온 경우엔 방금 있던 폴더 항목을 선택+스크롤(어디서 왔는지 유지).
+    property string _selectAfterScan: ""   // goUp 직전의 현재 폴더 경로
     Connections {
         target: controller
-        function onFolderChanged() { fileListView.currentIndex = -1 }
+        function onFolderChanged() {
+            var want = win._selectAfterScan
+            win._selectAfterScan = ""
+            fileListView.currentIndex = -1
+            if (want !== "")
+                Qt.callLater(function() { win.selectInExplorer(want) })   // 목록 바인딩 갱신 뒤
+        }
     }
 
     FileDialog {
@@ -966,7 +1007,11 @@ ApplicationWindow {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: controller.goUp()
+                            onClicked: {
+                                // 올라간 뒤 방금 있던 폴더를 목록에서 선택+스크롤(onFolderChanged)
+                                win._selectAfterScan = controller.currentFolder
+                                controller.goUp()
+                            }
                         }
                     }
                     // 현재 폴더 경로 자체가 폴더 선택 버튼(별도 Folder… 버튼 일원화)
@@ -994,7 +1039,12 @@ ApplicationWindow {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: folderDialog.open()
+                            onClicked: {
+                                // 현재 폴더에서 시작(폴더 미선택 시 Qt 기본 위치)
+                                if (controller.currentFolderUrl !== "")
+                                    folderDialog.currentFolder = controller.currentFolderUrl
+                                folderDialog.open()
+                            }
                         }
                     }
                 }
@@ -1090,6 +1140,7 @@ ApplicationWindow {
                 // 파일/폴더 리스트 (ListView = 화면에 보이는 항목만 썸네일 요청 → 지연 로딩)
                 ListView {
                     id: fileListView
+                    objectName: "fileListView"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
@@ -1098,6 +1149,28 @@ ApplicationWindow {
                     model: win.explorerFiles      // "좋아요만 보기" 필터 반영
                     currentIndex: -1
                     boundsBehavior: Flickable.StopAtBounds
+
+                    // 키보드 탐색(리스트 클릭으로 포커스 획득 시): ↑/↓ 한 칸, Home/End 처음/끝,
+                    // PgUp/PgDn 한 화면. 전역 Shortcut 이 아니라 포커스 기반이라 콤보박스·입력칸과
+                    // 충돌하지 않음. 이동 후 항목이 보이도록 스크롤. (Enter=프리뷰는 전역 Shortcut)
+                    Keys.onPressed: (e) => {
+                        var n = count
+                        if (n <= 0) return
+                        var page = Math.max(1, Math.floor(height / 66))   // 파일 행(64+2) 기준 한 화면
+                        var cur = currentIndex
+                        var next = -2
+                        if (e.key === Qt.Key_Down)          next = Math.min(n - 1, cur < 0 ? 0 : cur + 1)
+                        else if (e.key === Qt.Key_Up)       next = Math.max(0, cur < 0 ? 0 : cur - 1)
+                        else if (e.key === Qt.Key_Home)     next = 0
+                        else if (e.key === Qt.Key_End)      next = n - 1
+                        else if (e.key === Qt.Key_PageDown) next = Math.min(n - 1, (cur < 0 ? 0 : cur) + page)
+                        else if (e.key === Qt.Key_PageUp)   next = Math.max(0, (cur < 0 ? 0 : cur) - page)
+                        if (next !== -2) {
+                            currentIndex = next
+                            positionViewAtIndex(next, ListView.Contain)
+                            e.accepted = true
+                        }
+                    }
                     enabled: !controller.busy      // 로드 진행 중엔 사진 변경 차단
                     opacity: controller.busy ? 0.5 : 1.0   // 비활성 시각 표시
 
@@ -1257,6 +1330,7 @@ ApplicationWindow {
                             anchors.fill: parent
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             onClicked: (mouse) => {
+                                fileListView.forceActiveFocus()     // 이후 방향키 탐색 활성화
                                 if (mouse.button === Qt.RightButton) {
                                     fileListView.currentIndex = row.index
                                     if (!row.modelData.isDir)
@@ -1328,7 +1402,12 @@ ApplicationWindow {
                                 Button {
                                     Layout.fillWidth: true
                                     text: "Choose folder && start"
-                                    onClicked: { batchFmtPopup.close(); batchDestDialog.open() }
+                                    onClicked: {
+                                        batchFmtPopup.close()
+                                        if (controller.currentFolderUrl !== "")
+                                            batchDestDialog.currentFolder = controller.currentFolderUrl
+                                        batchDestDialog.open()
+                                    }
                                 }
                             }
                         }
