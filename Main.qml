@@ -1179,6 +1179,16 @@ ApplicationWindow {
                 source: controller.skyMaskUrl
             }
 
+            // 디헤이즈 투과율 맵(DCP, 소형 단일채널 — bilinear 업샘플 위해 smooth:true).
+            // 없으면 1x1 흰색(t=1) → 물리 분기 항등. 이미지당 1회 갱신(hazeChanged).
+            Image {
+                id: hazeImage
+                visible: false
+                cache: false
+                smooth: true
+                source: controller.hazeUrl
+            }
+
             // ── GPU export: 풀해상도를 프리뷰와 **동일한 adjust.frag** 로 렌더(프리뷰=Export) ──
             //   온디맨드(렌더=GPU 일 때만 active). src 만 풀해상도, 블러 텍스처는 프록시 것 재사용
             //   (로컬대비/톤마스크 성격을 프리뷰와 동일하게). uniform 바인딩은 pipe 와 반드시 동일.
@@ -1304,6 +1314,14 @@ ApplicationWindow {
                         property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
                         property real hslLumK: controller.adjustCoeffs["hslLumK"]
                         property real colorGradeK: controller.adjustCoeffs["colorGradeK"]
+                        // 디헤이즈 물리(DCP) — 프리뷰(pipe)와 동일 바인딩(프리뷰=Export).
+                        property variant hazeT: hazeImage
+                        property real hazeAr: controller.hazeA[0]
+                        property real hazeAg: controller.hazeA[1]
+                        property real hazeAb: controller.hazeA[2]
+                        property real hazeConf: controller.hazeConf
+                        property real dehazeKTmin: controller.adjustCoeffs["dehazeKTmin"]
+                        property real dehazeKResid: controller.adjustCoeffs["dehazeKResid"]
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
                 }}
@@ -1621,6 +1639,14 @@ ApplicationWindow {
                         property real hslHueDegK: controller.adjustCoeffs["hslHueDegK"]
                         property real hslLumK: controller.adjustCoeffs["hslLumK"]
                         property real colorGradeK: controller.adjustCoeffs["colorGradeK"]
+                        // 디헤이즈 물리(DCP): 투과율 맵 + 대기광 + conf(어두운 장면 0 → 톤모델 폴백).
+                        property variant hazeT: hazeImage
+                        property real hazeAr: controller.hazeA[0]
+                        property real hazeAg: controller.hazeA[1]
+                        property real hazeAb: controller.hazeA[2]
+                        property real hazeConf: controller.hazeConf
+                        property real dehazeKTmin: controller.adjustCoeffs["dehazeKTmin"]
+                        property real dehazeKResid: controller.adjustCoeffs["dehazeKResid"]
 
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }

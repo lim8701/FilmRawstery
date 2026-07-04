@@ -362,6 +362,26 @@ class SkyMaskProvider(QQuickImageProvider):
         return self._img
 
 
+class HazeProvider(QQuickImageProvider):
+    """디헤이즈 투과율 맵(소형 단일채널 Grayscale8)을 'image://haze/...' 로 제공.
+    기본/클리어 = 1x1 흰색(t=1, 안개 없음) → 셰이더 물리 분기가 항등이 되어 안전."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._img = QImage(1, 1, QImage.Format.Format_Grayscale8)
+        self._img.fill(255)
+
+    def set_image(self, img: QImage) -> None:
+        self._img = img
+
+    def clear(self) -> None:
+        self._img = QImage(1, 1, QImage.Format.Format_Grayscale8)
+        self._img.fill(255)
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802
+        return self._img
+
+
 class ThumbProvider(QQuickImageProvider):
     """RAF 임베드 JPEG -> 썸네일을 'image://thumb/<percent-encoded-path>' 로 제공.
 
@@ -536,17 +556,20 @@ class Controller(QObject):
     skyBusyChanged = Signal()    # 하늘 세그멘테이션(추론) 진행 중 표시
     segStatusChanged = Signal()  # 세그 상태 문구(예: 모델 다운로드 중) 갱신 알림
     cmChanged = Signal()         # 디스플레이 색관리 LUT 갱신 알림(모니터 전환/로드)
+    hazeChanged = Signal()       # 디헤이즈 투과율 맵/대기광/conf 갱신 알림(DCP)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
     _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
+    _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
                  full_provider: "RawFullProvider" = None,
                  sky_provider: "SkyMaskProvider" = None,
-                 cm_provider: "DisplayCmProvider" = None):
+                 cm_provider: "DisplayCmProvider" = None,
+                 haze_provider: "HazeProvider" = None):
         super().__init__()
         self._provider = provider
         self._cm_provider = cm_provider          # 디스플레이 색관리 LUT(프리뷰 전용)
@@ -558,6 +581,13 @@ class Controller(QObject):
         self._stamp_provider = stamp_provider
         self._full_provider = full_provider     # GPU export 풀해상도 src
         self._sky_provider = sky_provider        # 하늘 마스크 텍스처
+        self._haze_provider = haze_provider      # 디헤이즈 투과율 맵 텍스처(DCP)
+        self._haze_url = "image://haze/h?v=0"
+        self._haze_counter = 0
+        self._haze_seq = 0          # 비동기 추정 순번(이미지 전환 레이스 방지)
+        self._haze_t = None         # 투과율 맵(numpy float32, 소형) — CPU export 용
+        self._haze_A = [1.0, 1.0, 1.0]   # 대기광(display sRGB)
+        self._haze_conf = 0.0       # 추정 신뢰도(0=물리 모델 미사용 → 톤모델 폴백)
         self._sky_url = "image://skymask/m?v=0"
         self._sky_counter = 0
         self._sky_seq = 0           # 비동기 세그/재조합 순번(오래된 결과 폐기)
@@ -620,6 +650,7 @@ class Controller(QObject):
         self._skyReady.connect(self._on_sky_ready)
         self._segStatusSig.connect(self._on_seg_status)
         self._exportProgressSig.connect(self._on_export_progress)
+        self._hazeReady.connect(self._on_haze_ready)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -810,13 +841,15 @@ class Controller(QObject):
         path = file_url.toLocalFile()
         pdict = {k: params[k] for k in params}     # QVariantMap -> 평범한 dict
         sky_mask = self._sky_mask                  # 요청 시점 스냅샷(export 중 마스크 변경/이미지 전환과 분리)
+        haze = (self._haze_t, list(self._haze_A), self._haze_conf)   # DCP 추정 스냅샷(동일 이유)
         self._exporting = True
         self._export_progress = 0.0
         self.exportProgressChanged.emit()
         self._set_export_status("Exporting… (full resolution, may take tens of seconds)")
-        threading.Thread(target=self._do_export, args=(path, pdict, sky_mask), daemon=True).start()
+        threading.Thread(target=self._do_export, args=(path, pdict, sky_mask, haze),
+                         daemon=True).start()
 
-    def _do_export(self, path: str, params: dict, sky_mask=None) -> None:
+    def _do_export(self, path: str, params: dict, sky_mask=None, haze=None) -> None:
         try:
             import pipeline
             lut_arr, lut_n = None, 0
@@ -828,7 +861,7 @@ class Controller(QObject):
             arr = pipeline.render_full(
                 self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb,
                 bitdepth=int(params.get("bitDepth", 8)), sky_mask=sky_mask,
-                progress=lambda f: self._exportProgressSig.emit(f))
+                progress=lambda f: self._exportProgressSig.emit(f), haze=haze)
             ok = pipeline.save_image(arr, path)
             msg = f"Saved: {path}" if ok else f"Save failed: {path}"
         except Exception as exc:
@@ -1309,6 +1342,59 @@ class Controller(QObject):
         disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
         return (disp * 255.0 + 0.5).astype(np.uint8)
 
+    # ---------- 디헤이즈 물리(DCP): 이미지당 1회 투과율/대기광 추정 ----------
+    def _haze_worker(self, seq: int) -> None:
+        """백그라운드: 중성 display 베이스(축소본)에서 (t, A, conf) 추정 → 메인으로 전달.
+        입력이 노출0·as-shot 베이스라 슬라이더 값과 무관 — 디코딩당 1회면 충분."""
+        import numpy as np
+        import haze
+        res = None
+        try:
+            arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
+            step = max(1, max(arr.shape[:2]) // 640)   # 추정은 소형으로 충분(속도)
+            disp = np.clip(wb.filmic(self._native_to_scenelinear(arr[::step, ::step])), 0.0, 1.0)
+            res = haze.estimate(disp)
+        except Exception as exc:
+            print(f"[haze] 추정 실패(톤모델 폴백): {exc}")
+        self._hazeReady.emit((seq, res))
+
+    @Slot(object)
+    def _on_haze_ready(self, payload) -> None:
+        import numpy as np
+        seq, res = payload
+        if seq != self._haze_seq:
+            return                       # 이미지 전환됨 → 낡은 추정 폐기
+        if res is None:
+            self._haze_t, self._haze_A, self._haze_conf = None, [1.0, 1.0, 1.0], 0.0
+            if self._haze_provider is not None:
+                self._haze_provider.clear()
+        else:
+            t, A, conf = res
+            self._haze_t = t
+            self._haze_A = [float(x) for x in A]
+            self._haze_conf = float(conf)
+            if self._haze_provider is not None:
+                u8 = np.ascontiguousarray((np.clip(t, 0.0, 1.0) * 255.0 + 0.5).astype(np.uint8))
+                hh, ww = u8.shape
+                self._haze_provider.set_image(
+                    QImage(u8.data, ww, hh, ww, QImage.Format.Format_Grayscale8).copy())
+        self._haze_counter += 1
+        self._haze_url = f"image://haze/h?v={self._haze_counter}"
+        self.hazeChanged.emit()
+
+    def _get_haze_url(self) -> str:
+        return self._haze_url
+
+    def _get_haze_A(self) -> list:
+        return self._haze_A
+
+    def _get_haze_conf(self) -> float:
+        return self._haze_conf
+
+    hazeUrl = Property(str, _get_haze_url, notify=hazeChanged)
+    hazeA = Property("QVariantList", _get_haze_A, notify=hazeChanged)
+    hazeConf = Property(float, _get_haze_conf, notify=hazeChanged)
+
     def _mask_worker(self, seq: int, keys) -> None:
         import os
         import numpy as np
@@ -1488,6 +1574,15 @@ class Controller(QObject):
         prev_mask_keys = list(self._mask_keys)
         self._sky_seq += 1               # 이전 이미지의 진행 중 세그 워커 결과 폐기(전환 레이스 방지)
         self._set_sky_mask(None)         # 새 프록시 → 이전 마스크 무효(곧 재생성/복원)
+        # 디헤이즈 물리(DCP): 이전 추정 무효화(준비 전엔 conf=0 → 톤모델 폴백) 후 백그라운드 재추정.
+        self._haze_seq += 1
+        self._haze_t, self._haze_A, self._haze_conf = None, [1.0, 1.0, 1.0], 0.0
+        if self._haze_provider is not None:
+            self._haze_provider.clear()
+        self._haze_counter += 1
+        self._haze_url = f"image://haze/h?v={self._haze_counter}"
+        self.hazeChanged.emit()
+        threading.Thread(target=self._haze_worker, args=(self._haze_seq,), daemon=True).start()
         # 비-fresh 재디코딩(렌즈 보정·WB 커밋 등)은 editsReady(복원)를 안 거친다 → 활성 마스크가
         # 있었으면 같은 클래스로 새 프록시에 재생성(렌즈 보정은 기하 변경 → 정렬 위해 재생성 필수).
         # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.
@@ -1711,8 +1806,11 @@ def main() -> int:
     cm_provider = DisplayCmProvider()
     engine.addImageProvider("displaycm", cm_provider)
 
+    haze_provider = HazeProvider()
+    engine.addImageProvider("haze", haze_provider)
+
     controller = Controller(provider, curve_provider, stamp_provider, full_provider,
-                            sky_provider, cm_provider)
+                            sky_provider, cm_provider, haze_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)

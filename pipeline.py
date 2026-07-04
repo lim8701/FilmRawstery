@@ -113,10 +113,26 @@ def _sharpen(c, disp, amt, radius_px, detail, mask, scale):
     return c + (hp * amt * coeffs.SHARPEN * m)[..., None]
 
 
-def _dehaze(c, amt, sigma):
-    """톤 모델 디헤이즈 (프리뷰 셰이더와 동일). +대비/채도/로컬대비, -흰베일·플랫. (코어 공유)"""
+def _dehaze_apply(c, amt, ld, t=None, A=None, conf=0.0):
+    """디헤이즈 공용 — 전역(6단계)과 하늘 로컬(9.7단계)이 공유(셰이더 dehazeApply 와 동일 수식).
+    amt: 스칼라(전역) 또는 (H,W) 배열(하늘 = 강도×마스크). ld: 로컬대비(휘도, H,W).
+    t 있음 & conf>0: DCP 물리 복원 (c−A)/te+A + 잔여 톤모델을 conf 로 톤모델과 블렌드.
+    t 없음(음수 방향·추정 실패): 톤 모델(흰 베일)."""
+    tone = _dehaze_core(c, amt, ld)
+    if t is not None and conf > 0.0:
+        pos = np.maximum(amt, 0.0)
+        te = np.maximum(1.0 - _b3(pos) * (1.0 - t[..., None]), coeffs.DEHAZE_TMIN)
+        Av = np.asarray(A, np.float32)
+        phys = _dehaze_core((c - Av) / te + Av, pos * coeffs.DEHAZE_RESID, ld)
+        return tone + (phys - tone) * np.float32(conf)
+    return tone
+
+
+def _dehaze(c, amt, sigma, t_full=None, A=None, conf=0.0):
+    """전역 디헤이즈 (프리뷰 셰이더 6단계와 동일) — 로컬대비를 현재 c 에서 계산해 공용 코어 적용."""
     lum = c @ LUMA
-    return _dehaze_core(c, amt, lum - _blur_luma(lum, sigma))
+    ld = lum - _blur_luma(lum, sigma)
+    return _dehaze_apply(c, amt, ld, t=t_full if amt > 0.0 else None, A=A, conf=conf)
 
 
 def _presence(c, sat, vib):
@@ -345,10 +361,12 @@ def _color_grade(c, hue_sh, sat_sh, hue_mid, sat_mid, hue_hi, sat_hi, balance):
     return np.clip(c + delta, 0.0, 1.0).astype(np.float32)
 
 
-def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
+def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None,
+                haze_t=None, haze_A=None, haze_conf=0.0):
     """하늘(로컬) 조정 — 셰이더 adjust.frag 9.7 단계와 동일 수식. m=0 인 곳은 항등.
     c=display sRGB (H,W,3), m=마스크(H,W)[0,1], sp=파라미터 dict.
-    nd_texhi=중성 텍스처 고주파(RGB), nd_lc=중성 로컬대비(luma) — 셰이더 dispSrc 블러 대응."""
+    nd_texhi=중성 텍스처 고주파(RGB), nd_lc=중성 로컬대비(luma) — 셰이더 dispSrc 블러 대응.
+    haze_t/A/conf: DCP 추정치 — '+' 디헤이즈에 전역과 동일한 물리 복원(강도×마스크) 적용."""
     if sp["invert"]:
         m = 1.0 - m
     m1 = m[..., None]
@@ -365,18 +383,23 @@ def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
         out = _texture_core(out, sp["texture"] * m, nd_texhi)
     if sp["clarity"] != 0.0 and nd_lc is not None:             # 클래리티(중간톤 로컬대비, 중성)
         out = _clarity_core(out, sp["clarity"] * m, nd_lc)
-    if sp["dehaze"] != 0.0 and nd_lc is not None:              # 디헤이즈(톤 모델, 중성)
-        out = _dehaze_core(out, sp["dehaze"] * m, nd_lc)
+    if sp["dehaze"] != 0.0 and nd_lc is not None:              # 디헤이즈(전역과 동일 공용 코어, 중성)
+        out = _dehaze_apply(out, sp["dehaze"] * m, nd_lc,
+                            t=haze_t if sp["dehaze"] > 0.0 else None,
+                            A=haze_A, conf=haze_conf)
     la = (out @ LUMA)[..., None]                               # 채도
     out = la + (out - la) * (1.0 + sp["sat"] * m1)
     return np.clip(out, 0.0, 1.0).astype(np.float32)
 
 
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
-                proxy_edge=2560, strip=256, bitdepth=8, sky_mask=None, progress=None):
+                proxy_edge=2560, strip=256, bitdepth=8, sky_mask=None, progress=None,
+                haze=None):
     """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) RGB 로 반환.
     bitdepth=8 -> uint8, 16 -> uint16(계조/헤드룸 보존, TIFF/PNG 16bit 저장용).
-    progress: 선택적 콜백(0..1). 디코드/공간단계/스트립 루프 경계에서 호출(픽셀 결과 불변)."""
+    progress: 선택적 콜백(0..1). 디코드/공간단계/스트립 루프 경계에서 호출(픽셀 결과 불변).
+    haze: (t_small, A, conf) — haze.py 추정치(프록시 기준). '+' 디헤이즈의 DCP 물리 복원용.
+          t 는 풀해상도로 업샘플(하늘 마스크와 동일 방식) → 프리뷰=Export 정합."""
     def _prog(f):
         if progress is not None:
             try:
@@ -487,8 +510,18 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         c = _clarity(c, cla, sigma_cla)
     if sharp_amt > 0.0:
         c = _sharpen(c, disp, sharp_amt, sharp_radius, sharp_detail, sharp_mask, scale)
+    # DCP t-맵 — 전역 '+' 디헤이즈와 하늘 '+' 디헤이즈(스트립 루프)가 공용. 필요 시에만 업샘플.
+    haze_t_full = haze_A = None
+    haze_conf = 0.0
+    need_haze = (deh > 0.0) or (skym_full is not None and sky["dehaze"] > 0.0)
+    if need_haze and haze is not None and haze[0] is not None and float(haze[2]) > 0.0:
+        ht, haze_A, haze_conf = haze
+        haze_conf = float(haze_conf)
+        th, tw = np.asarray(ht).shape[:2]
+        haze_t_full = np.clip(zoom(np.asarray(ht, np.float32), (h / th, w / tw), order=1),
+                              0.0, 1.0)[:h, :w]
     if deh != 0.0:
-        c = _dehaze(c, deh, sigma_cla)
+        c = _dehaze(c, deh, sigma_cla, t_full=haze_t_full, A=haze_A, conf=haze_conf)
     np.clip(c, 0.0, 1.0, out=c)
     _prog(0.55)   # 전역/공간 단계(블러·텍스처·클래리티·샤프닝·디헤이즈·NR) 완료
 
@@ -549,7 +582,9 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         if skym_full is not None:                                      # 하늘(로컬) 조정 — 비네팅 앞
             blk = _sky_adjust(blk, skym_full[y:y + strip], sky,
                               None if nd_texhi is None else nd_texhi[y:y + strip],
-                              None if nd_lc is None else nd_lc[y:y + strip])
+                              None if nd_lc is None else nd_lc[y:y + strip],
+                              haze_t=None if haze_t_full is None else haze_t_full[y:y + strip],
+                              haze_A=haze_A, haze_conf=haze_conf)
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * maxv).astype(dt)

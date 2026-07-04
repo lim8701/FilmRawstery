@@ -8,11 +8,15 @@
 0.3, Vignette 0.8, Grain 0.12 등)은 아직 셰이더·pipeline 리터럴로 중복 — 추후 확장 가능.
 """
 
-# 디헤이즈 톤모델(임시 — CLAUDE.md: 추후 물리 안개모델로 교체 예정). 셰이더 dehazeTone == pipeline._dehaze_core.
+# 디헤이즈 톤모델 — '−'(흰 베일) 방향 + 물리 모델 폴백(어두운 장면)용. 셰이더 dehazeTone == pipeline._dehaze_core.
 DEHAZE_LOCAL = 0.4      # 로컬대비 가산
 DEHAZE_CONTRAST = 0.25  # 대비
 DEHAZE_VEIL = 0.22      # 흰 베일(amt<0, 밝아짐)
 DEHAZE_SAT = 0.3        # 채도
+
+# 디헤이즈 물리 모델(DCP, '+' 방향 — haze.py 가 이미지당 t-맵/대기광/conf 추정). 셰이더 6단계 == pipeline._dehaze.
+DEHAZE_TMIN = 0.15      # 유효 투과율 하한(짙은 안개서 0-나눗셈/노이즈 증폭 방지)
+DEHAZE_RESID = 0.35     # 물리 복원 위에 남기는 톤모델 비율(라이트룸 체감의 대비/채도 '펀치' 보정)
 
 CLARITY = 0.8           # 클래리티(중간톤 로컬대비)
 TEXTURE = 1.6           # 텍스처(중주파)
@@ -38,6 +42,7 @@ def as_qml_dict():
     return {
         "dehazeKLocal": DEHAZE_LOCAL, "dehazeKContrast": DEHAZE_CONTRAST,
         "dehazeKVeil": DEHAZE_VEIL, "dehazeKSat": DEHAZE_SAT,
+        "dehazeKTmin": DEHAZE_TMIN, "dehazeKResid": DEHAZE_RESID,
         "clarityK": CLARITY, "textureK": TEXTURE,
         "skyTempK": SKY_TEMP, "skyTintK": SKY_TINT,
         "toneHiShK": TONE_HISH, "toneWhBlK": TONE_WHBL,
