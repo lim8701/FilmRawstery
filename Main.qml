@@ -936,44 +936,117 @@ ApplicationWindow {
                 spacing: 6
                 enabled: !win.batchActive   // 배치 중 파일 전환/폴더 변경 차단(취소는 오버레이 버튼)
 
-                // 헤더: 상위 폴더 / 폴더 선택
+                // 헤더 1줄: [⬆ 상위 폴더] + [현재 폴더 경로(클릭=폴더 선택 대화상자)]
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 6
-                    Button {
-                        text: "⬆"
+                    // 위로가기 — 평상시 투명·호버만 강조(♥/☑ 와 동일 톤, 기본 Button 회색 배경이 튀어 배제).
+                    // 글리프: U+2B06+U+FE0E(텍스트 프레젠테이션 강제) = 꼬리 있는 솔리드 화살표를
+                    // 흑백 심볼로 렌더(FE0E 없이는 파란 이모지化).
+                    Rectangle {
+                        id: upBtn
                         Layout.preferredWidth: 30
-                        ToolTip.visible: hovered
+                        Layout.preferredHeight: 28
+                        radius: 5
+                        color: upHover.hovered ? "#3a3f4b" : "transparent"
+                        border.color: "#555555"     // 경로 필드·♥/☑ 와 동일 테두리(헤더 균형)
+                        border.width: 1
+                        ToolTip.visible: upHover.hovered
                         ToolTip.text: "Parent folder"
-                        onClicked: controller.goUp()
+                        // U+2794(굵은 머리+꼬리, 이모지 대상 아님 → 항상 단색 텍스트 렌더)를
+                        // -90° 회전해 위 방향으로. color 로 흰색 지정 가능(이모지 글리프는 불가).
+                        Text {
+                            anchors.centerIn: parent
+                            text: "➔"
+                            rotation: -90
+                            color: "#e6e6e6"
+                            font.pixelSize: 12
+                        }
+                        HoverHandler { id: upHover }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: controller.goUp()
+                        }
                     }
-                    Button {
-                        id: folderBtn
-                        text: "Folder…"
+                    // 현재 폴더 경로 자체가 폴더 선택 버튼(별도 Folder… 버튼 일원화)
+                    Rectangle {
                         Layout.fillWidth: true
-                        onClicked: folderDialog.open()
+                        Layout.preferredHeight: upBtn.height
+                        radius: 5
+                        color: fpHover.hovered ? "#3a3f4b" : "transparent"
+                        border.color: "#555555"
+                        border.width: 1
+                        ToolTip.visible: fpHover.hovered
+                        ToolTip.delay: 800
+                        ToolTip.text: "Change folder…"
+                        Label {
+                            anchors.fill: parent
+                            anchors.leftMargin: 8
+                            anchors.rightMargin: 8
+                            verticalAlignment: Text.AlignVCenter
+                            text: controller.currentFolder || "Select a folder…"
+                            color: fpHover.hovered ? "#e6e6e6" : "#b8b8b8"
+                            font.pixelSize: 11
+                            elide: Text.ElideMiddle
+                        }
+                        HoverHandler { id: fpHover }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: folderDialog.open()
+                        }
                     }
-                    // "좋아요만 보기" 토글 — Canvas 하트(활성=채움/적색, 비활성=외곽선/회색)
+                }
+
+                // 헤더 2줄: 폴더 통계(좌) + ♥ 필터 / ☑ 배치 선택(우, 컴팩트)
+                // 통계는 전체 폴더 기준(좋아요 필터 무관). fileList(folderChanged)·editsRevision·
+                // likeRevision 참조로 변경 시 자동 재계산.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Label {
+                        objectName: "folderStatsLabel"
+                        Layout.fillWidth: true
+                        visible: controller.currentFolder !== ""
+                        readonly property var stats: {
+                            controller.likeRevision; controller.editsRevision
+                            var files = controller.fileList
+                            var n = 0, liked = 0, edited = 0
+                            for (var i = 0; i < files.length; i++) {
+                                if (files[i].isDir) continue
+                                n++
+                                if (controller.hasEdits(files[i].path)) edited++
+                                if (controller.isLiked(files[i].path)) liked++
+                            }
+                            return [n, edited, liked]
+                        }
+                        textFormat: Text.StyledText
+                        text: stats[0] + " photos" +
+                              (stats[1] > 0 ? "  ·  <font color='#E0A226'>" + stats[1] + " edited</font>" : "") +
+                              (stats[2] > 0 ? "  ·  <font color='#ff6b6b'>" + stats[2] + " ♥</font>" : "")
+                        color: "#7f7f7f"
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
+                    }
+                    Item { visible: controller.currentFolder === ""; Layout.fillWidth: true }
+                    // "좋아요만 보기" 토글 — ♥(채움)/♡(빈) 글리프로 활성/비활성 표시
                     Rectangle {
                         id: likeFilterBtn
-                        Layout.preferredWidth: 36
-                        Layout.preferredHeight: folderBtn.height   // 옆 버튼 높이에 맞춤
-                        Layout.alignment: Qt.AlignVCenter
-                        radius: 5
+                        Layout.preferredWidth: 30
+                        Layout.preferredHeight: 22
+                        radius: 4
                         color: win.showLikedOnly ? "#3a2a2e"
                              : (lfHover.hovered ? "#3a3f4b" : "transparent")
                         border.color: win.showLikedOnly ? "#ff6b6b" : "#555555"
                         border.width: 1
-
                         ToolTip.visible: lfHover.hovered
                         ToolTip.text: "Show liked only (L)"
-
-                        // 팝업 패널과 동일하게 ♥(채움)/♡(빈) 글리프로 활성/비활성 표시
                         Text {
                             anchors.centerIn: parent
                             text: win.showLikedOnly ? "♥" : "♡"
                             color: win.showLikedOnly ? "#ff6b6b" : "#cfcfcf"
-                            font.pixelSize: 19
+                            font.pixelSize: 14
                         }
                         HoverHandler { id: lfHover }
                         MouseArea {
@@ -985,10 +1058,9 @@ ApplicationWindow {
                     // 배치 export 선택(체크박스) 모드 토글 — 켜면 파일 클릭=체크, 하단에 Export 바.
                     Rectangle {
                         id: selModeBtn
-                        Layout.preferredWidth: 36
-                        Layout.preferredHeight: folderBtn.height
-                        Layout.alignment: Qt.AlignVCenter
-                        radius: 5
+                        Layout.preferredWidth: 30
+                        Layout.preferredHeight: 22
+                        radius: 4
                         color: win.batchSelectMode ? "#2e3a2a"
                              : (smHover.hovered ? "#3a3f4b" : "transparent")
                         border.color: win.batchSelectMode ? "#9fd39f" : "#555555"
@@ -999,7 +1071,7 @@ ApplicationWindow {
                             anchors.centerIn: parent
                             text: "☑"
                             color: win.batchSelectMode ? "#9fd39f" : "#cfcfcf"
-                            font.pixelSize: 17
+                            font.pixelSize: 13
                         }
                         HoverHandler { id: smHover }
                         MouseArea {
@@ -1011,15 +1083,6 @@ ApplicationWindow {
                             }
                         }
                     }
-                }
-
-                // 현재 폴더 경로
-                Label {
-                    Layout.fillWidth: true
-                    text: controller.currentFolder || "Select a folder"
-                    color: "#9a9a9a"
-                    font.pixelSize: 11
-                    elide: Text.ElideMiddle
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
