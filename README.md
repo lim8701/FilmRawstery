@@ -2,10 +2,10 @@
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![PySide6](https://img.shields.io/badge/PySide6-Qt-41CD52?logo=qt&logoColor=white)
-![RAW](https://img.shields.io/badge/RAW-Fuji%20X100V%20(.RAF)-EB0A1E)
+![RAW](https://img.shields.io/badge/RAW-Fujifilm%20(.RAF)-EB0A1E)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-555)
 
-A GPU-accelerated RAW developer and film-simulation editor for the **Fujifilm X100V** (`.RAF`), built with **PySide6 (QML) + GLSL shaders**.
+A GPU-accelerated RAW developer and film-simulation editor for **Fujifilm cameras** (`.RAF`), built with **PySide6 (QML) + GLSL shaders**.
 
 Edit interactively on a real-time, shader-driven preview, then export at full resolution through a numpy pipeline that mirrors the shader exactly — *what you see is what you get*.
 
@@ -15,7 +15,7 @@ Edit interactively on a real-time, shader-driven preview, then export at full re
   <img src="screenshot2.png" alt="Film Rawstery — masking: AI multi-class selection (people masked) with per-mask adjustments" width="100%">
 </p>
 
-> ⚠️ Tuned specifically for the Fuji X100V (X-Trans sensor + lens profile). Other cameras may decode but won't match the lens/color tuning.
+> Supports Fujifilm RAF across bodies and lenses: color matrices, white balance, and **lens corrections are all read from each file's own metadata** (the camera embeds per-shot correction tables), so no per-model profiles are needed. Developed and look-tuned primarily on an X100V.
 
 ---
 
@@ -25,7 +25,7 @@ A hobby project, built for my own use.
 
 I shoot a lot with the **Fujifilm X100V** and edit in Lightroom — but I only use a few of its features, so paying for a subscription felt hard to justify. Film Rawstery bundles just the features I actually need into a workflow tuned the way I like it.
 
-If I pick up another camera down the line, I plan to add support for it too.
+Any Fujifilm body should work out of the box (everything is driven by per-file metadata); if I ever pick up another brand, I plan to add support for it too.
 
 ### The name
 
@@ -60,7 +60,7 @@ Fujifilm looks as 3D LUTs: Provia, Velvia, Astia, Classic Chrome, Classic Negati
 Crop (aspect-ratio presets + free drag), rotate / straighten, flip, and perspective (vertical / horizontal keystone + scale) — applied identically in preview and export.
 
 ### Lens Corrections
-Built-in X100V profile: distortion, vignetting, and chromatic aberration.
+Distortion, vignetting, and chromatic aberration — applied from the **per-shot correction tables Fujifilm embeds in every RAF** (focus/aperture-aware, works for any body and lens, fixed or interchangeable). No profile database needed; files without the tags are simply left uncorrected.
 
 ### Workflow
 - **Before / After compare** — toggle the unedited original (button or `\` key)
@@ -121,7 +121,7 @@ Open a `.RAF` from the left file explorer (double-click). Shaders auto-recompile
 | `sky_seg.py` | ML masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
 | `coeffs.py` | Single source of truth for adjustment strength coefficients (shader uniforms + pipeline) |
 | `wb.py` | White balance (Kelvin/tint), cam→sRGB matrix, filmic curve, auto-exposure |
-| `lens.py` | X100V lens profile (distortion / vignetting / CA) |
+| `lens.py` | Lens corrections from RAF-embedded per-shot metadata (distortion / vignetting / CA) |
 | `lut.py`, `make_luts.py` | `.cube` 3D LUT loading / baking |
 | `date_stamp.py`, `exif_info.py` | Film date-back rendering / EXIF extraction |
 | `Main.qml`, `CurveEditor.qml`, `PreviewWindow.qml` | UI |

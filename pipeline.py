@@ -423,7 +423,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 비례해 룩 동일 유지(그레인/스탬프도 이미지 상대 크기라 일관).
     rgb16 = _downscale_to_edge(rgb16, int(p.get("outEdge", 0) or 0))
     if p.get("lensCorrection", True):
-        rgb16 = lens.apply(rgb16)      # X100V 렌즈 프로파일(프록시와 동일, 색공간 무관)
+        rgb16 = lens.apply(rgb16, lens.load_profile(path))   # RAF 내장 샷별 보정(프록시와 동일)
     _prog(0.30)   # 디코드 + 다운스케일 + 렌즈 보정 완료(가장 큰 단일 비용)
 
     h, w, _ = rgb16.shape

@@ -97,15 +97,15 @@ def _decode_native(path: str):
     return rgb16, cam_xyz, ref, as_shot, as_shot_tint, target_median
 
 
-def _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_correct):
+def _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_profile):
     """카메라네이티브 16bit -> (렌즈) -> 선형 -> 자동노출 -> 헤드룸 인코딩(disp float[0,1]).
 
     code = oetf(L/H): scene-linear L 을 H 로 나눠 [0,1] 감마로 인코딩(셰이더가 ×H 복원).
     ⚠️렌즈 보정을 현상 전 카메라네이티브에 먼저 적용해야 export(render_full)와 정합(자동노출이
       렌즈 적용 후 통계로 계산됨). load_proxy(8bit)·load_full(16bit) 공용 — 동일 scene-linear 보장.
-    """
-    if lens_correct:
-        rgb16 = np.clip(lens.apply(rgb16), 0.0, 65535.0).astype(np.uint16)
+    lens_profile: lens.load_profile() 결과(RAF 내장 샷별 보정) 또는 None(보정 안 함)."""
+    if lens_profile is not None:
+        rgb16 = np.clip(lens.apply(rgb16, lens_profile), 0.0, 65535.0).astype(np.uint16)
     lin = _srgb2lin_lut()[rgb16]                         # (H,W,3) float32 선형(카메라네이티브)
     lin *= auto_exposure_gain(target_median, cam_xyz, ref, as_shot, lin)
     idx = (np.clip(lin * (1.0 / PROXY_HEADROOM), 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
@@ -133,7 +133,8 @@ def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
             x = zoom(x, (f, f, 1.0), order=1)
         rgb16 = np.clip(x + 0.5, 0.0, 65535.0).astype(np.uint16)
 
-    disp = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_correct)
+    prof = lens.load_profile(path) if lens_correct else None
+    disp = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
     dth = _dither(disp.shape)               # ±0.5 LSB 디더(8bit 양자화 밴딩 제거)
     rgb = np.clip(disp * 255.0 + 0.5 + dth, 0.0, 255.0).astype(np.uint8)
     rgb = np.ascontiguousarray(rgb)
@@ -150,7 +151,8 @@ def load_full(path: str, lens_correct: bool = True):
     프록시(8bit, 프리뷰용)와 동일 인코딩 규약(셰이더 src 입력)이되 다운스케일 없음 + 16bit.
     """
     rgb16, cam_xyz, ref, as_shot, as_shot_tint, target_median = _decode_native(path)
-    disp = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_correct)
+    prof = lens.load_profile(path) if lens_correct else None
+    disp = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
     code = (np.clip(disp, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)
     h, w, _ = code.shape
     rgba = np.empty((h, w, 4), np.uint16)

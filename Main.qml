@@ -181,9 +181,13 @@ ApplicationWindow {
         }
         skyInvertCheck.checked = win._ev(p, "skyInvert", false)
         win.showSkyMask = false
-        var mk = win._ev(p, "maskKeys", []); win.maskKeys = mk.slice()
-        if (mk.length > 0) { win._maskRestore = true; controller.setMaskClasses(mk) }
-        else controller.clearSky()
+        var mk = win._ev(p, "maskKeys", [])
+        // 같은 클래스 조합 + 마스크 이미 존재(undo/redo·paste 등) → 재조합 생략(세그 후처리 비쌈).
+        var same = controller.hasSkyMask && JSON.stringify(mk) === JSON.stringify(win.maskKeys)
+        win.maskKeys = mk.slice()
+        if (mk.length > 0) {
+            if (!same) { win._maskRestore = true; controller.setMaskClasses(mk) }
+        } else controller.clearSky()
     }
 
     // === 회전/크롭(지오메트리) 상태 — 프리뷰 뷰변환과 export numpy 양쪽에서 사용 ===
@@ -3712,9 +3716,14 @@ ApplicationWindow {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "X100V profile (distortion · vignetting · CA)"
+                        text: "Lens profile from RAF"
                         color: "white"; font.pixelSize: 12
                         verticalAlignment: Text.AlignVCenter
+                        wrapMode: Text.WordWrap          // 패널 폭 초과 시 잘림 대신 줄바꿈
+                        ToolTip.visible: lensLblHover.hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: "Distortion · vignetting · chromatic aberration —\nper-shot correction tables embedded in the RAF by the camera."
+                        HoverHandler { id: lensLblHover }
                     }
                 }
 

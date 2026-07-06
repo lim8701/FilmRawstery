@@ -631,7 +631,7 @@ class Controller(QObject):
         self._histogram = []        # 256-bin 휘도 히스토그램(0..1 정규화)
         self._proxy_small = None    # 히스토그램 재계산용 축소 프록시(float32 0..1)
         self._lut_cache = {}        # simKey -> (lut_arr, n)
-        self._lens = True           # X100V 렌즈 프로파일 보정 on/off
+        self._lens = True           # 렌즈 보정 on/off (RAF 내장 샷별 프로파일)
         self._busy = False          # 디코딩 진행 중(스피너)
         self._render_seq = 0        # 비동기 렌더 순번(오래된 결과 폐기용)
         self._folder = ""           # 좌측 file explorer 현재 폴더
@@ -1334,8 +1334,12 @@ class Controller(QObject):
 
     @Slot("QVariantList")
     def setMaskClasses(self, keys) -> None:  # noqa: N802 (QML 슬롯)
-        """체크된 클래스 그룹 key 목록으로 복합 마스크 생성(백그라운드). 캐시 있으면 재추론 없음."""
-        self._mask_keys = [str(k) for k in keys]
+        """체크된 클래스 그룹 key 목록으로 복합 마스크 생성(백그라운드). 캐시 있으면 재추론 없음.
+        같은 클래스 조합의 마스크가 이미 있으면 no-op(undo/redo 등 중복 호출 방어)."""
+        keys_list = [str(k) for k in keys]
+        if keys_list == self._mask_keys and self._sky_mask is not None:
+            return
+        self._mask_keys = keys_list
         if self._proxy_img is None:
             return
         self._sky_seq += 1
@@ -1523,7 +1527,7 @@ class Controller(QObject):
 
     @Slot(bool)
     def setLensCorrection(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
-        """X100V 렌즈 보정 on/off (재디코딩)."""
+        """렌즈 보정 on/off (RAF 내장 샷별 프로파일, 재디코딩)."""
         if self._lens == on:
             return
         self._lens = on
