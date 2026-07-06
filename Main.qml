@@ -541,15 +541,32 @@ ApplicationWindow {
         if (win._applying || controller.imagePath === "") return
         editSaveTimer.restart()
     }
+    // 편집 커밋(사이드카 저장 + undo 스텝 push). 마우스 버튼이 눌려 있는 동안(=드래그 중)은
+    // 보류하고 릴리즈 시점에 1회 커밋 — 느린 드래그 중 디바운스가 여러 번 만료돼 undo 스텝이
+    // 쪼개지는 것 방지(드래그 1회 = 스텝 1개 보장).
+    function commitEditSnapshot() {
+        if (win._applying || controller.imagePath === "") return
+        if (globalPress.active) { editSaveTimer.restart(); return }   // 드래그 중 → 릴리즈 후
+        var snap = win.editParams()
+        controller.saveEdits(snap)
+        win.histPush(JSON.stringify(snap))   // 커밋된 편집 1개 = undo 스텝 1개
+    }
+    // 윈도우 전역 프레스 감시(패시브 — 어떤 컨트롤의 grab 도 빼앗지 않음). 슬라이더/커브/크롭 등
+    // 모든 드래그 소스를 열거 없이 커버. 릴리즈 순간 보류 중 커밋이 있으면 즉시 실행.
+    PointHandler {
+        id: globalPress
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        onActiveChanged: {
+            if (!active && editSaveTimer.running) {
+                editSaveTimer.stop()
+                win.commitEditSnapshot()
+            }
+        }
+    }
     Timer {
         id: editSaveTimer
         interval: 500
-        onTriggered: {
-            if (win._applying || controller.imagePath === "") return
-            var snap = win.editParams()
-            controller.saveEdits(snap)
-            win.histPush(JSON.stringify(snap))   // 커밋된 편집 1개 = undo 스텝 1개
-        }
+        onTriggered: win.commitEditSnapshot()
     }
     // 모든 편집 컨트롤 값을 참조 → 무엇이든 바뀌면 바인딩 재평가 → onChanged 로 저장 예약.
     property var editSaveWatch: [
@@ -881,6 +898,16 @@ ApplicationWindow {
         onClosedAt: (path) => win.selectInExplorer(path)
     }
 
+    // Alt+↑: 상위 폴더로 이동(Windows 탐색기 관례). 위로가기 버튼과 동일하게 직전 폴더 선택 유지.
+    Shortcut {
+        sequence: "Alt+Up"
+        enabled: !win.batchActive && !previewWin.visible
+        onActivated: {
+            win._selectAfterScan = controller.currentFolder
+            controller.goUp()
+        }
+    }
+
     // 탐색기 선택 항목 + Enter: 파일=프리뷰 진입, 폴더=진입. 텍스트 입력(날짜)·프리뷰 표시 중·
     // 배치 중에는 비활성(Enter 가 각자의 용도로 쓰이거나 조작 차단 상태).
     Shortcut {
@@ -993,7 +1020,7 @@ ApplicationWindow {
                         border.color: "#555555"     // 경로 필드·♥/☑ 와 동일 테두리(헤더 균형)
                         border.width: 1
                         ToolTip.visible: upHover.hovered
-                        ToolTip.text: "Parent folder"
+                        ToolTip.text: "Parent folder (Alt+↑)"
                         // U+2794(굵은 머리+꼬리, 이모지 대상 아님 → 항상 단색 텍스트 렌더)를
                         // -90° 회전해 위 방향으로. color 로 흰색 지정 가능(이모지 글리프는 불가).
                         Text {
