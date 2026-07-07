@@ -1,0 +1,36 @@
+# UTF-8
+#
+# Windows EXE 버전 리소스(우클릭 FilmRawstery.exe > 속성 > 세부 정보에 표시).
+# PyInstaller 가 eval() 로 읽으므로 import/변수 없이 리터럴 표현식만 허용됨
+# (PyInstaller.utils.win32.versioninfo.load_version_info_from_text_file 참고).
+#
+# ⚠️ main.py 의 APP_VERSION 을 올릴 때 아래 filevers/prodvers/FileVersion/ProductVersion 도
+#    수동으로 함께 맞출 것(이 파일은 정적 리터럴이라 APP_VERSION 을 import 해 오지 못함).
+VSVersionInfo(
+  ffi=FixedFileInfo(
+    filevers=(1, 0, 0, 0),
+    prodvers=(1, 0, 0, 0),
+    mask=0x3f,
+    flags=0x0,
+    OS=0x40004,
+    fileType=0x1,
+    subtype=0x0,
+    date=(0, 0)
+    ),
+  kids=[
+    StringFileInfo(
+      [
+      StringTable(
+        u'040904B0',
+        [StringStruct(u'CompanyName', u'lim.sungjune'),
+        StringStruct(u'FileDescription', u'Film Rawstery — Fujifilm RAF developer'),
+        StringStruct(u'FileVersion', u'1.0.0.0'),
+        StringStruct(u'InternalName', u'FilmRawstery'),
+        StringStruct(u'LegalCopyright', u'MIT License — Copyright (c) 2026 lim.sungjune'),
+        StringStruct(u'OriginalFilename', u'FilmRawstery.exe'),
+        StringStruct(u'ProductName', u'Film Rawstery'),
+        StringStruct(u'ProductVersion', u'1.0.0.0')])
+      ]),
+    VarFileInfo([VarStruct(u'Translation', [1033, 1200])])
+  ]
+)

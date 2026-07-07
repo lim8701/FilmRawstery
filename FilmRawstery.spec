@@ -81,6 +81,7 @@ exe = EXE(
     upx=False,          # UPX off — Qt DLL 손상 방지
     console=CONSOLE,
     icon=None,
+    version=os.path.join("packaging", "version_info.txt"),   # exe 속성>세부정보 버전 표시
     contents_directory="lib",   # onedir 하위폴더 이름(기본 _internal → lib)
 )
 coll = COLLECT(

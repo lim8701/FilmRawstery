@@ -48,7 +48,7 @@ BASE = app_base()
 SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag"]
 LUTS_DIR = BASE / "luts"
-APP_VERSION = "1.0"
+APP_VERSION = "1.0"   # 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
 
 # 필름 시뮬레이션 카탈로그 (key, 표시명, 그룹). 실제 luts/<key>.cube 가 있는 것만 UI 에 노출
 # (identity=None 은 LUT 미적용이라 항상 포함). 흑백 등은 .cube 를 넣으면 자동으로 다시 나타남.
@@ -780,6 +780,7 @@ class Controller(QObject):
             d = self._edits_dir(str(p.parent))
             d.mkdir(parents=True, exist_ok=True)
             data = {k: params[k] for k in params}   # QVariantMap -> dict
+            data["appVersion"] = APP_VERSION        # 이 편집을 만든 앱 버전(추후 지원/디버깅용, 참고용 기록 — 읽어서 되돌리지 않음)
             with open(d / f"{p.name}.json", "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
             self._pending_edits = data               # 현재 파일 캐시 동기화
@@ -1332,6 +1333,12 @@ class Controller(QObject):
 
     maskGroups = Property("QVariantList", _get_mask_groups, constant=True)
 
+    # ---------- 앱 버전(제목표시줄 표시용) ----------
+    def _get_app_version(self) -> str:
+        return APP_VERSION
+
+    appVersion = Property(str, _get_app_version, constant=True)
+
     @Slot("QVariantList")
     def setMaskClasses(self, keys) -> None:  # noqa: N802 (QML 슬롯)
         """체크된 클래스 그룹 key 목록으로 복합 마스크 생성(백그라운드). 캐시 있으면 재추론 없음.
@@ -1698,6 +1705,7 @@ def _show_splash(app):
         view.setFlags(Qt.WindowType.SplashScreen | Qt.WindowType.FramelessWindowHint)
         view.setResizeMode(QQuickView.ResizeMode.SizeViewToRootObject)
         view.setColor(Qt.GlobalColor.transparent)
+        view.rootContext().setContextProperty("appVersion", APP_VERSION)   # setSource 전에 바인딩
         view.setSource(QUrl.fromLocalFile(str(BASE / "Splash.qml")))
         scr = app.primaryScreen().geometry()
         view.setPosition((scr.width() - view.width()) // 2,

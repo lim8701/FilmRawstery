@@ -52,6 +52,14 @@ Rectangle {
             font.pixelSize: 13
             font.letterSpacing: 0.5
         }
+        // main.py _show_splash 가 setSource 전에 이 view 의 rootContext 에 심어준 컨텍스트 프로퍼티.
+        Text {
+            anchors.horizontalCenter: parent.horizontalCenter
+            text: "v" + appVersion
+            color: "#5a5a5a"
+            font.pixelSize: 11
+            font.letterSpacing: 1
+        }
         Text {
             anchors.horizontalCenter: parent.horizontalCenter
             text: "starting…"

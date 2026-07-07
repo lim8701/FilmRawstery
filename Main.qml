@@ -10,7 +10,7 @@ ApplicationWindow {
     visibility: Window.Maximized   // 시작 시 최대화(타이틀바·작업표시줄 유지)
     width: 1280
     height: 820                     // 복원(restore) 시 사용할 크기
-    title: "FILM RAWSTERY"
+    title: "FILM RAWSTERY  v" + controller.appVersion   // OS 타이틀바/작업표시줄 상시 노출(버그 제보 스크린샷에 자동 포함)
     color: "#1a1a1a"
 
     // === 종료 확인 ===
