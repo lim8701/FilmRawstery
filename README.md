@@ -105,7 +105,8 @@ Key design decisions:
 ### Common setup (all platforms)
 
 ```bash
-# 1. Get the source
+# 1. Get the source (requires git — or skip git entirely with
+#    GitHub's "Code → Download ZIP" and unzip instead)
 git clone https://github.com/lim8701/FilmRawstery.git
 cd FilmRawstery
 
