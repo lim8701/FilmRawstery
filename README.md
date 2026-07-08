@@ -102,12 +102,40 @@ Key design decisions:
 
 ## Install & Run
 
+### Common setup (all platforms)
+
 ```bash
+# 1. Get the source
+git clone https://github.com/lim8701/FilmRawstery.git
+cd FilmRawstery
+
+# 2. Create a virtual environment (recommended)
+python -m venv .venv          # on macOS/Linux: python3.13 -m venv .venv
+
+# 3. Activate it
+.venv\Scripts\activate        # Windows
+source .venv/bin/activate     # macOS/Linux
+
+# 4. Install dependencies and run
 pip install -r requirements.txt
 python main.py
 ```
 
 Open a `.RAF` from the left file explorer (double-click). Shaders auto-recompile from `shaders/*.frag` on launch when changed.
+
+### Windows
+
+The primary development/test platform. A prebuilt zip (no Python required) is available on the [Releases](https://github.com/lim8701/FilmRawstery/releases) page — extract and run `FilmRawstery.exe`.
+
+### macOS
+
+Runs from source with the common setup above — all dependencies ship prebuilt macOS wheels (Apple Silicon included), so no Xcode/compiler is needed. Notes:
+
+- macOS ships an older system `python3`; create the venv with an explicit `python3.13` (from [python.org](https://www.python.org/downloads/)) as shown above.
+- No `git`? Either accept the Command Line Tools popup when first running `git`, or use **Code → Download ZIP** on GitHub instead.
+- Shaders are precompiled with Metal (MSL) included; if a recompile is triggered, the `pyside6-qsb` tool installed with PySide6 handles it automatically.
+- Display color management (preview-only monitor-profile correction) is Windows-only and silently disabled on macOS — everything else works the same.
+- ⚠️ **Untested in practice** — the code is written to be platform-clean, but no one has verified a real macOS run yet. If you try it, [feedback is very welcome](https://github.com/lim8701/FilmRawstery/issues).
 
 ---
 
