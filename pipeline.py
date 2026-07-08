@@ -492,17 +492,21 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     sigma_cla = 7.0 * scale     # 프리뷰 클래리티/디헤이즈/톤영역 마스크 블러에 대응
     c = disp
     # hi/sh 국소 톤맵 마스크 = 중성 베이스(neutral_disp)의 국소 평균 휘도. 셰이더 claBlur(중성) 대응.
-    lb = _blur_luma((neutral_disp @ LUMA).astype(np.float32), sigma_cla)
+    nlum = (neutral_disp @ LUMA).astype(np.float32)
+    lb = _blur_luma(nlum, sigma_cla)
     c = np.maximum(_tone_zones(c, hi, sh, wh, bl, lb), 0.0)
-    # 노이즈 리덕션(텍스처/샤프닝 앞) — 셰이더 3.5 단계와 동일. 반경은 sigma_tex/sigma_cla 사용.
+    # 노이즈 리덕션(텍스처/샤프닝 앞) — 셰이더 3.5 단계와 동일하게 **중성 베이스**(dispSrc 대응)에서
+    # 고주파/크로마를 뽑아 편집본 c 에서 뺀다. ⚠️편집본 기반으로 계산하면 노출을 올린 사진에서
+    # export 의 NR 이 프리뷰보다 강해짐(과거 버그 — 밝기 스케일만큼 고주파가 커지므로).
     ln = float(p.get("lumaNR", 0)); cn = float(p.get("colorNR", 0))
     if ln > 0.0:
-        hpL = (c @ LUMA) - (_blur_rgb(c, sigma_tex) @ LUMA)
+        hpL = nlum - _blur_luma(nlum, sigma_tex)               # 셰이더: luma(s0)-luma(texBlur)
         flatw = 1.0 - _smoothstep(0.0, 0.06, np.abs(hpL))      # 엣지 보존
         c = np.clip(c - (hpL * ln * flatw)[..., None], 0.0, 1.0)
     if cn > 0.0:
-        bl_ = _blur_rgb(c, sigma_cla)
-        chroma_detail = (c - (c @ LUMA)[..., None]) - (bl_ - (bl_ @ LUMA)[..., None])
+        bl_ = _blur_rgb(neutral_disp, sigma_cla)               # 셰이더: claBlur(중성 RGB)
+        # luma(blur_rgb) == blur(luma) (선형 연산) → lb 재사용
+        chroma_detail = (neutral_disp - nlum[..., None]) - (bl_ - lb[..., None])
         c = np.clip(c - chroma_detail * cn, 0.0, 1.0)
     if tex != 0.0:
         c = _texture(c, tex, sigma_tex)
