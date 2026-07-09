@@ -1583,6 +1583,16 @@ ApplicationWindow {
                 source: controller.hazeUrl
             }
 
+            // 휘도 NR 베이스(가이디드 필터 디노이즈드 중성 luma, 프록시 해상도 16bit 그레이).
+            // 준비 전(1x1)엔 셰이더 nrOn 게이트가 휘도 NR 을 끔. 이미지당 1회 갱신(nrChanged).
+            Image {
+                id: nrBaseImage
+                visible: false
+                cache: false
+                smooth: true
+                source: controller.nrBaseUrl
+            }
+
             // ── GPU export: 풀해상도를 프리뷰와 **동일한 adjust.frag** 로 렌더(프리뷰=Export) ──
             //   온디맨드(렌더=GPU 일 때만 active). src 만 풀해상도, 블러 텍스처는 프록시 것 재사용
             //   (로컬대비/톤마스크 성격을 프리뷰와 동일하게). uniform 바인딩은 pipe 와 반드시 동일.
@@ -1716,6 +1726,9 @@ ApplicationWindow {
                         property real hazeConf: controller.hazeConf
                         property real dehazeKTmin: controller.adjustCoeffs["dehazeKTmin"]
                         property real dehazeKResid: controller.adjustCoeffs["dehazeKResid"]
+                        // 휘도 NR 베이스 — 프리뷰(pipe)와 동일 바인딩(프리뷰=Export).
+                        property variant nrBase: nrBaseImage
+                        property real nrOn: controller.nrReady ? 1.0 : 0.0
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }
                 }}
@@ -2041,6 +2054,9 @@ ApplicationWindow {
                         property real hazeConf: controller.hazeConf
                         property real dehazeKTmin: controller.adjustCoeffs["dehazeKTmin"]
                         property real dehazeKResid: controller.adjustCoeffs["dehazeKResid"]
+                        // 휘도 NR 베이스: 디노이즈드 중성 luma(준비 전엔 nrOn=0 → 무동작).
+                        property variant nrBase: nrBaseImage
+                        property real nrOn: controller.nrReady ? 1.0 : 0.0
 
                         fragmentShader: "shaders/adjust.frag.qsb"
                     }

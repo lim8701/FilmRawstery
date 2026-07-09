@@ -88,6 +88,7 @@ layout(std140, binding = 0) uniform buf {
     float hazeConf;
     float dehazeKTmin;   // 유효 투과율 하한(0-나눗셈/노이즈 증폭 방지)
     float dehazeKResid;  // 물리 복원 위 잔여 톤모델 비율(라이트룸 체감 보정)
+    float nrOn;          // 1=nrBase(디노이즈드 중성 luma) 준비됨. 0이면 휘도 NR 무동작(로드 직후 잠깐)
 } ubuf;
 
 layout(binding = 1) uniform sampler2D src;       // 원본(카메라네이티브 감마 인코딩)
@@ -101,6 +102,7 @@ layout(binding = 8) uniform sampler2D sharpBlur; // dispSrc 가우시안 블러(
 layout(binding = 9) uniform sampler2D skyMask;   // 하늘 마스크(단일채널 R, 프록시 해상도). 없으면 1x1 검정
 layout(binding = 10) uniform sampler2D cmLut;    // 디스플레이 색관리 LUT 아틀라스(sRGB→모니터). 프리뷰 전용
 layout(binding = 11) uniform sampler2D hazeT;    // 디헤이즈 투과율 맵(단일채널 R, 소형 — bilinear 업샘플). 없으면 1x1 흰색(t=1)
+layout(binding = 12) uniform sampler2D nrBase;   // 가이디드 필터로 디노이즈된 중성 luma(프록시 해상도, 16bit 그레이)
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
@@ -309,13 +311,14 @@ void main() {
 
     vec3 s0 = texture(dispSrc, uv).rgb;          // display sRGB 변환본(블러 비교용)
 
-    // 3.5) 노이즈 리덕션 (텍스처/샤프닝 앞 — 노이즈를 먼저 줄이고 디테일 강조). dispSrc 블러 기반.
+    // 3.5) 노이즈 리덕션 (텍스처/샤프닝 앞 — 노이즈를 먼저 줄이고 디테일 강조). 중성 베이스 기반.
     if (ubuf.lumaNR > 0.0 || ubuf.colorNR > 0.0) {
-        // 휘도 NR: 작은반경 고주파(노이즈+미세디테일)를 평탄부에서 제거(엣지는 보존). 휘도만 변경.
-        if (ubuf.lumaNR > 0.0) {
-            float hpL = dot(s0, LUMA) - dot(texture(texBlur, uv).rgb, LUMA);
-            float flatW = 1.0 - smoothstep(0.0, 0.06, abs(hpL));   // 엣지(큰 hp)는 보존
-            rgb -= vec3(hpL * ubuf.lumaNR * flatW);
+        // 휘도 NR: 노이즈 성분 = 중성 luma − 가이디드 필터 디노이즈드(nrBase, CPU 1회 계산).
+        // 가이디드 필터가 엣지를 보존하므로 별도 게이트 불필요(과거 gaussian+flat 게이트는
+        // 평탄부만 뭉개고 엣지 주변 노이즈를 남기는 한계 → 교체).
+        if (ubuf.lumaNR > 0.0 && ubuf.nrOn > 0.5) {
+            float noiseL = dot(s0, LUMA) - texture(nrBase, uv).r;
+            rgb -= vec3(noiseL * ubuf.lumaNR);
         }
         // 컬러 NR: 큰반경 기준 chroma 노이즈 제거(색얼룩). chroma 만 변경(휘도 불변).
         if (ubuf.colorNR > 0.0) {

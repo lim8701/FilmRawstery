@@ -362,6 +362,26 @@ class SkyMaskProvider(QQuickImageProvider):
         return self._img
 
 
+class NrBaseProvider(QQuickImageProvider):
+    """디노이즈드 중성 luma(프록시 해상도 Grayscale16)를 'image://nrbase/...' 로 제공.
+    준비 전에는 1x1(셰이더가 nrOn 게이트로 무시)이라 내용 무관."""
+
+    def __init__(self):
+        super().__init__(QQuickImageProvider.ImageType.Image)
+        self._img = QImage(1, 1, QImage.Format.Format_Grayscale16)
+        self._img.fill(0)
+
+    def set_image(self, img: QImage) -> None:
+        self._img = img
+
+    def clear(self) -> None:
+        self._img = QImage(1, 1, QImage.Format.Format_Grayscale16)
+        self._img.fill(0)
+
+    def requestImage(self, image_id, size, requested_size):  # noqa: N802
+        return self._img
+
+
 class HazeProvider(QQuickImageProvider):
     """디헤이즈 투과율 맵(소형 단일채널 Grayscale8)을 'image://haze/...' 로 제공.
     기본/클리어 = 1x1 흰색(t=1, 안개 없음) → 셰이더 물리 분기가 항등이 되어 안전."""
@@ -557,19 +577,22 @@ class Controller(QObject):
     segStatusChanged = Signal()  # 세그 상태 문구(예: 모델 다운로드 중) 갱신 알림
     cmChanged = Signal()         # 디스플레이 색관리 LUT 갱신 알림(모니터 전환/로드)
     hazeChanged = Signal()       # 디헤이즈 투과율 맵/대기광/conf 갱신 알림(DCP)
+    nrChanged = Signal()         # 휘도 NR 베이스 텍스처/준비 상태 갱신 알림
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
     _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
+    _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
                  full_provider: "RawFullProvider" = None,
                  sky_provider: "SkyMaskProvider" = None,
                  cm_provider: "DisplayCmProvider" = None,
-                 haze_provider: "HazeProvider" = None):
+                 haze_provider: "HazeProvider" = None,
+                 nr_provider: "NrBaseProvider" = None):
         super().__init__()
         self._provider = provider
         self._cm_provider = cm_provider          # 디스플레이 색관리 LUT(프리뷰 전용)
@@ -588,6 +611,11 @@ class Controller(QObject):
         self._haze_t = None         # 투과율 맵(numpy float32, 소형) — CPU export 용
         self._haze_A = [1.0, 1.0, 1.0]   # 대기광(display sRGB)
         self._haze_conf = 0.0       # 추정 신뢰도(0=물리 모델 미사용 → 톤모델 폴백)
+        self._nr_provider = nr_provider          # 디노이즈드 중성 luma 텍스처(휘도 NR 베이스)
+        self._nr_url = "image://nrbase/n?v=0"
+        self._nr_counter = 0
+        self._nr_seq = 0            # 비동기 계산 순번(이미지 전환 레이스 방지)
+        self._nr_ready = False      # 준비 전 셰이더 휘도 NR 무동작(nrOn 게이트)
         self._sky_url = "image://skymask/m?v=0"
         self._sky_counter = 0
         self._sky_seq = 0           # 비동기 세그/재조합 순번(오래된 결과 폐기)
@@ -651,6 +679,7 @@ class Controller(QObject):
         self._segStatusSig.connect(self._on_seg_status)
         self._exportProgressSig.connect(self._on_export_progress)
         self._hazeReady.connect(self._on_haze_ready)
+        self._nrReady.connect(self._on_nr_ready)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -1426,6 +1455,53 @@ class Controller(QObject):
     hazeA = Property("QVariantList", _get_haze_A, notify=hazeChanged)
     hazeConf = Property(float, _get_haze_conf, notify=hazeChanged)
 
+    # ---------- 휘도 NR 베이스: 이미지당 1회 가이디드 필터 디노이즈(중성 luma) ----------
+    def _nr_worker(self, seq: int) -> None:
+        """백그라운드: 중성 display luma 에 가이디드 필터(coeffs.NR_*) → 셰이더 nrBase 텍스처.
+        입력이 노출0·as-shot 베이스라 슬라이더와 무관 — 디코딩당 1회면 충분(haze 워커와 동형)."""
+        import numpy as np
+        import coeffs
+        from sky_seg import _guided_filter
+        res = None
+        try:
+            arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
+            disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
+            lum = (disp @ np.array([0.299, 0.587, 0.114], np.float32)).astype(np.float32)
+            res = np.clip(_guided_filter(lum, lum, coeffs.NR_RADIUS, coeffs.NR_EPS), 0.0, 1.0)
+        except Exception as exc:
+            print(f"[nr] 베이스 계산 실패(휘도 NR 비활성): {exc}")
+        self._nrReady.emit((seq, res))
+
+    @Slot(object)
+    def _on_nr_ready(self, payload) -> None:
+        import numpy as np
+        seq, res = payload
+        if seq != self._nr_seq:
+            return                       # 이미지 전환됨 → 낡은 결과 폐기
+        if res is None:
+            self._nr_ready = False
+            if self._nr_provider is not None:
+                self._nr_provider.clear()
+        else:
+            if self._nr_provider is not None:
+                u16 = np.ascontiguousarray((res * 65535.0 + 0.5).astype(np.uint16))
+                hh, ww = u16.shape
+                self._nr_provider.set_image(
+                    QImage(u16.data, ww, hh, ww * 2, QImage.Format.Format_Grayscale16).copy())
+            self._nr_ready = True
+        self._nr_counter += 1
+        self._nr_url = f"image://nrbase/n?v={self._nr_counter}"
+        self.nrChanged.emit()
+
+    def _get_nr_url(self) -> str:
+        return self._nr_url
+
+    def _get_nr_ready(self) -> bool:
+        return self._nr_ready
+
+    nrBaseUrl = Property(str, _get_nr_url, notify=nrChanged)
+    nrReady = Property(bool, _get_nr_ready, notify=nrChanged)
+
     def _mask_worker(self, seq: int, keys) -> None:
         import os
         import numpy as np
@@ -1614,6 +1690,15 @@ class Controller(QObject):
         self._haze_url = f"image://haze/h?v={self._haze_counter}"
         self.hazeChanged.emit()
         threading.Thread(target=self._haze_worker, args=(self._haze_seq,), daemon=True).start()
+        # 휘도 NR 베이스: 이전 텍스처 무효화(준비 전엔 nrOn=0 → 휘도 NR 무동작) 후 재계산.
+        self._nr_seq += 1
+        self._nr_ready = False
+        if self._nr_provider is not None:
+            self._nr_provider.clear()
+        self._nr_counter += 1
+        self._nr_url = f"image://nrbase/n?v={self._nr_counter}"
+        self.nrChanged.emit()
+        threading.Thread(target=self._nr_worker, args=(self._nr_seq,), daemon=True).start()
         # 비-fresh 재디코딩(렌즈 보정·WB 커밋 등)은 editsReady(복원)를 안 거친다 → 활성 마스크가
         # 있었으면 같은 클래스로 새 프록시에 재생성(렌즈 보정은 기하 변경 → 정렬 위해 재생성 필수).
         # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.
@@ -1841,8 +1926,11 @@ def main() -> int:
     haze_provider = HazeProvider()
     engine.addImageProvider("haze", haze_provider)
 
+    nr_provider = NrBaseProvider()
+    engine.addImageProvider("nrbase", nr_provider)
+
     controller = Controller(provider, curve_provider, stamp_provider, full_provider,
-                            sky_provider, cm_provider, haze_provider)
+                            sky_provider, cm_provider, haze_provider, nr_provider)
     ctx = engine.rootContext()
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)

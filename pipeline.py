@@ -500,9 +500,12 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # export 의 NR 이 프리뷰보다 강해짐(과거 버그 — 밝기 스케일만큼 고주파가 커지므로).
     ln = float(p.get("lumaNR", 0)); cn = float(p.get("colorNR", 0))
     if ln > 0.0:
-        hpL = nlum - _blur_luma(nlum, sigma_tex)               # 셰이더: luma(s0)-luma(texBlur)
-        flatw = 1.0 - _smoothstep(0.0, 0.06, np.abs(hpL))      # 엣지 보존
-        c = np.clip(c - (hpL * ln * flatw)[..., None], 0.0, 1.0)
+        # 휘도 NR: 노이즈 성분 = 중성 luma − 가이디드 필터 디노이즈드(엣지 보존형).
+        # 셰이더는 같은 필터를 프록시에서 CPU 로 1회 계산한 nrBase 텍스처를 사용(main.py NR 워커).
+        from sky_seg import _guided_filter
+        r = max(1, int(round(coeffs.NR_RADIUS * scale)))       # 프록시 px → 풀해상도 px
+        noise_l = nlum - _guided_filter(nlum, nlum, r, coeffs.NR_EPS)
+        c = np.clip(c - (noise_l * ln)[..., None], 0.0, 1.0)
     if cn > 0.0:
         bl_ = _blur_rgb(neutral_disp, sigma_cla)               # 셰이더: claBlur(중성 RGB)
         # luma(blur_rgb) == blur(luma) (선형 연산) → lb 재사용
