@@ -1881,12 +1881,78 @@ def _print_banner() -> None:
         pass                                                 # 배너는 부가 기능 — 절대 시작을 막지 않음
 
 
+# ---------- 단일 인스턴스 ----------
+_SINGLE_INSTANCE_NAME = "FilmRawstery-single-instance"
+
+
+def _acquire_single_instance(argv_path: str):
+    """단일 인스턴스 확보. 반환 (proceed, server):
+    - 이미 실행 중: 그 인스턴스에 '창 활성화(+열 경로)' 메시지를 보내고 (False, None) → 즉시 종료.
+    - 첫 인스턴스: QLocalServer 를 점유하고 (True, server). 크래시 잔재(유닉스 소켓 파일)는
+      removeServer 로 정리(Windows named pipe 는 프로세스와 함께 사라져 무해).
+    - 서버 생성 실패(비정상 환경): 가드 없이 계속 실행(앱을 못 켜는 것보단 낫다)."""
+    from PySide6.QtNetwork import QLocalServer, QLocalSocket
+    sock = QLocalSocket()
+    sock.connectToServer(_SINGLE_INSTANCE_NAME)
+    if sock.waitForConnected(300):
+        sock.write((argv_path or "").encode("utf-8") + b"\n")
+        sock.flush()
+        sock.waitForBytesWritten(500)
+        sock.disconnectFromServer()
+        print("[single-instance] 이미 실행 중 — 기존 창 활성화 요청 후 종료")
+        return False, None
+    QLocalServer.removeServer(_SINGLE_INSTANCE_NAME)
+    server = QLocalServer()
+    if not server.listen(_SINGLE_INSTANCE_NAME):
+        print(f"[single-instance] 서버 생성 실패(가드 없이 계속): {server.errorString()}")
+        return True, None
+    return True, server
+
+
+def _serve_single_instance(server, root, controller) -> None:
+    """두 번째 실행이 보낸 메시지 수신 → 창 복원/활성화 + (있으면) 전달된 경로 열기."""
+    if server is None:
+        return
+
+    def on_conn():
+        conn = server.nextPendingConnection()
+        if conn is None:
+            return
+
+        def handle():
+            data = bytes(conn.readAll()).decode("utf-8", "ignore").strip()
+            try:
+                if root.windowStates() & Qt.WindowState.WindowMinimized:
+                    root.showNormal()
+                root.show()
+                root.raise_()
+                root.requestActivate()
+                if data:
+                    p = Path(data)
+                    if p.is_file():
+                        controller.loadPath(str(p))
+                    elif p.is_dir():
+                        controller.setFolderPath(str(p))
+            except Exception as exc:      # 외부 메시지 처리 실패가 앱을 흔들지 않게
+                print(f"[single-instance] 메시지 처리 실패(무시): {exc}")
+
+        conn.readyRead.connect(handle)
+        if conn.bytesAvailable():   # 클라이언트가 이미 쓰고 끊었으면 readyRead 를 놓침 → 즉시 처리
+            handle()
+
+    server.newConnection.connect(on_conn)
+
+
 def main() -> int:
     _print_banner()
     if PREFER_HIGH_PERF_GPU:
         _prefer_high_performance_gpu()   # 외장 GPU 우선(다음 실행부터). Windows 한정.
 
     app = QGuiApplication(sys.argv)
+    # 단일 인스턴스 가드 — splash/무거운 임포트 *전*에 확인해 두 번째 실행은 즉시 끝나게.
+    proceed, si_server = _acquire_single_instance(sys.argv[1] if len(sys.argv) > 1 else "")
+    if not proceed:
+        return 0
     splash = _show_splash(app)   # 콜드 스타트 동안 표시(아래 무거운 초기화를 덮는다)
 
     _load_heavy_modules()        # numpy/scipy/rawpy 등은 splash 표시 후 로드(앞 구간 단축)
@@ -1942,6 +2008,7 @@ def main() -> int:
     root = engine.rootObjects()[0]
     apply_dark_titlebar(root)                      # OS 타이틀바 다크 모드(Windows)
     _close_splash_when_ready(root, splash)         # 메인 창 첫 프레임에 스플래시 닫기
+    _serve_single_instance(si_server, root, controller)   # 재실행 → 이 창 활성화(+경로 열기)
 
     # 디스플레이 색관리(프리뷰 전용): 현재 모니터 ICC 로 CM LUT 생성 + 모니터 전환 시 재생성.
     def _refresh_cm(*_):
