@@ -128,6 +128,10 @@ ApplicationWindow {
     component SkySlider: ColumnLayout {
         id: skyRoot
         property alias value: skySld.value
+        // 내부 Slider 의 pressed 노출 — undo 릴리즈 커밋 게이트(editDragActive)가 참조.
+        // ⚠️래퍼라 이게 없으면 skyXxxSlider.pressed 가 조용히 undefined(falsy)로 평가돼
+        //   마스킹 슬라이더만 게이트가 안 걸림(실제 발생했던 버그).
+        readonly property alias pressed: skySld.pressed
         property string label: ""
         property string suffix: ""
         property real defaultValue: 0.0
