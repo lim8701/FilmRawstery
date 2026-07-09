@@ -157,7 +157,11 @@ Item {
             }
         }
     }
+    // 포인트 드래그 진행 중 여부 — undo 커밋 게이트(Main.qml editDragActive)가 참조.
+    readonly property bool dragging: dragArea.dragIdx >= 0
+
     MouseArea {
+        id: dragArea
         anchors.fill: parent
         preventStealing: true      // ScrollView(Flickable)가 드래그를 가로채지 못하게
         property int dragIdx: -1

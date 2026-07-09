@@ -545,27 +545,48 @@ ApplicationWindow {
         if (win._applying || controller.imagePath === "") return
         editSaveTimer.restart()
     }
-    // 편집 커밋(사이드카 저장 + undo 스텝 push). 마우스 버튼이 눌려 있는 동안(=드래그 중)은
-    // 보류하고 릴리즈 시점에 1회 커밋 — 느린 드래그 중 디바운스가 여러 번 만료돼 undo 스텝이
-    // 쪼개지는 것 방지(드래그 1회 = 스텝 1개 보장).
+    // 편집 커밋(사이드카 저장 + undo 스텝 push). 드래그 진행 중에는 보류하고 릴리즈 시점에
+    // 1회 커밋 — 느린 드래그 중 디바운스가 여러 번 만료돼 undo 스텝이 쪼개지는 것 방지
+    // (드래그 1회 = 스텝 1개 보장).
     function commitEditSnapshot() {
         if (win._applying || controller.imagePath === "") return
-        if (globalPress.active) { editSaveTimer.restart(); return }   // 드래그 중 → 릴리즈 후
+        if (win.editDragActive) { editSaveTimer.restart(); return }   // 드래그 중 → 릴리즈 후
         var snap = win.editParams()
         controller.saveEdits(snap)
         win.histPush(JSON.stringify(snap))   // 커밋된 편집 1개 = undo 스텝 1개
     }
-    // 윈도우 전역 프레스 감시(패시브 — 어떤 컨트롤의 grab 도 빼앗지 않음). 슬라이더/커브/크롭 등
-    // 모든 드래그 소스를 열거 없이 커버. 릴리즈 순간 보류 중 커밋이 있으면 즉시 실행.
+    // 드래그 진행 중 여부 — 편집에 관여하는 모든 드래그 소스를 **명시적으로 열거**(결정론적).
+    // 과거 전역 PointHandler(패시브 감시)만으로는 일부 컨트롤의 press 를 이벤트 전달 경로에 따라
+    // 놓칠 수 있었음 → 컨트롤들의 pressed 를 직접 참조. PointHandler 는 보조 안전망으로 유지.
+    readonly property bool editDragActive:
+        globalPress.active
+        || expSlider.pressed || conSlider.pressed || hiSlider.pressed || shSlider.pressed
+        || whSlider.pressed || blSlider.pressed || tempSlider.pressed || tintSlider.pressed
+        || simStrengthSlider.pressed || texSlider.pressed || claritySlider.pressed
+        || dehazeSlider.pressed || vibSlider.pressed || satSlider.pressed
+        || hslHueSlider.pressed || hslSatSlider.pressed || hslLumSlider.pressed
+        || cgShHueSlider.pressed || cgShSatSlider.pressed || cgMidHueSlider.pressed
+        || cgMidSatSlider.pressed || cgHiHueSlider.pressed || cgHiSatSlider.pressed
+        || cgBalanceSlider.pressed || vignetteSlider.pressed || grainSlider.pressed
+        || grainSizeSlider.pressed || sharpAmtSlider.pressed || sharpRadiusSlider.pressed
+        || sharpDetailSlider.pressed || sharpMaskSlider.pressed || lumaNrSlider.pressed
+        || colorNrSlider.pressed || rotAngleSlider.pressed || geoVSlider.pressed
+        || geoHSlider.pressed || geoScaleSlider.pressed
+        || skyExpSlider.pressed || skyTempSlider.pressed || skyTintSlider.pressed
+        || skySatSlider.pressed || skyHiSlider.pressed || skyShadowsSlider.pressed
+        || skyTextureSlider.pressed || skyClaritySlider.pressed || skyDehazeSlider.pressed
+        || curveEditor.dragging || cropOverlay.dragging
+    // 릴리즈 순간(어떤 소스든 드래그 종료) 보류 중 커밋이 있으면 즉시 실행 — 릴리즈 = undo 스텝.
+    onEditDragActiveChanged: {
+        if (!editDragActive && editSaveTimer.running) {
+            editSaveTimer.stop()
+            win.commitEditSnapshot()
+        }
+    }
+    // 전역 프레스 감시(패시브) — 열거에서 빠진 미래의 드래그 소스에 대한 안전망.
     PointHandler {
         id: globalPress
         acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
-        onActiveChanged: {
-            if (!active && editSaveTimer.running) {
-                editSaveTimer.stop()
-                win.commitEditSnapshot()
-            }
-        }
     }
     Timer {
         id: editSaveTimer
@@ -2244,6 +2265,9 @@ ApplicationWindow {
                         property real rotPx: 0                   // 회전 커서 위치(오버레이 좌표)
                         property real rotPy: 0
                         property int rotCorner: 0                // 활성 회전 코너(0=NW,1=NE,2=SW,3=SE)
+                        // 크롭 조작(이동/리사이즈/회전) 진행 중 — undo 커밋 게이트(editDragActive)가 참조.
+                        property int resizeDrags: 0              // 리사이즈 핸들(Repeater) press 카운터
+                        readonly property bool dragging: rotating || cropMoveArea.pressed || resizeDrags > 0
 
                         // (1) 바깥 어둡게(시각용, 마우스 비소비 -> 아래 회전 영역이 받음)
                         Rectangle { color: "#88000000"; x: 0; y: 0; width: parent.width; height: parent.bt }
@@ -2330,6 +2354,7 @@ ApplicationWindow {
                             }
 
                             MouseArea {
+                                id: cropMoveArea
                                 anchors.fill: parent
                                 hoverEnabled: true       // 박스 내부 호버 소비 -> 회전 커서 안 뜸
                                 cursorShape: Qt.SizeAllCursor
@@ -2368,6 +2393,8 @@ ApplicationWindow {
                                     cursorShape: (parent.hl && parent.ht) || (parent.hr && parent.hb) ? Qt.SizeFDiagCursor
                                                : (parent.hr && parent.ht) || (parent.hl && parent.hb) ? Qt.SizeBDiagCursor
                                                : (parent.hl || parent.hr) ? Qt.SizeHorCursor : Qt.SizeVerCursor
+                                    // Repeater delegate 라 외부에서 pressed 참조 불가 → 카운터로 집계
+                                    onPressedChanged: cropOverlay.resizeDrags += pressed ? 1 : -1
                                     onPositionChanged: (mouse) => {
                                         if (!pressed) return    // 호버만으로는 리사이즈 안 함(클릭&드래그 전용)
                                         var p = mapToItem(cropOverlay, mouse.x, mouse.y)
