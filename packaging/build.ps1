@@ -11,7 +11,11 @@ $venvPy = Join-Path $proj '.venv\Scripts\python.exe'
 $spec = Join-Path $proj 'FilmRawstery.spec'
 $exe  = Join-Path $proj 'dist\FilmRawstery\FilmRawstery.exe'
 # zip 은 dist/ 안에 생성(프로젝트 루트 오염 방지, gitignore 동일 적용). [1/4] 클린이 이전 zip 도 제거.
-$zip  = Join-Path $proj 'dist\FilmRawstery-win64.zip'
+# 파일명에 버전 명시 — main.py APP_VERSION 을 파싱해 자동 동기화(별도 갱신 지점 없음).
+$verMatch = Select-String -Path (Join-Path $proj 'main.py') -Pattern 'APP_VERSION = "([^"]+)"'
+if (-not $verMatch) { throw "APP_VERSION not found in main.py" }
+$ver = $verMatch.Matches[0].Groups[1].Value
+$zip  = Join-Path $proj ("dist\FilmRawstery-v{0}-win64.zip" -f $ver)
 
 if (-not (Test-Path $venvPy)) { throw "venv python not found: $venvPy" }
 if (-not (Test-Path $spec))   { throw "spec not found: $spec" }
