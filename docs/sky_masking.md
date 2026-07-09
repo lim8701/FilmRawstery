@@ -136,21 +136,30 @@ sky=2·ImageNet 동일이라 `sky_seg.py`의 `_REPO`/`MODEL_PATH` 한 줄 교체
 
 ## 4. 마스킹 조정 (9개)
 
-마스크 영역에만 적용되는 로컬 조정. 셰이더(`adjust.frag` 9.7 단계)와 `pipeline._sky_adjust`에
-**동일 수식**으로 존재(프리뷰=Export). 적용 위치는 색보정이 다 끝난 **display sRGB, 비네팅 직전**.
-마스크 `m` 스케일이 국소화하므로 `m=0`인 곳은 모든 항이 항등(별도 mix 불필요).
+마스크 영역에만 적용되는 로컬 조정. **전역 도구와 대응되는 항목은 전역과 같은 단계·같은
+수식**에서 강도만 마스크로 게이팅(`전역강도 + 마스크강도·m`)해 전역 조절과 동일하게 반응한다:
+
+| 조정 | 적용 단계/수식(요지) | 비고 |
+|------|-----------|------|
+| Exposure | **프론트엔드(0단계)**: `lin × 2^(exposure + skyExp·m)` | 전역 노출과 동일한 진짜 stop — filmic 하이라이트 롤오프 적용 |
+| Highlights/Shadows | **tone_zones(3단계)**: `hi + skyHi·m`, `sh + skySh·m` 강도 합산 | 전역과 동일한 영역 톤맵(국소 평균 휘도 lb·넓은 범위) |
+| Dehaze | **디헤이즈(6단계)**: `dehaze + skyDehaze·m` 강도 합산 → `dehazeApply()` | 전역과 동일(LUT/커브 전, '+'=DCP 물리 공유, 픽셀별 부호 분기) |
+
+나머지는 셰이더 9.7 단계(색보정 끝난 **display sRGB, 비네팅 직전**)와 `pipeline._sky_adjust`
+동일 수식(마스크 invert 는 양쪽 모두 마스크에 1회 베이크):
 
 | 조정 | 수식(요지) | 비고 |
 |------|-----------|------|
-| Exposure | `rgb *= exp2(skyExp·m)` | 국소 노출(stop) |
-| Temp | `r*=(1+0.20·m)`, `b*=(1-0.20·m)` | +따뜻 |
+| Temp | `r*=(1+0.20·m)`, `b*=(1-0.20·m)` | +따뜻 (display 근사) |
 | Tint | `g *= (1 − skyTint·0.15·m)` | +마젠타 / −녹 (Temp와 함께 WB 완성) |
-| Highlights | `exp2(skyHi·hiW·m)`, `hiW=smoothstep(.5,1,L)` | 밝은 부분 |
-| Shadows | `exp2(skySh·shW·m)`, `shW=1−smoothstep(0,.5,L)` | 어두운 부분 |
 | Texture | `+= (s0 − texBlur)·1.6·m` | 중주파 디테일 |
 | Clarity | `+= (s0lum − claBlurlum)·0.8·mid·m` | 중간톤 로컬대비 |
-| Dehaze | 전역 dehaze 톤모델 동일(로컬대비/대비/흰베일/채도) | 하늘 대표 도구 |
 | Saturation | `mix(L, rgb, 1+skySat·m)` | |
+
+> 과거에는 Exposure/Hi/Sh/Dehaze 도 9.7 display 공간(LUT/커브 뒤)에서 적용했으나, 전역 조절과
+> 반응이 달라(노출: 감마로 ~2.4배 강함·하드클립 / hi·sh: 픽셀휘도 근사로 밋밋 / dehaze: LUT 뒤
+> 입력 차이) 전역 단계 합산으로 이전됨.
+> 검증: 마스크=전체(1.0)일 때 마스크 조절 == 전역 조절 (±1 LSB — 톤모델/DCP/음수 방향 모두).
 
 ⚠️ **로컬대비 3종(Texture/Clarity/Dehaze)의 base = 중성 dispSrc(`s0`) + `texBlur`/`claBlur`**
 (전역 텍스처/클래리티와 동일 base). CPU export는 셰이더 블러 텍스처에 대응해 `neutral_disp`의

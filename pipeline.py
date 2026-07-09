@@ -114,25 +114,28 @@ def _sharpen(c, disp, amt, radius_px, detail, mask, scale):
 
 
 def _dehaze_apply(c, amt, ld, t=None, A=None, conf=0.0):
-    """디헤이즈 공용 — 전역(6단계)과 하늘 로컬(9.7단계)이 공유(셰이더 dehazeApply 와 동일 수식).
-    amt: 스칼라(전역) 또는 (H,W) 배열(하늘 = 강도×마스크). ld: 로컬대비(휘도, H,W).
-    t 있음 & conf>0: DCP 물리 복원 (c−A)/te+A + 잔여 톤모델을 conf 로 톤모델과 블렌드.
-    t 없음(음수 방향·추정 실패): 톤 모델(흰 베일)."""
+    """디헤이즈 공용 — 셰이더 dehazeApply 와 동일 수식.
+    amt: 스칼라(전역만) 또는 (H,W) 배열(전역+마스크 합산 — 픽셀별 부호 혼재 가능).
+    ld: 로컬대비(휘도, H,W). amt>0 인 픽셀만 DCP 물리 복원(+잔여 톤모델)을 conf 로 블렌드,
+    amt<=0 픽셀·t 없음·추정 실패: 톤 모델(흰 베일)."""
     tone = _dehaze_core(c, amt, ld)
-    if t is not None and conf > 0.0:
-        pos = np.maximum(amt, 0.0)
-        te = np.maximum(1.0 - _b3(pos) * (1.0 - t[..., None]), coeffs.DEHAZE_TMIN)
-        Av = np.asarray(A, np.float32)
-        phys = _dehaze_core((c - Av) / te + Av, pos * coeffs.DEHAZE_RESID, ld)
-        return tone + (phys - tone) * np.float32(conf)
-    return tone
+    if t is None or conf <= 0.0 or not np.any(np.asarray(amt) > 0.0):
+        return tone
+    pos = np.maximum(amt, 0.0)
+    te = np.maximum(1.0 - _b3(pos) * (1.0 - t[..., None]), coeffs.DEHAZE_TMIN)
+    Av = np.asarray(A, np.float32)
+    phys = _dehaze_core((c - Av) / te + Av, pos * coeffs.DEHAZE_RESID, ld)
+    mixed = tone + (phys - tone) * np.float32(conf)
+    if np.ndim(amt):   # 배열: 픽셀별 부호 분기(셰이더의 per-pixel if 와 동일)
+        return np.where(_b3(np.asarray(amt)) > 0.0, mixed, tone)
+    return mixed       # 스칼라: 위 any(amt>0) 통과 = 양수
 
 
 def _dehaze(c, amt, sigma, t_full=None, A=None, conf=0.0):
-    """전역 디헤이즈 (프리뷰 셰이더 6단계와 동일) — 로컬대비를 현재 c 에서 계산해 공용 코어 적용."""
+    """전역(+마스크 합산) 디헤이즈 (프리뷰 셰이더 6단계와 동일) — 로컬대비는 현재 c 기준."""
     lum = c @ LUMA
     ld = lum - _blur_luma(lum, sigma)
-    return _dehaze_apply(c, amt, ld, t=t_full if amt > 0.0 else None, A=A, conf=conf)
+    return _dehaze_apply(c, amt, ld, t=t_full, A=A, conf=conf)
 
 
 def _presence(c, sat, vib):
@@ -361,32 +364,23 @@ def _color_grade(c, hue_sh, sat_sh, hue_mid, sat_mid, hue_hi, sat_hi, balance):
     return np.clip(c + delta, 0.0, 1.0).astype(np.float32)
 
 
-def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None,
-                haze_t=None, haze_A=None, haze_conf=0.0):
+def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
     """하늘(로컬) 조정 — 셰이더 adjust.frag 9.7 단계와 동일 수식. m=0 인 곳은 항등.
-    c=display sRGB (H,W,3), m=마스크(H,W)[0,1], sp=파라미터 dict.
-    nd_texhi=중성 텍스처 고주파(RGB), nd_lc=중성 로컬대비(luma) — 셰이더 dispSrc 블러 대응.
-    haze_t/A/conf: DCP 추정치 — '+' 디헤이즈에 전역과 동일한 물리 복원(강도×마스크) 적용."""
-    if sp["invert"]:
-        m = 1.0 - m
+    c=display sRGB (H,W,3), m=마스크(H,W)[0,1] (invert 는 render_full 이 이미 베이크),
+    sp=파라미터 dict. nd_texhi=중성 텍스처 고주파(RGB), nd_lc=중성 로컬대비(luma).
+    ⚠️노출/하이라이트/섀도/디헤이즈(sp exp/hi/sh/dehaze)는 여기가 아니라 전역과 같은
+      단계(프론트엔드/tone_zones/디헤이즈 6단계)에서 강도 합산으로 적용됨 — 전역 조절과
+      동일한 반응(진짜 stop·영역 톤맵·LUT 전 디헤이즈) 보장."""
     m1 = m[..., None]
-    out = c * np.float32(2.0) ** (sp["exp"] * m1)              # 노출
+    out = c.copy()
     out[..., 0] *= (1.0 + sp["temp"] * coeffs.SKY_TEMP * m)    # 색온도(+따뜻 R↑B↓)
     out[..., 2] *= (1.0 - sp["temp"] * coeffs.SKY_TEMP * m)
     out[..., 1] *= (1.0 - sp["tint"] * coeffs.SKY_TINT * m)    # 틴트(+마젠타 G↓)
-    L1 = out @ LUMA                                            # 하이라이트/섀도 국소 노출
-    hiW = _smoothstep(0.5, 1.0, L1)
-    shW = 1.0 - _smoothstep(0.0, 0.5, L1)
-    out = out * (np.float32(2.0) ** ((sp["hi"] * hiW + sp["sh"] * shW) * m)[..., None])
     # 로컬대비 3종 — 전역과 동일 코어 공유(계수×마스크를 amt 로, 중성 base 를 로컬대비로 전달).
     if sp["texture"] != 0.0 and nd_texhi is not None:          # 텍스처(중주파, 중성 고주파)
         out = _texture_core(out, sp["texture"] * m, nd_texhi)
     if sp["clarity"] != 0.0 and nd_lc is not None:             # 클래리티(중간톤 로컬대비, 중성)
         out = _clarity_core(out, sp["clarity"] * m, nd_lc)
-    if sp["dehaze"] != 0.0 and nd_lc is not None:              # 디헤이즈(전역과 동일 공용 코어, 중성)
-        out = _dehaze_apply(out, sp["dehaze"] * m, nd_lc,
-                            t=haze_t if sp["dehaze"] > 0.0 else None,
-                            A=haze_A, conf=haze_conf)
     la = (out @ LUMA)[..., None]                               # 채도
     out = la + (out - la) * (1.0 + sp["sat"] * m1)
     return np.clip(out, 0.0, 1.0).astype(np.float32)
@@ -429,6 +423,25 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     h, w, _ = rgb16.shape
     scale = max(h, w) / float(proxy_edge)     # 프록시 텍셀 반경 -> 풀해상도 px
 
+    # 하늘(로컬) 조정 파라미터 + 마스크(프록시 해상도 → 풀해상도 업샘플, invert 여기서 베이크).
+    # 마스크 노출/톤존이 전역과 같은 단계(프론트엔드/tone_zones)에서 적용되므로 여기서 먼저 준비.
+    sky = {"exp": float(p.get("skyExp", 0)), "temp": float(p.get("skyTemp", 0)),
+           "tint": float(p.get("skyTint", 0)), "sat": float(p.get("skySat", 0)),
+           "hi": float(p.get("skyHi", 0)), "sh": float(p.get("skyShadows", 0)),
+           "texture": float(p.get("skyTexture", 0)), "clarity": float(p.get("skyClarity", 0)),
+           "dehaze": float(p.get("skyDehaze", 0)), "invert": bool(p.get("skyInvert", False))}
+    sky_any = any(sky[k] for k in ("exp", "temp", "tint", "sat", "hi", "sh",
+                                   "texture", "clarity", "dehaze"))
+    skym_full = None
+    if sky_any and sky_mask is not None:
+        sm = np.asarray(sky_mask, np.float32)
+        mh, mw = sm.shape[:2]
+        if (mh, mw) != (h, w):
+            sm = zoom(sm, (h / mh, w / mw), order=1).astype(np.float32)
+        skym_full = np.clip(sm, 0.0, 1.0)
+        if sky["invert"]:
+            skym_full = 1.0 - skym_full       # 셰이더 skyM 과 동일하게 1회 베이크
+
     # === scene-linear 프론트엔드(셰이더 adjust.frag 와 동일 수학) ===
     # 카메라네이티브 감마 -> 선형화 -> 자동노출(중앙값) -> WB(카메라공간) -> cam->sRGB 매트릭스
     # -> scene-linear sRGB -> 유저노출(scene-linear) -> filmic(단일 톤커브) -> display sRGB.
@@ -440,7 +453,13 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     neutral_disp = wb.filmic((nat * wb.rel_gain(cam, ref, as_shot, as_shot_tint).astype(np.float32))
                              @ M.T).astype(np.float32)
     nat = nat * wb.rel_gain(cam, ref, kelvin, tint).astype(np.float32)   # 유저 WB(카메라공간)
-    linsrgb = (nat @ M.T) * (2.0 ** float(p.get("exposure", 0.0)))   # 노출 = scene-linear 배수
+    # 노출 = scene-linear 배수. 마스크 노출(skyExp)은 전역과 같은 지수에 합산(셰이더 0단계 동일)
+    # → 마스크 영역도 진짜 stop + filmic 하이라이트 롤오프로 반응.
+    if skym_full is not None and sky["exp"] != 0.0:
+        expo_gain = np.exp2(float(p.get("exposure", 0.0)) + sky["exp"] * skym_full)[..., None]
+    else:
+        expo_gain = 2.0 ** float(p.get("exposure", 0.0))
+    linsrgb = (nat @ M.T) * expo_gain
     disp = wb.filmic(linsrgb).astype(np.float32)                     # scene→display[0,1]
     # 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성(흰색).
     # ⚠️쿨(청/녹 우세) 하이라이트만 중성화한다 — 밝은 빨강/주황 광원(예: 네온·간판)은
@@ -471,22 +490,6 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     stamp_text = str(p.get("stampText", "") or "")
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
     stamp_rot = int(p.get("stampRot", 0))   # 촬영 방향(센서→업라이트 CW 회전) — 데이트백 회전/코너
-    # 하늘(로컬) 조정 — 마스크는 프록시 해상도라 풀해상도로 업샘플(부드러운 알파 → bilinear OK).
-    sky = {"exp": float(p.get("skyExp", 0)), "temp": float(p.get("skyTemp", 0)),
-           "tint": float(p.get("skyTint", 0)), "sat": float(p.get("skySat", 0)),
-           "hi": float(p.get("skyHi", 0)), "sh": float(p.get("skyShadows", 0)),
-           "texture": float(p.get("skyTexture", 0)), "clarity": float(p.get("skyClarity", 0)),
-           "dehaze": float(p.get("skyDehaze", 0)), "invert": bool(p.get("skyInvert", False))}
-    sky_any = any(sky[k] for k in ("exp", "temp", "tint", "sat", "hi", "sh",
-                                   "texture", "clarity", "dehaze"))
-    skym_full = None
-    if sky_any and sky_mask is not None:
-        sm = np.asarray(sky_mask, np.float32)
-        mh, mw = sm.shape[:2]
-        if (mh, mw) != (h, w):
-            sm = zoom(sm, (h / mh, w / mw), order=1).astype(np.float32)
-        skym_full = np.clip(sm, 0.0, 1.0)
-
     # --- 전역/공간 단계 (전체 배열). 노출/하이라이트는 filmic 프론트엔드에서 이미 처리됨 ---
     sigma_tex = 1.5 * scale     # 프리뷰 텍스처 블러에 대응
     sigma_cla = 7.0 * scale     # 프리뷰 클래리티/디헤이즈/톤영역 마스크 블러에 대응
@@ -494,7 +497,15 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # hi/sh 국소 톤맵 마스크 = 중성 베이스(neutral_disp)의 국소 평균 휘도. 셰이더 claBlur(중성) 대응.
     nlum = (neutral_disp @ LUMA).astype(np.float32)
     lb = _blur_luma(nlum, sigma_cla)
-    c = np.maximum(_tone_zones(c, hi, sh, wh, bl, lb), 0.0)
+    # 마스크 하이라이트/섀도(skyHi/skyShadows)는 전역과 같은 tone_zones 에서 강도 합산
+    # (셰이더 3단계 동일 — 과거 9.7 픽셀휘도 근사와 달리 전역과 동일한 영역 톤맵 반응).
+    hi_eff, sh_eff = hi, sh
+    if skym_full is not None:
+        if sky["hi"] != 0.0:
+            hi_eff = hi + sky["hi"] * skym_full
+        if sky["sh"] != 0.0:
+            sh_eff = sh + sky["sh"] * skym_full
+    c = np.maximum(_tone_zones(c, hi_eff, sh_eff, wh, bl, lb), 0.0)
     # 노이즈 리덕션(텍스처/샤프닝 앞) — 셰이더 3.5 단계와 동일하게 **중성 베이스**(dispSrc 대응)에서
     # 고주파/크로마를 뽑아 편집본 c 에서 뺀다. ⚠️편집본 기반으로 계산하면 노출을 올린 사진에서
     # export 의 NR 이 프리뷰보다 강해짐(과거 버그 — 밝기 스케일만큼 고주파가 커지므로).
@@ -527,8 +538,13 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         th, tw = np.asarray(ht).shape[:2]
         haze_t_full = np.clip(zoom(np.asarray(ht, np.float32), (h / th, w / tw), order=1),
                               0.0, 1.0)[:h, :w]
-    if deh != 0.0:
-        c = _dehaze(c, deh, sigma_cla, t_full=haze_t_full, A=haze_A, conf=haze_conf)
+    # 마스크 디헤이즈(skyDehaze)도 전역과 같은 단계에서 강도 합산(셰이더 6단계 동일 —
+    # 과거 9.7 적용은 LUT/커브 뒤라 같은 값에도 결과가 달랐음).
+    deh_amt = deh
+    if skym_full is not None and sky["dehaze"] != 0.0:
+        deh_amt = deh + sky["dehaze"] * skym_full
+    if np.any(np.asarray(deh_amt) != 0.0):
+        c = _dehaze(c, deh_amt, sigma_cla, t_full=haze_t_full, A=haze_A, conf=haze_conf)
     np.clip(c, 0.0, 1.0, out=c)
     _prog(0.55)   # 전역/공간 단계(블러·텍스처·클래리티·샤프닝·디헤이즈·NR) 완료
 
@@ -554,12 +570,13 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     else:
         grain2d = None
 
-    # 하늘(로컬) 조정용 중성 로컬대비(셰이더 dispSrc 블러 대응) — 텍스처/클래리티/디헤이즈 시만 계산.
+    # 하늘(로컬) 조정용 중성 로컬대비(셰이더 dispSrc 블러 대응) — 텍스처/클래리티 시만 계산.
+    # (마스크 디헤이즈는 전역 6단계로 이전돼 여기선 불필요)
     nd_texhi = nd_lc = None
     if skym_full is not None:
         if sky["texture"] != 0.0:
             nd_texhi = (neutral_disp - _blur_rgb(neutral_disp, sigma_tex)).astype(np.float32)
-        if sky["clarity"] != 0.0 or sky["dehaze"] != 0.0:
+        if sky["clarity"] != 0.0:
             ndl = (neutral_disp @ LUMA).astype(np.float32)
             nd_lc = (ndl - _blur_luma(ndl, sigma_cla)).astype(np.float32)
 
@@ -589,9 +606,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         if skym_full is not None:                                      # 하늘(로컬) 조정 — 비네팅 앞
             blk = _sky_adjust(blk, skym_full[y:y + strip], sky,
                               None if nd_texhi is None else nd_texhi[y:y + strip],
-                              None if nd_lc is None else nd_lc[y:y + strip],
-                              haze_t=None if haze_t_full is None else haze_t_full[y:y + strip],
-                              haze_A=haze_A, haze_conf=haze_conf)
+                              None if nd_lc is None else nd_lc[y:y + strip])
         if vig_mask is not None:
             blk = blk * vig_mask[y:y + strip, :, None]
         out[y:y + strip] = np.rint(np.clip(blk, 0.0, 1.0) * maxv).astype(dt)
