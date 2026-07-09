@@ -10,7 +10,8 @@ $proj = Split-Path -Parent $PSScriptRoot          # packaging/ -> project root
 $venvPy = Join-Path $proj '.venv\Scripts\python.exe'
 $spec = Join-Path $proj 'FilmRawstery.spec'
 $exe  = Join-Path $proj 'dist\FilmRawstery\FilmRawstery.exe'
-$zip  = Join-Path $proj 'FilmRawstery-win64.zip'
+# zip 은 dist/ 안에 생성(프로젝트 루트 오염 방지, gitignore 동일 적용). [1/4] 클린이 이전 zip 도 제거.
+$zip  = Join-Path $proj 'dist\FilmRawstery-win64.zip'
 
 if (-not (Test-Path $venvPy)) { throw "venv python not found: $venvPy" }
 if (-not (Test-Path $spec))   { throw "spec not found: $spec" }

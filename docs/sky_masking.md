@@ -5,7 +5,7 @@
 Export(numpy)가 동일 결과를 내도록 양쪽에 같은 수식을 유지한다.
 
 관련 파일: `sky_seg.py`(엔진) · `shaders/adjust.frag`(프리뷰/GPU export) · `pipeline.py`(CPU export) ·
-`main.py`(프로바이더/Controller) · `Main.qml`(Masking 패널 UI).
+`main.py`(프로바이더/Controller) · `ui/Main.qml`(Masking 패널 UI).
 
 ---
 

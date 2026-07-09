@@ -10,9 +10,9 @@ A GPU-accelerated RAW developer and film-simulation editor for **Fujifilm camera
 Edit interactively on a real-time, shader-driven preview, then export at full resolution through a numpy pipeline that mirrors the shader exactly — *what you see is what you get*.
 
 <p align="center">
-  <img src="screenshot.png" alt="Film Rawstery — develop: file explorer, real-time preview, and develop panel" width="100%">
+  <img src="docs/screenshot.png" alt="Film Rawstery — develop: file explorer, real-time preview, and develop panel" width="100%">
   <br><br>
-  <img src="screenshot2.png" alt="Film Rawstery — masking: AI multi-class selection (people masked) with per-mask adjustments" width="100%">
+  <img src="docs/screenshot2.png" alt="Film Rawstery — masking: AI multi-class selection (people masked) with per-mask adjustments" width="100%">
 </p>
 
 > Supports Fujifilm RAF across bodies and lenses: color matrices, white balance, and **lens corrections are all read from each file's own metadata** (the camera embeds per-shot correction tables), so no per-model profiles are needed. Developed and look-tuned primarily on an X100V.
@@ -153,7 +153,7 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 | `lens.py` | Lens corrections from RAF-embedded per-shot metadata (distortion / vignetting / CA) |
 | `lut.py`, `make_luts.py` | `.cube` 3D LUT loading / baking |
 | `date_stamp.py`, `exif_info.py` | Film date-back rendering / EXIF extraction |
-| `Main.qml`, `CurveEditor.qml`, `PreviewWindow.qml` | UI |
+| `ui/*.qml` | UI (Main / CurveEditor / PreviewWindow / Splash / FilmStrip) |
 | `shaders/adjust.frag` | Main develop pipeline (fragment shader) |
 | `shaders/blur.frag`, `shaders/convert.frag` | Separable blur (local contrast) / display-space base |
 | `luts/*.cube` | Film-simulation LUTs |

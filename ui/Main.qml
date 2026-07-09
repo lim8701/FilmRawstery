@@ -1729,7 +1729,7 @@ ApplicationWindow {
                         // 휘도 NR 베이스 — 프리뷰(pipe)와 동일 바인딩(프리뷰=Export).
                         property variant nrBase: nrBaseImage
                         property real nrOn: controller.nrReady ? 1.0 : 0.0
-                        fragmentShader: "shaders/adjust.frag.qsb"
+                        fragmentShader: "../shaders/adjust.frag.qsb"
                     }
                 }}
             }
@@ -1847,7 +1847,7 @@ ApplicationWindow {
                         property real camM0: win.camM[0]; property real camM1: win.camM[1]; property real camM2: win.camM[2]
                         property real camM3: win.camM[3]; property real camM4: win.camM[4]; property real camM5: win.camM[5]
                         property real camM6: win.camM[6]; property real camM7: win.camM[7]; property real camM8: win.camM[8]
-                        fragmentShader: "shaders/convert.frag.qsb"
+                        fragmentShader: "../shaders/convert.frag.qsb"
                     }
                     ShaderEffectSource {
                         id: dispSrcTex; sourceItem: dispPre; visible: false
@@ -1864,7 +1864,7 @@ ApplicationWindow {
                         property variant cmLut: cmLutImage
                         property real displayCM: (win.displayCM && controller.hasDisplayCM) ? 1.0 : 0.0
                         property real cmLutSize: controller.cmLutN
-                        fragmentShader: "shaders/displaycm.frag.qsb"
+                        fragmentShader: "../shaders/displaycm.frag.qsb"
                     }
 
                     // --- 로컬대비용 가우시안 블러 (dispSrc 에만 의존 -> 로드 시 1회 계산) ---
@@ -1874,7 +1874,7 @@ ApplicationWindow {
                         width: viewport.procW; height: viewport.procH
                         property variant src: dispSrcTex
                         property vector2d dir: Qt.vector2d(1.25 / viewport.procW, 0)
-                        fragmentShader: "shaders/blur.frag.qsb"
+                        fragmentShader: "../shaders/blur.frag.qsb"
                     }
                     ShaderEffectSource {
                         id: texBlurHSrc; sourceItem: texBlurH; visible: false
@@ -1886,7 +1886,7 @@ ApplicationWindow {
                         width: viewport.procW; height: viewport.procH
                         property variant src: texBlurHSrc
                         property vector2d dir: Qt.vector2d(0, 1.25 / viewport.procH)
-                        fragmentShader: "shaders/blur.frag.qsb"
+                        fragmentShader: "../shaders/blur.frag.qsb"
                     }
                     ShaderEffectSource {
                         id: texBlurTex; sourceItem: texBlurV; visible: false
@@ -1899,7 +1899,7 @@ ApplicationWindow {
                         width: viewport.claW; height: viewport.claH
                         property variant src: dispSrcTex
                         property vector2d dir: Qt.vector2d(1.5 / viewport.claW, 0)
-                        fragmentShader: "shaders/blur.frag.qsb"
+                        fragmentShader: "../shaders/blur.frag.qsb"
                     }
                     ShaderEffectSource {
                         id: claBlurHSrc; sourceItem: claBlurH; visible: false
@@ -1911,7 +1911,7 @@ ApplicationWindow {
                         width: viewport.claW; height: viewport.claH
                         property variant src: claBlurHSrc
                         property vector2d dir: Qt.vector2d(0, 1.5 / viewport.claH)
-                        fragmentShader: "shaders/blur.frag.qsb"
+                        fragmentShader: "../shaders/blur.frag.qsb"
                     }
                     ShaderEffectSource {
                         id: claBlurTex; sourceItem: claBlurV; visible: false
@@ -1924,7 +1924,7 @@ ApplicationWindow {
                         width: viewport.procW; height: viewport.procH
                         property variant src: dispSrcTex
                         property vector2d dir: Qt.vector2d(sharpRadiusSlider.value / viewport.procW, 0)
-                        fragmentShader: "shaders/blur.frag.qsb"
+                        fragmentShader: "../shaders/blur.frag.qsb"
                     }
                     ShaderEffectSource {
                         id: sharpBlurHSrc; sourceItem: sharpBlurH; visible: false
@@ -1936,7 +1936,7 @@ ApplicationWindow {
                         width: viewport.procW; height: viewport.procH
                         property variant src: sharpBlurHSrc
                         property vector2d dir: Qt.vector2d(0, sharpRadiusSlider.value / viewport.procH)
-                        fragmentShader: "shaders/blur.frag.qsb"
+                        fragmentShader: "../shaders/blur.frag.qsb"
                     }
                     ShaderEffectSource {
                         id: sharpBlurTex; sourceItem: sharpBlurV; visible: false
@@ -2058,7 +2058,7 @@ ApplicationWindow {
                         property variant nrBase: nrBaseImage
                         property real nrOn: controller.nrReady ? 1.0 : 0.0
 
-                        fragmentShader: "shaders/adjust.frag.qsb"
+                        fragmentShader: "../shaders/adjust.frag.qsb"
                     }
 
                     // 고정 크기 FBO(프록시 해상도)에 렌더 -> 회전/크롭(지오메트리)을 뷰 변환으로

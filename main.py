@@ -1791,7 +1791,7 @@ def _show_splash(app):
         view.setResizeMode(QQuickView.ResizeMode.SizeViewToRootObject)
         view.setColor(Qt.GlobalColor.transparent)
         view.rootContext().setContextProperty("appVersion", APP_VERSION)   # setSource 전에 바인딩
-        view.setSource(QUrl.fromLocalFile(str(BASE / "Splash.qml")))
+        view.setSource(QUrl.fromLocalFile(str(BASE / "ui" / "Splash.qml")))
         scr = app.primaryScreen().geometry()
         view.setPosition((scr.width() - view.width()) // 2,
                          (scr.height() - view.height()) // 2)
@@ -1935,7 +1935,7 @@ def main() -> int:
     ctx.setContextProperty("controller", controller)
     ctx.setContextProperty("lutN", lut_provider.size)
 
-    engine.load(QUrl.fromLocalFile(str(BASE / "Main.qml")))
+    engine.load(QUrl.fromLocalFile(str(BASE / "ui" / "Main.qml")))
     if not engine.rootObjects():
         return -1
 

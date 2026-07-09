@@ -7,9 +7,9 @@ from PyInstaller.utils.hooks import collect_data_files, collect_all
 
 CONSOLE = False
 
-# --- QML (개별 명시: 새 .qml 추가 시 여기에 등록) ---
+# --- QML (개별 명시: 새 .qml 추가 시 여기에 등록. 위치: ui/ — frozen 도 lib/ui/ 로 동형) ---
 QML = ["Main.qml", "Splash.qml", "PreviewWindow.qml", "CurveEditor.qml", "FilmStrip.qml"]
-datas = [(q, ".") for q in QML]
+datas = [(os.path.join("ui", q), "ui") for q in QML]
 datas += [
     ("shaders", "shaders"),   # .frag + 미리 컴파일된 .qsb (frozen 은 런타임 재컴파일 안 함)
     ("fonts", "fonts"),       # DSEG7Classic-Bold.ttf

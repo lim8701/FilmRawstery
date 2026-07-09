@@ -7,7 +7,7 @@ Package the Film Rawstery app (PyInstaller onedir → zip). Work in this order a
 ## 1. Spec completeness check — compare the CURRENT tree to `FilmRawstery.spec`
 A plain rebuild silently ships a broken/illegal bundle if the spec is stale. Verify, and edit `FilmRawstery.spec` if anything is off (explain each change):
 
-- **QML**: every `*.qml` in the project root must be in the spec's `QML` list. Glob `*.qml`; add any missing.
+- **QML**: every `*.qml` in `ui/` must be in the spec's `QML` list. Glob `ui/*.qml`; add any missing.
 - **Dependencies that ship native code/data**: check `requirements.txt`. Any dep with native DLLs or data files (e.g. `onnxruntime`, `rawpy`, `scipy`) must be collected (`collect_all` / `collect_data_files`) and have needed `hiddenimports`. A newly added such dep → wire it in.
 - **Lazy/local imports**: new local modules imported inside functions (grep `import ` in `main.py`/`pipeline.py`) should be in `hiddenimports` if PyInstaller might miss them (currently `sky_seg`, `coeffs`).
 - **Licensing — never bundle non-redistributable assets**: the spec must ENUMERATE redistributable `luts/*.cube`, not copy the whole `luts/` folder. Confirm the ARR (Stuart Sowerby) B&W set is still excluded: `acros*.cube, monochrome.cube, sepia.cube`. Re-check `.gitignore` for any new "do-not-redistribute" entries and make sure none can leak into the bundle.
