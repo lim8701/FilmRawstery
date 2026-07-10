@@ -3,4 +3,7 @@ rawpy>=0.18
 numpy>=1.24
 scipy>=1.10
 exifread>=3.0
-onnxruntime>=1.17
+# Windows: onnxruntime-directml(= onnxruntime + DirectML GPU EP, CPU EP 포함)
+#   — AI 디노이즈 GPU 가속용. 그 외 플랫폼은 표준 onnxruntime(macOS 는 CoreML EP 내장).
+onnxruntime-directml>=1.17; sys_platform == 'win32'
+onnxruntime>=1.17; sys_platform != 'win32'

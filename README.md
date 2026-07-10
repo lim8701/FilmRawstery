@@ -43,6 +43,7 @@ Any Fujifilm body should work out of the box (everything is driven by per-file m
 - **HSL color mixer** — 8 hue bands × hue / saturation / luminance
 - **Color** — vibrance & saturation
 - **Detail** — texture, clarity, dehaze, and **sharpening** (amount / radius / detail / masking)
+- **Noise reduction** — edge-preserving luminance NR (guided filter) + color NR, with an optional **AI denoise** base (NAFNet, auto-downloaded ~117 MB; GPU-accelerated via DirectML when available, with a confirm prompt before falling back to the much slower CPU path)
 - **Effects** — film grain, vignette
 - **Highlight reconstruction** — hue-aware desaturation that neutralizes clipped-highlight color casts (e.g. a fire core) while preserving saturated colored light sources (neon, signs)
 
@@ -96,9 +97,9 @@ Key design decisions:
 ## Requirements
 
 - Python 3.13 (3.11+ should work)
-- `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `onnxruntime` (see [`requirements.txt`](requirements.txt))
+- `PySide6`, `rawpy`, `numpy`, `scipy`, `exifread`, `onnxruntime-directml` (Windows; plain `onnxruntime` elsewhere — see [`requirements.txt`](requirements.txt))
 - A GPU/driver supporting the Qt RHI (OpenGL / Direct3D / Metal / Vulkan)
-- The masking model (SegFormer-B2 ONNX, ~105 MB) auto-downloads to `models/` on first use — needs an internet connection the first time (see [`models/README.md`](models/README.md))
+- The masking model (SegFormer-B2 ONNX, ~105 MB) and the AI-denoise model (NAFNet ONNX, ~117 MB) auto-download to `models/` on first use — needs an internet connection the first time (see [`models/README.md`](models/README.md))
 
 ## Install & Run
 
@@ -136,6 +137,7 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 - No `git`? Either accept the Command Line Tools popup when first running `git`, or use **Code → Download ZIP** on GitHub instead.
 - Shaders are precompiled with Metal (MSL) included; if a recompile is triggered, the `pyside6-qsb` tool installed with PySide6 handles it automatically.
 - Display color management (preview-only monitor-profile correction) is Windows-only and silently disabled on macOS — everything else works the same.
+- AI denoise uses the CoreML execution provider (included in the standard `onnxruntime` macOS wheel, Apple Silicon included) and falls back to CPU — with a confirm prompt — if unavailable.
 - ⚠️ **Untested in practice** — the code is written to be platform-clean, but no one has verified a real macOS run yet. If you try it, [feedback is very welcome](https://github.com/lim8701/FilmRawstery/issues).
 
 ---
@@ -148,6 +150,7 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 | `raw_loader.py` | RAF → display proxy (X-Trans-safe decode, headroom encoding, lens correction) |
 | `pipeline.py` | Full-resolution export — numpy reproduction of the shader pipeline |
 | `sky_seg.py` | ML masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
+| `ai_denoise.py` | AI denoise engine — ONNX NAFNet tiled inference, DirectML-accelerated (luminance NR base) |
 | `coeffs.py` | Single source of truth for adjustment strength coefficients (shader uniforms + pipeline) |
 | `wb.py` | White balance (Kelvin/tint), cam→sRGB matrix, filmic curve, auto-exposure |
 | `lens.py` | Lens corrections from RAF-embedded per-shot metadata (distortion / vignetting / CA) |

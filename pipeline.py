@@ -510,17 +510,39 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     # 고주파/크로마를 뽑아 편집본 c 에서 뺀다. ⚠️편집본 기반으로 계산하면 노출을 올린 사진에서
     # export 의 NR 이 프리뷰보다 강해짐(과거 버그 — 밝기 스케일만큼 고주파가 커지므로).
     ln = float(p.get("lumaNR", 0)); cn = float(p.get("colorNR", 0))
+    # AI 디노이즈 베이스(NAFNet, 풀해상도 타일 추론 — 프리뷰 nrBase 텍스처와 동일 모델):
+    # RGB 전체를 1회 계산해 휘도/컬러 NR 이 공유(셰이더 nrBase RGBA + nrChroma 게이트 대응).
+    # 해상도가 달라 프록시 프리뷰와 노이즈 통계가 약간 다른 건 AI NR 의 본질적 근사.
+    # 실패 시 None → 기존 가이디드/블러 폴백(프리뷰 폴백과 동일 동작).
+    den_rgb = den_l = None
+    if bool(p.get("aiNr", False)) and (ln > 0.0 or cn > 0.0):
+        try:
+            import ai_denoise
+            den_rgb = ai_denoise.denoise_rgb(
+                neutral_disp, progress=lambda f: _prog(0.31 + 0.21 * f),  # 타일 → 필름 카운터
+                drift_sigma=ai_denoise.DRIFT_SIGMA * scale,  # 드리프트 반경도 해상도 스케일
+                pace=ai_denoise.UI_PACE)   # export 도 앱 내 백그라운드 — UI 양보(140타일 +4s)
+            den_l = (den_rgb @ LUMA).astype(np.float32)
+        except Exception as exc:
+            print(f"[export] AI 디노이즈 실패(가이디드/블러 폴백): {exc}")
     if ln > 0.0:
-        # 휘도 NR: 노이즈 성분 = 중성 luma − 가이디드 필터 디노이즈드(엣지 보존형).
-        # 셰이더는 같은 필터를 프록시에서 CPU 로 1회 계산한 nrBase 텍스처를 사용(main.py NR 워커).
-        from sky_seg import _guided_filter
-        r = max(1, int(round(coeffs.NR_RADIUS * scale)))       # 프록시 px → 풀해상도 px
-        noise_l = nlum - _guided_filter(nlum, nlum, r, coeffs.NR_EPS)
+        # 휘도 NR: 노이즈 성분 = 중성 luma − 디노이즈드 베이스 luma(AI 또는 가이디드 필터).
+        if den_l is not None:
+            nlum_dn = den_l
+        else:
+            from sky_seg import _guided_filter
+            r = max(1, int(round(coeffs.NR_RADIUS * scale)))   # 프록시 px → 풀해상도 px
+            nlum_dn = _guided_filter(nlum, nlum, r, coeffs.NR_EPS)
+        noise_l = nlum - nlum_dn
         c = np.clip(c - (noise_l * ln)[..., None], 0.0, 1.0)
     if cn > 0.0:
-        bl_ = _blur_rgb(neutral_disp, sigma_cla)               # 셰이더: claBlur(중성 RGB)
-        # luma(blur_rgb) == blur(luma) (선형 연산) → lb 재사용
-        chroma_detail = (neutral_disp - nlum[..., None]) - (bl_ - lb[..., None])
+        if den_rgb is not None:
+            # AI 크로마: 중성 chroma − AI 디노이즈드 chroma(디테일 보존형 — 셰이더 nrChroma 분기)
+            chroma_detail = (neutral_disp - nlum[..., None]) - (den_rgb - den_l[..., None])
+        else:
+            bl_ = _blur_rgb(neutral_disp, sigma_cla)           # 셰이더: claBlur(중성 RGB)
+            # luma(blur_rgb) == blur(luma) (선형 연산) → lb 재사용
+            chroma_detail = (neutral_disp - nlum[..., None]) - (bl_ - lb[..., None])
         c = np.clip(c - chroma_detail * cn, 0.0, 1.0)
     if tex != 0.0:
         c = _texture(c, tex, sigma_tex)

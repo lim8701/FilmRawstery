@@ -272,7 +272,7 @@ ApplicationWindow {
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
-            "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value,
+            "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
             "lensCorrection": lensCheck.checked, "dateStamp": win.dateStamp, "stampText": stampField.text,
             "curves": curveEditor.channelPoints,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
@@ -320,6 +320,12 @@ ApplicationWindow {
         sharpAmtSlider.value = _ev(p, "sharpenAmt", 0.0); sharpRadiusSlider.value = _ev(p, "sharpenRadius", 1.0)
         sharpDetailSlider.value = _ev(p, "sharpenDetail", 0.25); sharpMaskSlider.value = _ev(p, "sharpenMask", 0.0)
         lumaNrSlider.value = _ev(p, "lumaNR", 0.0); colorNrSlider.value = _ev(p, "colorNR", 0.0)
+        // AI 디노이즈: 프로그램적 checked 변경은 onToggled 미발화 → 명시 전달.
+        // 켜져 있으면 requestAiNr(비대화형) 경유 — GPU 면 즉시, CPU 폴백이면 세션 선택 정책
+        // (미선택=1회 질문, no=자동 해제, yes=진행). 로드 직후엔 가이디드 베이스로 동작.
+        aiNrCheck.checked = _ev(p, "aiNr", false)
+        if (aiNrCheck.checked) win.requestAiNr(false)
+        else controller.setAiNr(false)
         win.dateStamp = _ev(p, "dateStamp", false)
         stampField.text = _ev(p, "stampText", controller.stampText)
         // 프로그램으로 text 를 바꾸면 onTextEdited 가 안 불리므로 직접 push(스탬프 렌더 갱신).
@@ -363,6 +369,7 @@ ApplicationWindow {
         sharpAmtSlider.value = 0.0; sharpRadiusSlider.value = 1.0
         sharpDetailSlider.value = 0.25; sharpMaskSlider.value = 0.0
         lumaNrSlider.value = 0.0; colorNrSlider.value = 0.0
+        aiNrCheck.checked = false; controller.setAiNr(false)
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
         tempSlider.value = controller.asShotKelvin; tintSlider.value = controller.asShotTint
         simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
@@ -607,7 +614,7 @@ ApplicationWindow {
         cgHiHueSlider.value, cgHiSatSlider.value, cgBalanceSlider.value,
         vignetteSlider.value, grainSlider.value, grainSizeSlider.value,
         sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
-        lumaNrSlider.value, colorNrSlider.value,
+        lumaNrSlider.value, colorNrSlider.value, aiNrCheck.checked,
         lensCheck.checked, win.dateStamp, stampField.text, curveEditor.channelPoints,
         win.quarterTurns, rotAngleSlider.value, flipHBtn.checked, flipVBtn.checked,
         aspectCombo.currentIndex, cropLandscapeBtn.checked,
@@ -641,7 +648,7 @@ ApplicationWindow {
             "cgBalance": cgBalanceSlider.value,
             "sharpenAmt": sharpAmtSlider.value, "sharpenRadius": sharpRadiusSlider.value,
             "sharpenDetail": sharpDetailSlider.value, "sharpenMask": sharpMaskSlider.value,
-            "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value,
+            "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
             "vignette": vignetteSlider.value, "grainAmt": grainSlider.value, "grainSize": grainSizeSlider.value,
             "lutEnabled": simCombo.currentIndex !== 0, "simKey": win.simKeys[simCombo.currentIndex],
             "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
@@ -824,6 +831,114 @@ ApplicationWindow {
         id: batchDestDialog
         title: "Select Export Destination"
         onAccepted: win.batchStart(selectedFolder.toString(), batchFmtCombo.currentText)
+    }
+
+    // AI 디노이즈 CPU 폴백 선택: GPU EP(DirectML) 없을 때 느린 CPU 계산 진행 여부.
+    // 세션 동안 선택 기억("yes"/"no") — 사이드카 복원(비대화형)은 기억된 선택을 그대로 따르고,
+    // 수동 토글은 "no" 였어도 다시 묻는다(마음 바꿀 기회). ""=아직 안 물음.
+    property string aiCpuChoice: ""
+    function requestAiNr(interactive) {
+        if (controller.aiNrGpuAvailable() || win.aiCpuChoice === "yes") {
+            controller.setAiNr(true)
+            return
+        }
+        if (!interactive && win.aiCpuChoice === "no") {
+            aiNrCheck.checked = false      // 이 머신에선 안 쓰기로 함 → 편집값도 끔(export 일관)
+            controller.setAiNr(false)
+            return
+        }
+        aiCpuDialog.open()
+    }
+
+    // AI 디노이즈 CPU 폴백 확인 대화상자 (quitDialog 와 동일 컨셉 스타일)
+    Popup {
+        id: aiCpuDialog
+        modal: true
+        dim: true
+        width: 380
+        padding: 0
+        anchors.centerIn: Overlay.overlay
+        closePolicy: Popup.CloseOnEscape
+        Overlay.modal: Rectangle { color: "#000000"; opacity: 0.55 }
+        background: Rectangle {
+            color: "#232325"; radius: 16
+            border.color: "#3d3d40"; border.width: 1
+        }
+        property bool chosen: false
+        onOpened: chosen = false
+        // Esc 등 선택 없이 닫힘 = 이번만 취소(선택 기억 안 함)
+        onClosed: if (!chosen) { aiNrCheck.checked = false; controller.setAiNr(false) }
+
+        contentItem: ColumnLayout {
+            spacing: 0
+            FilmStrip {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
+            }
+            ColumnLayout {
+                Layout.fillWidth: true
+                Layout.margins: 24
+                spacing: 12
+                Label {
+                    text: "Run AI Denoise on CPU?"
+                    color: "#f2f2f2"; font.pixelSize: 18; font.bold: true
+                    Layout.alignment: Qt.AlignHCenter
+                }
+                Label {
+                    text: "No GPU acceleration (DirectML) is available on this system.\nCPU is slow: preview ≈ 2 min, full-resolution export can take 15–20 min.\nYour choice is remembered for this session."
+                    color: "#9a9a9a"; font.pixelSize: 13
+                    Layout.fillWidth: true
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                }
+                RowLayout {
+                    Layout.fillWidth: true
+                    Layout.topMargin: 8
+                    spacing: 12
+                    Rectangle {        // No — AI 디노이즈 사용 안 함
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: aiCpuNoMA.containsMouse ? "#3a3a3d" : "#2e2e31"
+                        border.color: "#55555a"; border.width: 1
+                        Label { anchors.centerIn: parent; text: "No"; color: "#e6e6e6"; font.pixelSize: 13 }
+                        MouseArea {
+                            id: aiCpuNoMA; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                aiCpuDialog.chosen = true
+                                win.aiCpuChoice = "no"
+                                aiNrCheck.checked = false
+                                controller.setAiNr(false)
+                                aiCpuDialog.close()
+                            }
+                        }
+                    }
+                    Rectangle {        // Proceed (앰버 강조) — 느려도 CPU 로 진행
+                        Layout.fillWidth: true; Layout.preferredWidth: 0
+                        Layout.preferredHeight: 40; radius: 8
+                        color: aiCpuYesMA.containsMouse ? "#f0b945" : "#E0A226"
+                        Label { anchors.centerIn: parent; text: "Proceed"; color: "#1a1a1a"; font.pixelSize: 13; font.bold: true }
+                        MouseArea {
+                            id: aiCpuYesMA; anchors.fill: parent; hoverEnabled: true
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                aiCpuDialog.chosen = true
+                                win.aiCpuChoice = "yes"
+                                aiNrCheck.checked = true
+                                controller.setAiNr(true)
+                                aiCpuDialog.close()
+                            }
+                        }
+                    }
+                }
+            }
+            FilmStrip {
+                Layout.fillWidth: true
+                Layout.leftMargin: 16; Layout.rightMargin: 16
+                Layout.preferredHeight: 26
+            }
+        }
     }
 
     // 종료 확인 대화상자 (앱 컨셉: 다크 + 필름 퍼포레이션 + 앰버 강조, 커스텀 스타일)
@@ -1751,9 +1866,10 @@ ApplicationWindow {
                         property real hazeConf: controller.hazeConf
                         property real dehazeKTmin: controller.adjustCoeffs["dehazeKTmin"]
                         property real dehazeKResid: controller.adjustCoeffs["dehazeKResid"]
-                        // 휘도 NR 베이스 — 프리뷰(pipe)와 동일 바인딩(프리뷰=Export).
+                        // NR 베이스 — 프리뷰(pipe)와 동일 바인딩(프리뷰=Export).
                         property variant nrBase: nrBaseImage
                         property real nrOn: controller.nrReady ? 1.0 : 0.0
+                        property real nrChroma: controller.nrChroma ? 1.0 : 0.0
                         fragmentShader: "../shaders/adjust.frag.qsb"
                     }
                 }}
@@ -2079,9 +2195,11 @@ ApplicationWindow {
                         property real hazeConf: controller.hazeConf
                         property real dehazeKTmin: controller.adjustCoeffs["dehazeKTmin"]
                         property real dehazeKResid: controller.adjustCoeffs["dehazeKResid"]
-                        // 휘도 NR 베이스: 디노이즈드 중성 luma(준비 전엔 nrOn=0 → 무동작).
+                        // NR 베이스: 디노이즈드 중성(준비 전엔 nrOn=0 → 무동작).
+                        // 가이디드=luma 그레이 / AI=RGB(nrChroma=1 → 컬러 NR 이 AI 크로마 사용)
                         property variant nrBase: nrBaseImage
                         property real nrOn: controller.nrReady ? 1.0 : 0.0
+                        property real nrChroma: controller.nrChroma ? 1.0 : 0.0
 
                         fragmentShader: "../shaders/adjust.frag.qsb"
                     }
@@ -3734,6 +3852,42 @@ ApplicationWindow {
                         if (pressed) _pendingReset = win.isDblPress(colorNrSlider)
                         else if (_pendingReset) { value = defaultValue; _pendingReset = false }
                     }
+                }
+                // AI 디노이즈(SCUNet): Luminance 의 노이즈 베이스를 AI 추론 결과로 교체(온디맨드).
+                // 계산 완료까지는 기존 가이디드 필터 베이스로 동작 → 체감은 완료 시점에 바뀜.
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 6
+                    CheckBox {
+                        id: aiNrCheck
+                        checked: false
+                        // 켤 때는 GPU 확인 경유(CPU 폴백이면 진행 여부 대화상자)
+                        onToggled: checked ? win.requestAiNr(true) : controller.setAiNr(false)
+                    }
+                    Label {
+                        Layout.fillWidth: true
+                        text: "AI denoise (NAFNet)"
+                        color: "white"; font.pixelSize: 12
+                        verticalAlignment: Text.AlignVCenter
+                        wrapMode: Text.WordWrap
+                        ToolTip.visible: aiNrLblHover.hovered
+                        ToolTip.delay: 600
+                        ToolTip.text: "Replaces the Luminance and Color denoise bases with an AI model\n(NAFNet). Runs on GPU when available (DirectML) — a few seconds.\nOn CPU it is slower (preview ≈ ½ min, full-res export ≈ 2–3 min)."
+                        HoverHandler { id: aiNrLblHover }
+                        TapHandler {
+                            onTapped: {
+                                aiNrCheck.checked = !aiNrCheck.checked
+                                if (aiNrCheck.checked) win.requestAiNr(true)
+                                else controller.setAiNr(false)
+                            }
+                        }
+                    }
+                }
+                Label {
+                    visible: controller.aiNrStatus !== ""
+                    text: controller.aiNrStatus
+                    color: "#9a9a9a"; font.pixelSize: 11
+                    Layout.fillWidth: true; wrapMode: Text.WordWrap
                 }
                 }
 

@@ -170,7 +170,7 @@ def _prefer_high_performance_gpu() -> None:
         names = {a[0]: a[1] for a in _list_d3d_adapters()}
         print(f"[gpu] 외장 GPU 강제: adapter[{idx}] {names.get(idx, '?')}")
     else:
-        print("[gpu] 외장 GPU 미발견 — 기본 어댑터 사용")
+        print("[gpu] 외장 GPU 미발견 -> 기본 어댑터 사용")
     # 보조: Windows 고성능 GPU 환경설정(실패 무시)
     try:
         import winreg
@@ -363,19 +363,20 @@ class SkyMaskProvider(QQuickImageProvider):
 
 
 class NrBaseProvider(QQuickImageProvider):
-    """디노이즈드 중성 luma(프록시 해상도 Grayscale16)를 'image://nrbase/...' 로 제공.
+    """디노이즈드 중성 베이스(프록시 해상도 RGBA64)를 'image://nrbase/...' 로 제공.
+    가이디드=luma 복제 그레이, AI=RGB(크로마 포함 — 셰이더 nrChroma 게이트로 구분).
     준비 전에는 1x1(셰이더가 nrOn 게이트로 무시)이라 내용 무관."""
 
     def __init__(self):
         super().__init__(QQuickImageProvider.ImageType.Image)
-        self._img = QImage(1, 1, QImage.Format.Format_Grayscale16)
+        self._img = QImage(1, 1, QImage.Format.Format_RGBA64)
         self._img.fill(0)
 
     def set_image(self, img: QImage) -> None:
         self._img = img
 
     def clear(self) -> None:
-        self._img = QImage(1, 1, QImage.Format.Format_Grayscale16)
+        self._img = QImage(1, 1, QImage.Format.Format_RGBA64)
         self._img.fill(0)
 
     def requestImage(self, image_id, size, requested_size):  # noqa: N802
@@ -578,6 +579,7 @@ class Controller(QObject):
     cmChanged = Signal()         # 디스플레이 색관리 LUT 갱신 알림(모니터 전환/로드)
     hazeChanged = Signal()       # 디헤이즈 투과율 맵/대기광/conf 갱신 알림(DCP)
     nrChanged = Signal()         # 휘도 NR 베이스 텍스처/준비 상태 갱신 알림
+    aiNrChanged = Signal()       # AI 디노이즈(SCUNet) 사용 여부/상태 문구 갱신 알림
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
@@ -585,6 +587,7 @@ class Controller(QObject):
     _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
     _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
+    _aiNrStatusSig = Signal(object)  # (내부) AI NR 워커 -> 메인 스레드 (seq, 상태 문구)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
@@ -616,6 +619,9 @@ class Controller(QObject):
         self._nr_counter = 0
         self._nr_seq = 0            # 비동기 계산 순번(이미지 전환 레이스 방지)
         self._nr_ready = False      # 준비 전 셰이더 휘도 NR 무동작(nrOn 게이트)
+        self._ai_nr = False         # AI 디노이즈 베이스 사용(파일별 편집값, 사이드카 저장)
+        self._ai_status = ""        # AI NR 상태 문구(다운로드/타일 진행/오류). 빈 문자열=없음
+        self._nr_chroma = False     # 현재 nrBase 가 AI RGB(크로마 유효) 베이스인지 — 셰이더 게이트
         self._sky_url = "image://skymask/m?v=0"
         self._sky_counter = 0
         self._sky_seq = 0           # 비동기 세그/재조합 순번(오래된 결과 폐기)
@@ -680,6 +686,7 @@ class Controller(QObject):
         self._exportProgressSig.connect(self._on_export_progress)
         self._hazeReady.connect(self._on_haze_ready)
         self._nrReady.connect(self._on_nr_ready)
+        self._aiNrStatusSig.connect(self._on_ai_nr_status)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -1114,13 +1121,18 @@ class Controller(QObject):
         self.histogramChanged.emit()
 
     def _native_to_scenelinear(self, arr):
-        """헤드룸 인코딩 카메라네이티브(0..1) → scene-linear sRGB(filmic 전). 셰이더 프론트엔드와 동일."""
+        """헤드룸 인코딩 카메라네이티브(0..1) → scene-linear sRGB(filmic 전). 셰이더 프론트엔드와 동일.
+
+        ⚠️ as-shot 게인은 반드시 **tint 포함**(convert.frag 의 relR/G/B = wbPreview(asShotKelvin,
+        asShotTint) 와 일치). 과거 tint=0 으로 계산해 off-locus 광원(tint≠0)에서 이 함수의 결과와
+        셰이더 dispSrc 가 채널별 게인만큼 어긋났고, AI RGB 베이스(nrBase)의 chroma 를 s0 와 빼는
+        컬러 NR 에서 청록 캐스트로 드러났음(pipeline 의 neutral_disp 는 원래 tint 포함 — export 정상)."""
         import numpy as np
         if not self._cam2srgb or not self._cam or not self._ref:
             return arr
         M = np.asarray(self._cam2srgb, float).reshape(3, 3)
         cam = np.asarray(self._cam, float).reshape(3, 3)
-        rel = wb.rel_gain(cam, np.asarray(self._ref, float), self._asshot, 0.0)
+        rel = wb.rel_gain(cam, np.asarray(self._ref, float), self._asshot, self._asshot_tint)
         lin = wb.srgb_to_linear(arr) * PROXY_HEADROOM * rel    # 헤드룸 디코드 + as-shot WB
         return (lin @ M.T).astype(np.float32)                 # scene-linear sRGB
 
@@ -1470,24 +1482,43 @@ class Controller(QObject):
             res = np.clip(_guided_filter(lum, lum, coeffs.NR_RADIUS, coeffs.NR_EPS), 0.0, 1.0)
         except Exception as exc:
             print(f"[nr] 베이스 계산 실패(휘도 NR 비활성): {exc}")
-        self._nrReady.emit((seq, res))
+        self._nrReady.emit((seq, None if res is None else self._pack_nr_qimage(res)))
+
+    @staticmethod
+    def _pack_nr_qimage(res):
+        """NR 베이스 배열 → (RGBA64 QImage, has_chroma). **워커 스레드에서 호출** — 프록시
+        해상도 35MB 패킹을 메인(UI) 스레드에서 하면 완료 순간 프레임이 걸린다(버벅임).
+        res: (H,W)=가이디드 luma → 그레이 복제 / (H,W,3)=AI RGB(크로마 유효).
+        텍스처는 항상 RGBA64 — Grayscale16 은 샘플링 시 .gb=0 이라 dot(nb,LUMA) 공용
+        수식이 깨진다(셰이더가 .rgb 를 읽음)."""
+        import numpy as np
+        u16 = (np.asarray(res) * 65535.0 + 0.5).astype(np.uint16)
+        has_chroma = u16.ndim == 3
+        if not has_chroma:
+            u16 = np.repeat(u16[..., None], 3, axis=2)
+        hh, ww = u16.shape[:2]
+        rgba = np.empty((hh, ww, 4), dtype=np.uint16)
+        rgba[..., :3] = u16
+        rgba[..., 3] = 65535
+        rgba = np.ascontiguousarray(rgba)
+        return (QImage(rgba.data, ww, hh, ww * 8, QImage.Format.Format_RGBA64).copy(),
+                has_chroma)
 
     @Slot(object)
     def _on_nr_ready(self, payload) -> None:
-        import numpy as np
-        seq, res = payload
+        seq, packed = payload
         if seq != self._nr_seq:
             return                       # 이미지 전환됨 → 낡은 결과 폐기
-        if res is None:
+        if packed is None:
             self._nr_ready = False
+            self._nr_chroma = False
             if self._nr_provider is not None:
                 self._nr_provider.clear()
         else:
+            qimg, has_chroma = packed
             if self._nr_provider is not None:
-                u16 = np.ascontiguousarray((res * 65535.0 + 0.5).astype(np.uint16))
-                hh, ww = u16.shape
-                self._nr_provider.set_image(
-                    QImage(u16.data, ww, hh, ww * 2, QImage.Format.Format_Grayscale16).copy())
+                self._nr_provider.set_image(qimg)
+            self._nr_chroma = has_chroma
             self._nr_ready = True
         self._nr_counter += 1
         self._nr_url = f"image://nrbase/n?v={self._nr_counter}"
@@ -1499,8 +1530,88 @@ class Controller(QObject):
     def _get_nr_ready(self) -> bool:
         return self._nr_ready
 
+    def _get_nr_chroma(self) -> bool:
+        return self._nr_chroma
+
     nrBaseUrl = Property(str, _get_nr_url, notify=nrChanged)
     nrReady = Property(bool, _get_nr_ready, notify=nrChanged)
+    nrChroma = Property(bool, _get_nr_chroma, notify=nrChanged)   # AI RGB 베이스(크로마 유효)
+
+    # ---------- AI 디노이즈(SCUNet): 온디맨드 타일 추론으로 nrBase 를 교체 ----------
+    @Slot(result=bool)
+    def aiNrGpuAvailable(self) -> bool:
+        """GPU 가속 EP(DirectML/CoreML) 사용 가능 여부. QML 이 토글 시 확인 —
+        CPU 폴백이면 느린 계산(프리뷰 수 분, export 수십 분)을 진행할지 사용자에게 묻는다."""
+        try:
+            import ai_denoise
+            return ai_denoise.gpu_available()
+        except Exception:
+            return False
+
+    @Slot(bool)
+    def setAiNr(self, on: bool) -> None:
+        """AI 디노이즈 베이스 토글. on=백그라운드 SCUNet 타일 추론 시작 — 완료까지는 기존
+        가이디드 베이스가 그대로 동작(완료 시 nrBase 텍스처만 교체, 셰이더 무변경).
+        off=가이디드 베이스 재계산으로 즉시 복귀. 파일별 편집값(사이드카 aiNr)."""
+        on = bool(on)
+        if on == self._ai_nr:
+            return
+        self._ai_nr = on
+        self._ai_status = ""
+        self.aiNrChanged.emit()
+        if self._proxy_img is None:
+            return
+        self._nr_seq += 1        # 진행 중이던 AI 타일 루프 취소(cancel 콜백이 seq 비교)
+        # 가이디드를 항상 먼저(수 초 내 완료) — 켜는 경우엔 AI 완료까지의 폴백 베이스,
+        # 끄는 경우엔 복귀 베이스. seq 를 올렸으므로 이전 결과는 폐기되어 재계산이 필요.
+        threading.Thread(target=self._nr_worker, args=(self._nr_seq,), daemon=True).start()
+        if on:
+            threading.Thread(target=self._ai_nr_worker, args=(self._nr_seq,), daemon=True).start()
+
+    def _ai_nr_worker(self, seq: int) -> None:
+        """백그라운드: SCUNet 타일 추론으로 중성 luma 디노이즈 → nrBase 교체(_on_nr_ready 공용).
+        최초 사용 시 모델 자동 다운로드(~72MB). 이미지 전환/토글 해제(seq 변경)면 타일 경계에서
+        중단, 실패 시 기존(가이디드) 베이스 유지 + 오류 문구만 표시."""
+        import numpy as np
+        import ai_denoise
+        try:
+            arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
+            disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
+            if not ai_denoise.model_available():
+                self._aiNrStatusSig.emit((seq, "Downloading AI model… (first use, ~117MB)"))
+                ai_denoise.ensure_model()
+            dev = ai_denoise.provider_label()    # "GPU" | "CPU"
+            self._aiNrStatusSig.emit((seq, f"AI denoise: computing… 0% ({dev})"))
+            res = ai_denoise.denoise_rgb(        # RGB 전체 — luma(휘도)+chroma(컬러) NR 베이스
+                disp,
+                progress=lambda f: self._aiNrStatusSig.emit(
+                    (seq, f"AI denoise: computing… {int(f * 100)}% ({dev})")),
+                cancel=lambda: seq != self._nr_seq,
+                pace=ai_denoise.UI_PACE)         # 타일 사이 양보 — UI 버벅임 완화
+            self._aiNrStatusSig.emit((seq, f"AI denoise: active ({ai_denoise.provider_label()})"))
+            self._nrReady.emit((seq, self._pack_nr_qimage(res)))   # 패킹도 워커 스레드에서
+        except ai_denoise.Cancelled:
+            pass                                       # 이미지 전환/해제 → 조용히 폐기
+        except Exception as exc:
+            print(f"[ai-nr] 계산 실패(가이디드 베이스 유지): {exc}")
+            self._aiNrStatusSig.emit((seq, "AI denoise failed — using standard NR"))
+
+    @Slot(object)
+    def _on_ai_nr_status(self, payload) -> None:
+        seq, text = payload
+        if seq != self._nr_seq:
+            return                       # 이미지 전환/재토글됨 → 낡은 상태 문구 폐기
+        self._ai_status = str(text)
+        self.aiNrChanged.emit()
+
+    def _get_ai_nr(self) -> bool:
+        return self._ai_nr
+
+    def _get_ai_status(self) -> str:
+        return self._ai_status
+
+    aiNr = Property(bool, _get_ai_nr, notify=aiNrChanged)
+    aiNrStatus = Property(str, _get_ai_status, notify=aiNrChanged)
 
     def _mask_worker(self, seq: int, keys) -> None:
         import os
@@ -1691,14 +1802,26 @@ class Controller(QObject):
         self.hazeChanged.emit()
         threading.Thread(target=self._haze_worker, args=(self._haze_seq,), daemon=True).start()
         # 휘도 NR 베이스: 이전 텍스처 무효화(준비 전엔 nrOn=0 → 휘도 NR 무동작) 후 재계산.
+        # AI 디노이즈(파일별 편집값)는 fresh load 에서만 끔 — 사이드카에 aiNr 이 저장돼 있으면
+        # QML applyEdits 가 setAiNr(true) 로 다시 켠다. 재디코딩(WB 커밋·렌즈 토글 등)은 편집
+        # 상태 유지 → AI 도 유지하고 새 프록시로 재계산(마스크 재생성과 동형).
+        if self._fresh_load and (self._ai_nr or self._ai_status):
+            self._ai_nr = False
+            self._ai_status = ""
+            self.aiNrChanged.emit()
         self._nr_seq += 1
         self._nr_ready = False
+        self._nr_chroma = False
         if self._nr_provider is not None:
             self._nr_provider.clear()
         self._nr_counter += 1
         self._nr_url = f"image://nrbase/n?v={self._nr_counter}"
         self.nrChanged.emit()
+        # 가이디드는 항상 먼저(1초 내 임시 베이스). AI 유지 중이면 이어서 AI 워커 — 완료 시
+        # 같은 seq 로 나중에 emit 되므로 베이스만 교체된다(가이디드가 훨씬 먼저 끝남).
         threading.Thread(target=self._nr_worker, args=(self._nr_seq,), daemon=True).start()
+        if self._ai_nr:
+            threading.Thread(target=self._ai_nr_worker, args=(self._nr_seq,), daemon=True).start()
         # 비-fresh 재디코딩(렌즈 보정·WB 커밋 등)은 editsReady(복원)를 안 거친다 → 활성 마스크가
         # 있었으면 같은 클래스로 새 프록시에 재생성(렌즈 보정은 기하 변경 → 정렬 위해 재생성 필수).
         # fresh load 는 applyEdits 가 저장본에서 복원하므로 여기선 건드리지 않는다.
@@ -1899,7 +2022,9 @@ def _acquire_single_instance(argv_path: str):
         sock.flush()
         sock.waitForBytesWritten(500)
         sock.disconnectFromServer()
-        print("[single-instance] 이미 실행 중 — 기존 창 활성화 요청 후 종료")
+        # ⚠️ em-dash 등 cp949 비인코딩 문자 금지 — 콘솔 리다이렉트(cp949) 시 UnicodeEncodeError 로
+        #    두 번째 인스턴스가 경로 전달 전에 죽는다(한글은 OK, '—' 가 문제였음).
+        print("[single-instance] 이미 실행 중 -> 기존 창 활성화 요청 후 종료")
         return False, None
     QLocalServer.removeServer(_SINGLE_INSTANCE_NAME)
     server = QLocalServer()
