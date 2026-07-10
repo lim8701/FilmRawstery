@@ -1594,7 +1594,8 @@ class Controller(QObject):
             pass                                       # 이미지 전환/해제 → 조용히 폐기
         except Exception as exc:
             print(f"[ai-nr] 계산 실패(가이디드 베이스 유지): {exc}")
-            self._aiNrStatusSig.emit((seq, "AI denoise failed — using standard NR"))
+            # (문구에 em-dash 등 cp949 비인코딩 문자 금지 — 콘솔로 흘러갈 수 있는 문자열 공통 규칙)
+            self._aiNrStatusSig.emit((seq, "AI denoise failed - using standard NR"))
 
     @Slot(object)
     def _on_ai_nr_status(self, payload) -> None:
