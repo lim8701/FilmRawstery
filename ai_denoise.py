@@ -55,6 +55,13 @@ DRIFT_SIGMA = 7.0
 # GPU 타일 ~150ms 기준 duty ~83%: 프리뷰 24타일에 +0.7s, export 140타일에 +4s 수준.
 UI_PACE = 0.03
 
+# 타일 발산 게이트: NAFNet 은 극암부·저대비(거의 균일한 luma≲0.05) 타일에서 발산해 줄무늬
+# 패턴을 생성한다(DSCF8018 좌하단 실측: 평균 |출력−입력| 41%, 최대 169% — CPU/DML 동일이라
+# 모델 자체 문제. SIDD 학습 분포에 이런 입력이 없음). 정상 타일의 평균 보정량은 ISO4000
+# 실측 0.7~1.2%, 초고ISO 라도 ~4% 수준 → 발산(41%)과의 사이 0.08 로 게이트. 넘으면 그
+# 타일은 모델 출력을 버리고 입력 유지(점 노이즈 등 국소 대형 보정은 '평균'에 안 걸려 보존).
+DIVERGE_MEAN = 0.08
+
 # GPU 가속 실행 프로바이더(존재하면 우선 사용, 실패 시 CPU 폴백).
 #  - DirectML: Windows + onnxruntime-directml 패키지(DX12 GPU면 내장 그래픽도 동작)
 #  - CoreML: macOS 표준 onnxruntime 에 포함
@@ -258,8 +265,10 @@ def denoise_rgb(rgb: np.ndarray, progress=None, cancel=None,
                 time.sleep(0.05)
             tile = src[y0:y0 + TILE, x0:x0 + TILE]
             x = np.ascontiguousarray(tile.transpose(2, 0, 1)[None], dtype=np.float32)
-            out = sess.run(None, {inp: x})[0][0]          # (3, TILE, TILE)
-            acc[y0:y0 + TILE, x0:x0 + TILE] += out.transpose(1, 2, 0) * wt[..., None]
+            out = sess.run(None, {inp: x})[0][0].transpose(1, 2, 0)   # (TILE, TILE, 3)
+            if float(np.abs(out - tile).mean()) > DIVERGE_MEAN:
+                out = tile          # 모델 발산(극암부 타일) → 원본 유지(DIVERGE_MEAN 주석 참조)
+            acc[y0:y0 + TILE, x0:x0 + TILE] += out * wt[..., None]
             wsum[y0:y0 + TILE, x0:x0 + TILE] += wt
             done += 1
             if progress is not None:
