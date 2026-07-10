@@ -48,7 +48,7 @@ BASE = app_base()
 SHADERS_DIR = BASE / "shaders"
 SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag"]
 LUTS_DIR = BASE / "luts"
-APP_VERSION = "1.1.0"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
+APP_VERSION = "1.2.0"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
 
 # 필름 시뮬레이션 카탈로그 (key, 표시명, 그룹). 실제 luts/<key>.cube 가 있는 것만 UI 에 노출
 # (identity=None 은 LUT 미적용이라 항상 포함). 흑백 등은 .cube 를 넣으면 자동으로 다시 나타남.
