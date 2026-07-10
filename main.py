@@ -50,6 +50,9 @@ SHADER_NAMES = ["adjust.frag", "blur.frag", "convert.frag", "displaycm.frag"]
 LUTS_DIR = BASE / "luts"
 APP_VERSION = "1.2.0"   # SemVer(MAJOR.MINOR.PATCH). 올릴 때 packaging/version_info.txt(exe 버전 리소스)도 수동으로 맞출 것
 
+# 업데이트 확인: GitHub 릴리스 목록(공개 repo, 무인증 60회/시간 — 시작 시 1회면 충분)
+_RELEASES_API = "https://api.github.com/repos/lim8701/FilmRawstery/releases"
+
 # 필름 시뮬레이션 카탈로그 (key, 표시명, 그룹). 실제 luts/<key>.cube 가 있는 것만 UI 에 노출
 # (identity=None 은 LUT 미적용이라 항상 포함). 흑백 등은 .cube 를 넣으면 자동으로 다시 나타남.
 FILM_SIM_CATALOG = [
@@ -580,6 +583,7 @@ class Controller(QObject):
     hazeChanged = Signal()       # 디헤이즈 투과율 맵/대기광/conf 갱신 알림(DCP)
     nrChanged = Signal()         # 휘도 NR 베이스 텍스처/준비 상태 갱신 알림
     aiNrChanged = Signal()       # AI 디노이즈(SCUNet) 사용 여부/상태 문구 갱신 알림
+    updateChanged = Signal()     # 새 버전 발견 알림(updateVersion/updateUrl 갱신)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
@@ -590,6 +594,7 @@ class Controller(QObject):
     _aiNrStatusSig = Signal(object)  # (내부) AI NR 워커 -> 메인 스레드 (seq, 상태 문구)
     _aiNrDlSig = Signal(object)      # (내부) AI 모델 다운로드 워커 -> 메인 (downloading, 진행률 0..1)
                                      #  ⚠️seq 없음 — 다운로드는 모델 전역(이미지 무관), finally 로 항상 해제
+    _updateSig = Signal(object)      # (내부) 업데이트 확인 워커 -> 메인 (새 버전 태그, 릴리스 URL)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
@@ -624,6 +629,8 @@ class Controller(QObject):
         self._ai_nr = False         # AI 디노이즈 베이스 사용(파일별 편집값, 사이드카 저장)
         self._ai_status = ""        # AI NR 상태 문구(다운로드/타일 진행/오류). 빈 문자열=없음
         self._ui_busy = False       # 사용자 드래그 중(QML editDragActive) — AI 타일 루프 일시정지
+        self._update_version = ""   # 새 버전 태그("v1.3.0"). 빈 문자열=최신이거나 미확인
+        self._update_url = ""       # 새 버전 릴리스 페이지 URL
         self._ai_downloading = False  # AI 모델 다운로드 중(이미지 영역 차단 오버레이 + 프로그레스바)
         self._ai_dl_prog = 0.0      # 다운로드 진행률 0..1
         self._nr_chroma = False     # 현재 nrBase 가 AI RGB(크로마 유효) 베이스인지 — 셰이더 게이트
@@ -693,6 +700,7 @@ class Controller(QObject):
         self._nrReady.connect(self._on_nr_ready)
         self._aiNrStatusSig.connect(self._on_ai_nr_status)
         self._aiNrDlSig.connect(self._on_ai_nr_dl)
+        self._updateSig.connect(self._on_update_found)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -1543,6 +1551,59 @@ class Controller(QObject):
     nrReady = Property(bool, _get_nr_ready, notify=nrChanged)
     nrChroma = Property(bool, _get_nr_chroma, notify=nrChanged)   # AI RGB 베이스(크로마 유효)
 
+    # ---------- 업데이트 확인: GitHub 릴리스 목록 vs APP_VERSION ----------
+    @Slot()
+    def startUpdateCheck(self) -> None:
+        """앱 시작 수 초 후 1회 호출(main 의 QTimer). 백그라운드라 UI 무영향."""
+        threading.Thread(target=self._update_check_worker, daemon=True).start()
+
+    def _update_check_worker(self) -> None:
+        """릴리스 목록에서 `v메이저.마이너.패치` **정확 일치** 태그만 골라 최신 버전 판단.
+        - 자산 릴리스(models-v1)·postfix 태그(v1.2.0_deprecated)·2파트(v1.0)는 정규식으로 제외
+        - prerelease/draft 제외
+        - 목록 순서(생성일)는 신뢰하지 않고 파싱 후 max 비교(태그 이동/재게시에 안전)
+        - 실패(오프라인/한도 초과)는 조용히 무시 — 알림은 최선 노력 기능"""
+        import json as _json
+        import re
+        import urllib.request
+        try:
+            req = urllib.request.Request(_RELEASES_API, headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": f"FilmRawstery/{APP_VERSION}",   # GitHub API 는 UA 필수
+            })
+            with urllib.request.urlopen(req, timeout=6) as r:
+                rels = _json.load(r)
+            best = None   # ((maj,min,pat), "vX.Y.Z", html_url)
+            for rel in rels:
+                if rel.get("prerelease") or rel.get("draft"):
+                    continue
+                m = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", str(rel.get("tag_name", "")))
+                if not m:
+                    continue
+                ver = tuple(int(g) for g in m.groups())
+                if best is None or ver > best[0]:
+                    best = (ver, m.group(0), str(rel.get("html_url", "")))
+            cur = tuple(int(x) for x in APP_VERSION.split("."))
+            if best is not None and best[0] > cur:
+                self._updateSig.emit((best[1], best[2]))
+        except Exception:
+            pass
+
+    @Slot(object)
+    def _on_update_found(self, payload) -> None:
+        self._update_version, self._update_url = payload
+        print(f"[update] 새 버전 {self._update_version} -> {self._update_url}")
+        self.updateChanged.emit()
+
+    def _get_update_version(self) -> str:
+        return self._update_version
+
+    def _get_update_url(self) -> str:
+        return self._update_url
+
+    updateVersion = Property(str, _get_update_version, notify=updateChanged)
+    updateUrl = Property(str, _get_update_url, notify=updateChanged)
+
     # ---------- AI 디노이즈(SCUNet): 온디맨드 타일 추론으로 nrBase 를 교체 ----------
     @Slot(result=bool)
     def aiNrGpuAvailable(self) -> bool:
@@ -2189,6 +2250,9 @@ def main() -> int:
         controller.refreshDisplayCm(scr.name() if scr is not None else "")
     _refresh_cm()
     root.screenChanged.connect(_refresh_cm)
+
+    # 업데이트 확인(1회): 시작 몇 초 뒤 백그라운드로 — 콜드 스타트/첫 디코드와 경합 안 하게 지연.
+    QTimer.singleShot(4000, controller.startUpdateCheck)
 
     # 시작 동작: 인자로 파일/폴더를 주면 그대로 따르고, 인자가 없으면 **사진을 자동 로드하지 않고**
     # 폴더만 탐색기에 연다(사용자가 직접 더블클릭해 로드). 기본 폴더 = 개발 샘플 폴더(있으면) > Pictures.

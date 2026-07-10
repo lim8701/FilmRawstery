@@ -11,6 +11,7 @@ ApplicationWindow {
     width: 1280
     height: 820                     // 복원(restore) 시 사용할 크기
     title: "FILM RAWSTERY  v" + controller.appVersion   // OS 타이틀바/작업표시줄 상시 노출(버그 제보 스크린샷에 자동 포함)
+           + (controller.updateVersion !== "" ? "   -  new " + controller.updateVersion + " available" : "")
     color: "#1a1a1a"
 
     // === 종료 확인 ===
@@ -1596,7 +1597,7 @@ ApplicationWindow {
                     wrapMode: Text.WrapAnywhere
                 }
 
-                // 푸터: GitHub 저장소 링크 (클릭 시 외부 브라우저로 열기)
+                // 푸터: GitHub 저장소 링크 + (있으면) 새 버전 배지 (클릭 시 외부 브라우저로 열기)
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
                 Rectangle {
                     Layout.fillWidth: true
@@ -1617,6 +1618,25 @@ ApplicationWindow {
                         anchors.fill: parent
                         cursorShape: Qt.PointingHandCursor
                         onClicked: Qt.openUrlExternally("https://github.com/lim8701/FilmRawstery")
+                    }
+                    // 새 버전 배지(앰버) — 시작 시 GitHub 릴리스 확인(controller.updateVersion).
+                    // 전체영역 MouseArea 보다 뒤(위) 선언이라 클릭이 배지로 감.
+                    Text {
+                        visible: controller.updateVersion !== ""
+                        anchors.right: parent.right
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: "↑ " + controller.updateVersion + " available"
+                        color: updHover.hovered ? "#f0b945" : "#E0A226"
+                        font.pixelSize: 12
+                        font.underline: updHover.hovered
+                        ToolTip.visible: updHover.hovered
+                        ToolTip.text: "New version available — open the release page"
+                        HoverHandler { id: updHover }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: Qt.openUrlExternally(controller.updateUrl)
+                        }
                     }
                 }
             }
