@@ -588,6 +588,8 @@ class Controller(QObject):
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
     _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
     _aiNrStatusSig = Signal(object)  # (내부) AI NR 워커 -> 메인 스레드 (seq, 상태 문구)
+    _aiNrDlSig = Signal(object)      # (내부) AI 모델 다운로드 워커 -> 메인 (downloading, 진행률 0..1)
+                                     #  ⚠️seq 없음 — 다운로드는 모델 전역(이미지 무관), finally 로 항상 해제
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
@@ -621,6 +623,9 @@ class Controller(QObject):
         self._nr_ready = False      # 준비 전 셰이더 휘도 NR 무동작(nrOn 게이트)
         self._ai_nr = False         # AI 디노이즈 베이스 사용(파일별 편집값, 사이드카 저장)
         self._ai_status = ""        # AI NR 상태 문구(다운로드/타일 진행/오류). 빈 문자열=없음
+        self._ui_busy = False       # 사용자 드래그 중(QML editDragActive) — AI 타일 루프 일시정지
+        self._ai_downloading = False  # AI 모델 다운로드 중(이미지 영역 차단 오버레이 + 프로그레스바)
+        self._ai_dl_prog = 0.0      # 다운로드 진행률 0..1
         self._nr_chroma = False     # 현재 nrBase 가 AI RGB(크로마 유효) 베이스인지 — 셰이더 게이트
         self._sky_url = "image://skymask/m?v=0"
         self._sky_counter = 0
@@ -687,6 +692,7 @@ class Controller(QObject):
         self._hazeReady.connect(self._on_haze_ready)
         self._nrReady.connect(self._on_nr_ready)
         self._aiNrStatusSig.connect(self._on_ai_nr_status)
+        self._aiNrDlSig.connect(self._on_ai_nr_dl)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -1549,6 +1555,13 @@ class Controller(QObject):
             return False
 
     @Slot(bool)
+    def setUiBusy(self, busy: bool) -> None:
+        """QML editDragActive → 드래그 중 AI 타일 루프 일시정지(denoise_rgb hold 콜백).
+        타일 1개가 도는 동안 GPU 가 통째로 점유돼 UI 프레임이 밀리므로, pace(타일 사이
+        양보)로는 부족하고 조작 중엔 아예 멈추는 것이 근본적."""
+        self._ui_busy = bool(busy)
+
+    @Slot(bool)
     def setAiNr(self, on: bool) -> None:
         """AI 디노이즈 베이스 토글. on=백그라운드 SCUNet 타일 추론 시작 — 완료까지는 기존
         가이디드 베이스가 그대로 동작(완료 시 nrBase 텍스처만 교체, 셰이더 무변경).
@@ -1578,8 +1591,20 @@ class Controller(QObject):
             arr = self._qimage_to_rgb(self._proxy_img).astype(np.float32) / 255.0
             disp = np.clip(wb.filmic(self._native_to_scenelinear(arr)), 0.0, 1.0)
             if not ai_denoise.model_available():
+                # 다운로드 중엔 이미지 영역 차단 오버레이 + 프로그레스바(하늘 모델과 동일 UX).
+                # reporthook 은 8KB 단위(~1.4만 회)라 1% 단위로 스로틀해 시그널 폭주 방지.
                 self._aiNrStatusSig.emit((seq, "Downloading AI model… (first use, ~117MB)"))
-                ai_denoise.ensure_model()
+                self._aiNrDlSig.emit((True, 0.0))
+                _last = [0.0]
+
+                def _dl_prog(f):
+                    if f - _last[0] >= 0.01 or f >= 1.0:
+                        _last[0] = f
+                        self._aiNrDlSig.emit((True, f))
+                try:
+                    ai_denoise.ensure_model(progress=_dl_prog)
+                finally:
+                    self._aiNrDlSig.emit((False, 1.0))   # 실패해도 오버레이 반드시 해제
             dev = ai_denoise.provider_label()    # "GPU" | "CPU"
             if ai_denoise._session_obj is None:
                 # 최초 1회: onnxruntime DLL 로드 + (DML) 디바이스 프로빙/셰이더 컴파일에
@@ -1593,7 +1618,8 @@ class Controller(QObject):
                 progress=lambda f: self._aiNrStatusSig.emit(
                     (seq, f"AI denoise: computing… {int(f * 100)}% ({dev})")),
                 cancel=lambda: seq != self._nr_seq,
-                pace=ai_denoise.UI_PACE)         # 타일 사이 양보 — UI 버벅임 완화
+                pace=ai_denoise.UI_PACE,         # 타일 사이 양보 — UI 버벅임 완화
+                hold=lambda: self._ui_busy)      # 드래그 중 일시정지 — 조작 중 버벅임 제거
             self._aiNrStatusSig.emit((seq, f"AI denoise: active ({ai_denoise.provider_label()})"))
             self._nrReady.emit((seq, self._pack_nr_qimage(res)))   # 패킹도 워커 스레드에서
         except ai_denoise.Cancelled:
@@ -1611,14 +1637,29 @@ class Controller(QObject):
         self._ai_status = str(text)
         self.aiNrChanged.emit()
 
+    @Slot(object)
+    def _on_ai_nr_dl(self, payload) -> None:
+        downloading, prog = payload
+        self._ai_downloading = bool(downloading)
+        self._ai_dl_prog = float(prog)
+        self.aiNrChanged.emit()
+
     def _get_ai_nr(self) -> bool:
         return self._ai_nr
 
     def _get_ai_status(self) -> str:
         return self._ai_status
 
+    def _get_ai_downloading(self) -> bool:
+        return self._ai_downloading
+
+    def _get_ai_dl_prog(self) -> float:
+        return self._ai_dl_prog
+
     aiNr = Property(bool, _get_ai_nr, notify=aiNrChanged)
     aiNrStatus = Property(str, _get_ai_status, notify=aiNrChanged)
+    aiNrDownloading = Property(bool, _get_ai_downloading, notify=aiNrChanged)
+    aiNrDlProgress = Property(float, _get_ai_dl_prog, notify=aiNrChanged)
 
     def _mask_worker(self, seq: int, keys) -> None:
         import os

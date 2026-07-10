@@ -588,7 +588,9 @@ ApplicationWindow {
         || skyTextureSlider.pressed || skyClaritySlider.pressed || skyDehazeSlider.pressed
         || curveEditor.dragging || cropOverlay.dragging
     // 릴리즈 순간(어떤 소스든 드래그 종료) 보류 중 커밋이 있으면 즉시 실행 — 릴리즈 = undo 스텝.
+    // + 드래그 상태를 컨트롤러에 전달 — AI 디노이즈 타일 루프가 조작 중 일시정지(버벅임 제거).
     onEditDragActiveChanged: {
+        controller.setUiBusy(editDragActive)
         if (!editDragActive && editSaveTimer.running) {
             editSaveTimer.stop()
             win.commitEditSnapshot()
@@ -2694,7 +2696,8 @@ ApplicationWindow {
             // 진행 중 오버레이 (이미지 위): export / 배치 / 디코딩(렌즈 보정) / 하늘 세그멘테이션
             Rectangle {
                 anchors.fill: parent
-                visible: controller.exporting || win.batchActive || controller.busy || controller.skyBusy
+                visible: controller.exporting || win.batchActive || controller.busy
+                         || controller.skyBusy || controller.aiNrDownloading
                 color: "#aa000000"
                 MouseArea { anchors.fill: parent }   // 진행 중 이미지 입력 차단
 
@@ -2804,9 +2807,36 @@ ApplicationWindow {
                     onClicked: win.batchCancel = true
                 }
 
+                // ── AI 모델 다운로드: 실제 진행률 프로그레스바(하늘 모델 오버레이와 동일 UX) ──
+                ColumnLayout {
+                    visible: controller.aiNrDownloading && !controller.exporting && !win.batchActive
+                    anchors.centerIn: parent
+                    spacing: 12
+                    Label {
+                        text: "Downloading AI denoise model…  "
+                              + Math.round(controller.aiNrDlProgress * 100) + "%"
+                        color: "white"; font.pixelSize: 14
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Rectangle {   // 진행 바(앰버) — 필름 카운터와 같은 컨셉 컬러
+                        Layout.alignment: Qt.AlignHCenter
+                        width: 280; height: 8; radius: 4
+                        color: "#333333"
+                        Rectangle {
+                            width: parent.width * Math.min(1.0, controller.aiNrDlProgress)
+                            height: parent.height; radius: 4; color: "#E0A226"
+                        }
+                    }
+                    Label {
+                        text: "first use only · ~117 MB"
+                        color: "#9a9a9a"; font.pixelSize: 11
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                }
+
                 // ── 그 외(디코드·세그): 기존 스피너 ──
                 ColumnLayout {
-                    visible: !controller.exporting && !win.batchActive
+                    visible: !controller.exporting && !win.batchActive && !controller.aiNrDownloading
                     anchors.centerIn: parent
                     spacing: 12
                     BusyIndicator {
