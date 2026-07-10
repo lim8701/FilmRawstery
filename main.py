@@ -1569,8 +1569,8 @@ class Controller(QObject):
             threading.Thread(target=self._ai_nr_worker, args=(self._nr_seq,), daemon=True).start()
 
     def _ai_nr_worker(self, seq: int) -> None:
-        """백그라운드: SCUNet 타일 추론으로 중성 luma 디노이즈 → nrBase 교체(_on_nr_ready 공용).
-        최초 사용 시 모델 자동 다운로드(~72MB). 이미지 전환/토글 해제(seq 변경)면 타일 경계에서
+        """백그라운드: NAFNet 타일 추론으로 중성 베이스(RGB) 디노이즈 → nrBase 교체(_on_nr_ready 공용).
+        최초 사용 시 모델 자동 다운로드(~117MB). 이미지 전환/토글 해제(seq 변경)면 타일 경계에서
         중단, 실패 시 기존(가이디드) 베이스 유지 + 오류 문구만 표시."""
         import numpy as np
         import ai_denoise
@@ -1581,6 +1581,12 @@ class Controller(QObject):
                 self._aiNrStatusSig.emit((seq, "Downloading AI model… (first use, ~117MB)"))
                 ai_denoise.ensure_model()
             dev = ai_denoise.provider_label()    # "GPU" | "CPU"
+            if ai_denoise._session_obj is None:
+                # 최초 1회: onnxruntime DLL 로드 + (DML) 디바이스 프로빙/셰이더 컴파일에
+                # 수 초 — GPU 를 점유해 화면이 잠깐 멈출 수 있어 상태를 먼저 알리고,
+                # 그 상태가 보이는 동안 세션 초기화를 여기서 소화한다.
+                self._aiNrStatusSig.emit((seq, f"AI denoise: initializing ({dev}, first use)…"))
+                ai_denoise._session()
             self._aiNrStatusSig.emit((seq, f"AI denoise: computing… 0% ({dev})"))
             res = ai_denoise.denoise_rgb(        # RGB 전체 — luma(휘도)+chroma(컬러) NR 베이스
                 disp,
