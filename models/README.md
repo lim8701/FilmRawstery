@@ -67,3 +67,20 @@ repositories are under the MIT License" 명시(1차 출처 확인). 따라서 ON
 자체 재배포(GitHub Releases 호스팅)에 라이선스 제약이 없다(고지 의무만 — NOTICE.txt).
 인공 가우시안 노이즈에는 SCUNet 보다 보수적으로 반응하지만 실카메라 고ISO 노이즈가
 본래 학습 도메인.
+
+## 사진 캡션 (Photo caption — Florence-2)
+
+- **모델**: Microsoft Florence-2-base-ft (비전-언어, 영어 캡션 생성)
+- **사용 파일** (fp32, 총 ~1.1GB — 최초 캡션 생성 시 `caption.ensure_model()` 자동 다운로드):
+  `florence2_vision_encoder.onnx`(367MB) / `florence2_embed_tokens.onnx`(158MB) /
+  `florence2_encoder_model.onnx`(173MB) / `florence2_decoder_model.onnx`(388MB)
+  + 토크나이저/설정 `florence2_vocab.json`·`florence2_merges.txt`·
+  `florence2_preprocessor_config.json`·`florence2_generation_config.json`
+- **출처(Hugging Face)**: [`onnx-community/Florence-2-base-ft`](https://huggingface.co/onnx-community/Florence-2-base-ft)
+  (transformers.js 용 사전 export ONNX). 코드 상수: `caption.py` 의 `_REPO` / `_FILES`.
+- **입력**: RAF 내장 JPEG 프리뷰를 EXIF 회전 반영 후 768×768(비율 무시)로 축소.
+  토크나이저는 GPT-2식 byte-level BPE 를 `caption.py` 가 직접 구현(의존성 추가 없음).
+- **실행**: CPU EP, greedy, 무캐시 디코더 — 짧은 캡션 기준 장당 ~2.7초(비전 1.3s+생성 1.4s).
+  가속 여지: `decoder_model_merged.onnx`(KV-cache) + DirectML EP, int8/q4 변형(용량 ~1/4).
+- **라이선스**: **MIT** (모델 카드 명시) — 코드(MIT)와 충돌 없음.
+- 캡션은 폴더당 `.filmrawsterycaptions.json` 사이드카에 저장(영어; 앱 UI 에서 수정 가능).

@@ -78,6 +78,7 @@ def available_film_sims():
 # 사이드카(폴더당 데이터) 파일/폴더 이름. 구 이름(.camraw*)은 폴더 접근 시 1회 자동 마이그레이션.
 EDITS_DIR_NAME = ".filmrawsteryedits"
 LIKES_FILE_NAME = ".filmrawsterylikes.json"
+CAPTIONS_FILE_NAME = ".filmrawsterycaptions.json"
 _OLD_SIDECARS = [(".camrawedits", EDITS_DIR_NAME), (".camrawlikes.json", LIKES_FILE_NAME)]
 
 
@@ -599,6 +600,7 @@ class Controller(QObject):
     hazeChanged = Signal()       # 디헤이즈 투과율 맵/대기광/conf 갱신 알림(DCP)
     nrChanged = Signal()         # 휘도 NR 베이스 텍스처/준비 상태 갱신 알림
     aiNrChanged = Signal()       # AI 디노이즈(SCUNet) 사용 여부/상태 문구 갱신 알림
+    captionChanged = Signal()    # 캡션 텍스트/생성 상태 갱신 알림(Florence-2)
     updateChanged = Signal()     # 새 버전 발견 알림(updateVersion/updateUrl 갱신)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
@@ -697,6 +699,16 @@ class Controller(QObject):
         self._busy = False          # 디코딩 진행 중(스피너)
         self._render_seq = 0        # 비동기 렌더 순번(오래된 결과 폐기용)
         self._folder = ""           # 좌측 file explorer 현재 폴더
+        # 캡션(Florence-2): 폴더당 .filmrawsterycaptions.json {파일명: {상세도: 문장}}
+        self._captions = {}
+        self._captions_folder = ""
+        self._caption_lock = threading.Lock()   # 워커(생성)↔메인(표시/편집) 동시 접근 보호
+        self._caption_busy = False
+        self._caption_status = ""
+        self._caption_level = 0     # 상세도 콤보 기본값 = Short(0)
+        self._caption_model_ready = False   # 모델 파일 존재 캐시(True 후엔 재검사 생략)
+        # 이미지 전환 시 caption Property 재평가(사진별 캡션 표시 동기화)
+        self.imageChanged.connect(self.captionChanged)
         self._files = []            # [{"name","path","isDir"}, ...] 현재 폴더 항목
         self._likes = set()         # 현재 폴더에서 좋아요된 파일명 집합
         self._likes_folder = ""     # _likes 가 속한 폴더(저장 대상 경로)
@@ -793,6 +805,197 @@ class Controller(QObject):
         self._save_likes(folder, self._likes)
         self._like_rev += 1
         self.likesChanged.emit()
+
+    # ---------- 캡션(Florence-2) 영속화: 폴더당 .filmrawsterycaptions.json ----------
+    # 좋아요와 동일 패턴({파일명: {상세도키: 문장}}, 변경 즉시 저장=크래시 안전). 생성은
+    # 백그라운드 워커(임베드 JPEG→768² 정방향→caption.generate)라 UI 안 멈춤. 사진 로드
+    # 완료(editsReady) 시 현재 상세도의 저장본이 없으면 자동 생성 → 이미지 하단 캡션 바
+    # 표시. 상세도(콤보) 전환도 저장본 없으면 자동 생성(있으면 즉시 표시). 자동 감시 폴더의
+    # json 생성/수정은 likes 와 같은 이유(목록 불변)로 재스캔 깜빡임 없음.
+    _CAPTION_KEYS = ("short", "detailed", "paragraph")   # 콤보 인덱스 0/1/2 ↔ 사이드카 키
+
+    @staticmethod
+    def _captions_path(folder: str) -> Path:
+        return Path(folder) / CAPTIONS_FILE_NAME
+
+    @staticmethod
+    def _load_captions(folder: str) -> dict:
+        try:
+            p = Controller._captions_path(folder)
+            if not p.is_file():
+                return {}
+            with open(p, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return {k: v for k, v in data.items() if isinstance(v, dict)}
+        except Exception:
+            return {}
+
+    @staticmethod
+    def _save_captions(folder: str, captions: dict) -> None:
+        try:
+            p = Controller._captions_path(folder)
+            data = {k: captions[k] for k in sorted(captions)}
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            print(f"[caption] 저장 실패: {exc}")
+
+    def _ensure_caption_cache(self, folder: str) -> None:
+        """(caption_lock 안에서 호출) 현재 캐시가 다른 폴더면 해당 폴더 json 로드."""
+        if folder != self._captions_folder:
+            self._captions = self._load_captions(folder)
+            self._captions_folder = folder
+
+    def _get_caption(self) -> str:
+        path = self._ui_path
+        if not path:
+            return ""
+        p = Path(path)
+        key = self._CAPTION_KEYS[self._caption_level]
+        with self._caption_lock:
+            self._ensure_caption_cache(str(p.parent))
+            entry = self._captions.get(p.name)
+            return entry.get(key, "") if isinstance(entry, dict) else ""
+
+    def _get_caption_busy(self) -> bool:
+        return self._caption_busy
+
+    def _get_caption_status(self) -> str:
+        return self._caption_status
+
+    def _get_caption_level(self) -> int:
+        return self._caption_level
+
+    def _get_caption_model_ready(self) -> bool:
+        """캡션 모델 파일이 로컬에 있는지(다운로드 여부 선택권용 — 없으면 자동 생성을
+        하지 않고 캡션 바에 '클릭해서 다운로드' 안내만 표시). True 이후엔 캐시."""
+        if not self._caption_model_ready:
+            try:
+                import caption as cap
+                self._caption_model_ready = cap.is_ready()
+            except Exception:
+                return False
+        return self._caption_model_ready
+
+    @Slot(int)
+    def setCaptionLevel(self, level: int) -> None:  # noqa: N802 (QML 슬롯)
+        """상세도(0=Short/1=Detailed/2=Paragraph) 변경 — 저장본 있으면 즉시 표시,
+        없으면 자동 생성."""
+        level = max(0, min(2, int(level)))
+        if level == self._caption_level:
+            return
+        self._caption_level = level
+        self.captionChanged.emit()
+        self._maybe_auto_caption()
+
+    def _maybe_auto_caption(self) -> None:
+        """현재 사진·상세도의 저장 캡션이 없으면 백그라운드 생성 시작(있으면 no-op).
+        모델 미다운로드 PC 에선 자동 시작 안 함(~1.1GB 는 사용자 선택 — 캡션 바 클릭
+        = generateCaption 명시 호출 시에만 다운로드)."""
+        if (not self._caption_busy and self._ui_path and self._get_caption() == ""
+                and self._get_caption_model_ready()):
+            self.generateCaption(self._caption_level)
+
+    @Slot(str)
+    def setCaption(self, text: str) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 상세도의 캡션 저장(빈 문자열=삭제). 즉시 폴더 json 에 저장."""
+        path = self._ui_path
+        if not path:
+            return
+        p = Path(path)
+        folder = str(p.parent)
+        key = self._CAPTION_KEYS[self._caption_level]
+        text = text.strip()
+        with self._caption_lock:
+            self._ensure_caption_cache(folder)
+            entry = dict(self._captions.get(p.name) or {})
+            if entry.get(key, "") == text:
+                return
+            if text:
+                entry[key] = text
+            else:
+                entry.pop(key, None)
+            if entry:
+                self._captions[p.name] = entry
+            else:
+                self._captions.pop(p.name, None)
+            self._save_captions(folder, self._captions)
+        self.captionChanged.emit()
+
+    @Slot(int)
+    def generateCaption(self, level: int = 0) -> None:  # noqa: N802 (QML 슬롯)
+        """현재 사진의 영어 캡션 생성(level: 0=짧게/1=상세/2=문단). 백그라운드 실행.
+        최초 1회는 모델 다운로드(~1.1GB, 진행률=captionStatus)."""
+        if self._caption_busy or not self._ui_path:
+            return
+        self._caption_busy = True
+        self._caption_status = "Preparing…"
+        self.captionChanged.emit()
+        threading.Thread(target=self._caption_worker,
+                         args=(self._ui_path, int(level)), daemon=True).start()
+
+    def _caption_worker(self, path: str, level: int) -> None:
+        import traceback
+        try:
+            import caption as cap
+            tasks = ("<CAPTION>", "<DETAILED_CAPTION>", "<MORE_DETAILED_CAPTION>")
+            task = tasks[max(0, min(2, level))]
+            if not cap.is_ready():
+                last = [-1]
+
+                def prog(v):
+                    pct = int(v * 100)
+                    if pct != last[0]:      # 1% 단위로만 시그널(과도 emit 방지)
+                        last[0] = pct
+                        self._caption_status = f"Downloading model… {pct}% of ~1.1 GB"
+                        self.captionChanged.emit()
+                cap.ensure_model(prog)
+                self._caption_model_ready = True   # 이후 로드부터 자동 캡션 활성
+            self._caption_status = "Generating…"
+            self.captionChanged.emit()
+
+            import numpy as np
+            jpeg = _read_embedded_jpeg(path, max_bytes=64 * 1024 * 1024)
+            buf = QBuffer()
+            buf.setData(jpeg)
+            buf.open(QBuffer.OpenModeFlag.ReadOnly)
+            reader = QImageReader(buf, b"jpeg")
+            reader.setAutoTransform(True)    # EXIF 회전 → 정방향 입력(세로사진 정확도)
+            img = reader.read()
+            buf.close()
+            if img.isNull():
+                raise RuntimeError("embedded preview decode failed")
+            e = cap.INPUT_EDGE
+            img = img.scaled(e, e, Qt.AspectRatioMode.IgnoreAspectRatio,
+                             Qt.TransformationMode.SmoothTransformation)
+            img = img.convertToFormat(QImage.Format.Format_RGB888)
+            rgb = np.frombuffer(img.constBits(), np.uint8).reshape(
+                e, img.bytesPerLine())[:, : e * 3].reshape(e, e, 3).copy()
+            text = cap.generate(rgb, task)
+
+            # 저장은 '생성을 시작한 파일·상세도' 기준 — 생성 중 사진/상세도를 바꿔도 안전
+            p = Path(path)
+            folder = str(p.parent)
+            key = self._CAPTION_KEYS[max(0, min(2, level))]
+            with self._caption_lock:
+                self._ensure_caption_cache(folder)
+                entry = dict(self._captions.get(p.name) or {})
+                entry[key] = text
+                self._captions[p.name] = entry
+                self._save_captions(folder, self._captions)
+            self._caption_status = ""
+            ok = True
+        except Exception as exc:
+            traceback.print_exc()
+            self._caption_status = f"Failed: {exc}"
+            ok = False
+        finally:
+            self._caption_busy = False
+            self.captionChanged.emit()
+            # 생성 중 사진/상세도가 바뀌어 현재 표시분이 아직 없으면 이어서 자동 생성.
+            # 실패 시엔 재시도 안 함(무한 루프 방지 — 상태 라벨에 사유 표시).
+            if ok:
+                self._maybe_auto_caption()
 
     # ---------- RAF별 편집 영속화: 폴더/.filmrawsteryedits/<파일명>.json (이미지당 사이드카) ----------
     @staticmethod
@@ -1964,6 +2167,7 @@ class Controller(QObject):
             self._fresh_load = False
             self._ui_path = self._path
             self.editsReady.emit()
+            self._maybe_auto_caption()   # 저장된 캡션 없으면 자동 생성(하단 캡션 바)
 
     def _get_url(self) -> str:
         return self._url
@@ -1994,6 +2198,11 @@ class Controller(QObject):
 
     imageUrl = Property(str, _get_url, notify=imageChanged)
     imagePath = Property(str, _get_path, notify=imageChanged)
+    caption = Property(str, _get_caption, notify=captionChanged)
+    captionBusy = Property(bool, _get_caption_busy, notify=captionChanged)
+    captionStatus = Property(str, _get_caption_status, notify=captionChanged)
+    captionLevel = Property(int, _get_caption_level, notify=captionChanged)
+    captionModelReady = Property(bool, _get_caption_model_ready, notify=captionChanged)
     asShotKelvin = Property(int, _get_asshot, notify=asShotKelvinChanged)
     asShotTint = Property(float, _get_asshot_tint, notify=asShotKelvinChanged)
     camMatrix = Property("QVariantList", _get_cam, notify=wbBaked)

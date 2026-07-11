@@ -2713,11 +2713,13 @@ ApplicationWindow {
                     }
 
                     // 원본 비교 버튼: 클릭(또는 \ 키)으로 원본↔편집본 토글(좌하단). 크롭 페이지에선 숨김.
+                    // 하단 캡션 바가 보이면 그 위로 올려 겹침 방지.
                     Rectangle {
                         visible: controller.imagePath !== "" && win.activePanel === 0
                         anchors.left: parent.left
                         anchors.bottom: parent.bottom
                         anchors.margins: 12
+                        anchors.bottomMargin: 12 + (captionBar.visible ? captionBar.height : 0)
                         radius: 6
                         color: win.compareOn ? "#cc8ab4f8" : "#cc1e1e1e"
                         border.color: "#55ffffff"; border.width: 1
@@ -2761,6 +2763,83 @@ ApplicationWindow {
                             text: "Original · BEFORE"
                             color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
                             font.capitalization: Font.AllUppercase
+                        }
+                    }
+
+                    // 캡션 바(하단): [상세도 콤보 | 캡션]. 사진 로드 시 자동 생성(저장본
+                    // 있으면 즉시 표시), 콤보 변경 시 해당 상세도 자동 생성/표시. 생성 중엔
+                    // 상태 문구(모델 다운로드 %/Generating…)가 캡션 자리에 표시됨.
+                    Rectangle {
+                        id: captionBar
+                        visible: cropClip.visible && controller.imagePath !== ""
+                        anchors.left: parent.left
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        color: "#cc1e1e1e"
+                        height: capRow.implicitHeight + 12
+                        RowLayout {
+                            id: capRow
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.verticalCenter: parent.verticalCenter
+                            anchors.leftMargin: 10
+                            anchors.rightMargin: 10
+                            spacing: 10
+                            // 타이틀 — 무슨 UI 인지 인지용(촬영정보 오버레이와 동일 톤)
+                            Label {
+                                text: "AI Caption"
+                                color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
+                                font.capitalization: Font.AllUppercase
+                            }
+                            ComboBox {
+                                id: captionLevelCombo
+                                Layout.preferredWidth: 120
+                                model: ["Short", "Detailed", "Paragraph"]
+                                currentIndex: controller.captionLevel   // 기본 Short(0)
+                                onActivated: controller.setCaptionLevel(currentIndex)
+                            }
+                            BusyIndicator {
+                                visible: controller.captionBusy
+                                running: visible
+                                Layout.preferredWidth: 20
+                                Layout.preferredHeight: 20
+                            }
+                            Label {
+                                id: captionText
+                                Layout.fillWidth: true
+                                wrapMode: Text.WordWrap
+                                maximumLineCount: 3
+                                elide: Text.ElideRight
+                                // 모델 미다운로드 PC: 자동 다운로드 대신 안내 + 클릭 옵트인
+                                // (팝업 없음 — 원치 않는 유저는 그냥 두면 다시 묻지 않음)
+                                readonly property bool offerDownload:
+                                    !controller.captionBusy && controller.caption === ""
+                                    && !controller.captionModelReady
+                                text: controller.captionBusy
+                                      ? (controller.captionStatus || "Generating…")
+                                      : (offerDownload
+                                         ? "AI captions are off — click to download the model (~1.1 GB, one-time)"
+                                         : (controller.caption || controller.captionStatus))
+                                color: controller.captionStatus.indexOf("Failed") === 0
+                                       ? "#ff6b6b"
+                                       : (offerDownload ? "#8ab4f8"
+                                          : (controller.captionBusy ? "#9a9a9a" : "#e6e6e6"))
+                                font.pixelSize: 12
+                                font.italic: controller.captionBusy
+                                font.underline: offerDownload && capDlHover.hovered
+                                HoverHandler {
+                                    id: capDlHover
+                                    enabled: captionText.offerDownload
+                                    cursorShape: Qt.PointingHandCursor
+                                }
+                                MouseArea {
+                                    anchors.fill: parent
+                                    enabled: captionText.offerDownload
+                                    cursorShape: Qt.PointingHandCursor
+                                    // 명시 클릭 = 다운로드 승인 → 이후 이 PC 에선 항상 자동
+                                    onClicked: controller.generateCaption(captionLevelCombo.currentIndex)
+                                }
+                            }
                         }
                     }
 
