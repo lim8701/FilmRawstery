@@ -144,9 +144,15 @@ def _coords_for(h, w, prof):
         rs = np.linspace(0.0, 1.3, 131)
         m = 1.0 + np.interp(rs, prof["dk"], prof["dv"]) / 100.0
         rd = rs / m
-        r_src = np.interp(rn, rd, rs).astype(np.float32)
+        # 채움 스케일: 배럴 보정(m>1)은 dest 코너(rn=1)가 src 코너 밖(r_src>1)을
+        # 요구 → mode="nearest" 클램프로 가장자리 픽셀이 방사형으로 번짐(sweep).
+        # dest 반경을 a=rd(rs=1)(<1) 배로 축소해 코너=코너 정합 — 결과를 1/a 배
+        # 확대·크롭하는 것과 동일(카메라 JPEG/라이트룸의 scale-to-fill 처리).
+        # a>=1(밖을 요구하지 않는 방향)이면 그대로 둔다(빈 영역이 애초에 없음).
+        fill = np.float32(min(float(np.interp(1.0, rs, rd)), 1.0))
+        r_src = np.interp(rn * fill, rd, rs).astype(np.float32)
         s = np.where(rn > 1e-6, r_src / np.maximum(rn, np.float32(1e-6)),
-                     np.float32(m[0])).astype(np.float32)
+                     np.float32(m[0]) * fill).astype(np.float32)
     else:
         r_src = rn
         s = None                                        # 왜곡 없음
