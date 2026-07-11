@@ -414,47 +414,63 @@ class ThumbProvider(QQuickImageProvider):
     화면에 보이는 delegate 만 요청 -> 지연 로딩. 디코딩 결과는 경로별 캐시.
     """
 
+    # 크기별 캐시 상한(LRU). 384px ARGB ≈ 0.4MB/장 → 최대 ~160MB.
+    _MAX_ENTRIES = 400
+
     def __init__(self):
         super().__init__(QQuickImageProvider.ImageType.Image,
                          QQuickImageProvider.Flag.ForceAsynchronousImageLoading)
-        self._cache = {}                 # abs_path -> QImage
+        self._cache = OrderedDict()      # (abs_path, edge) -> QImage (LRU)
         self._lock = threading.Lock()
 
     def requestImage(self, image_id, size, requested_size):  # noqa: N802 (Qt API)
         raw = image_id.split("?", 1)[0]              # 쿼리스트링 제거(혹시 모를 대비)
         path = QUrl.fromPercentEncoding(raw.encode("utf-8"))  # encodeURIComponent 역변환
+        edge = (requested_size.width()
+                if (requested_size is not None and requested_size.width() > 0) else 96)
+        key = (path, edge)
         with self._lock:
-            cached = self._cache.get(path)
-        if cached is not None and not cached.isNull():
-            return cached
-        img = self._make_thumb(path, requested_size)
+            cached = self._cache.get(key)
+            if cached is not None and not cached.isNull():
+                self._cache.move_to_end(key)
+                return cached
+        img = self._make_thumb(path, edge)
         with self._lock:
-            self._cache[path] = img
+            self._cache[key] = img
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._MAX_ENTRIES:
+                self._cache.popitem(last=False)
         return img
 
     @staticmethod
-    def _make_thumb(path, requested_size) -> QImage:
-        edge = (requested_size.width()
-                if (requested_size is not None and requested_size.width() > 0) else 96)
+    def _make_thumb(path, edge: int) -> QImage:
         # 1차: RAF 내장 JPEG 안의 EXIF 썸네일(~160px, 수 KB) — 초경량/고속.
         #      EXIF/썸네일은 JPEG 선두라 앞부분 512KB 만 읽으면 충분.
-        try:
-            jpeg = _read_embedded_jpeg(path)
-            if jpeg:
-                import exifread
-                tags = exifread.process_file(io.BytesIO(jpeg), details=False)
-                thumb = tags.get("JPEGThumbnail")
-                if thumb:
-                    im = QImage()
-                    if im.loadFromData(thumb):
-                        ori = tags.get("Image Orientation")
-                        im = ThumbProvider._apply_orientation(
-                            im, ori.values[0] if ori and ori.values else 1)
-                        return im.scaledToWidth(
-                            edge, Qt.TransformationMode.SmoothTransformation)
-        except Exception:
-            pass
-        # 2차(폴백): EXIF 썸네일이 없으면 풀 프리뷰를 축소 디코딩(13MP 풀디코딩 회피).
+        #      단 요청 크기가 원본(160px)을 넘으면 업스케일로 흐려지므로
+        #      2차(내장 풀 프리뷰 축소 디코딩)로 넘어간다(그리드 썸네일 확대용).
+        if edge <= 160:
+            try:
+                jpeg = _read_embedded_jpeg(path)
+                if jpeg:
+                    import exifread
+                    tags = exifread.process_file(io.BytesIO(jpeg), details=False)
+                    thumb = tags.get("JPEGThumbnail")
+                    if thumb:
+                        im = QImage()
+                        if im.loadFromData(thumb):
+                            ori = tags.get("Image Orientation")
+                            im = ThumbProvider._apply_orientation(
+                                im, ori.values[0] if ori and ori.values else 1)
+                            # 원본보다 크게 요청돼도 업스케일 안 함(호버 피크가 160
+                            # 요청 시 세로사진은 회전 후 120px 폭 원본 그대로 반환).
+                            if im.width() > edge:
+                                im = im.scaledToWidth(
+                                    edge, Qt.TransformationMode.SmoothTransformation)
+                            return im
+            except Exception:
+                pass
+        # 2차: EXIF 썸네일이 없거나 큰 썸네일(>160px) 요청이면 내장 풀 프리뷰를
+        #      요청 크기로 축소 디코딩(libjpeg 스케일드 디코딩, 13MP 풀디코딩 회피).
         try:
             jpeg = _read_embedded_jpeg(path, max_bytes=64 * 1024 * 1024)
             if not jpeg:

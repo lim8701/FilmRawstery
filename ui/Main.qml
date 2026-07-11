@@ -1087,6 +1087,7 @@ ApplicationWindow {
     // 탐색기에서 우클릭한 파일을 프리뷰 창으로 연다.
     // 현재 폴더의 RAF(디렉터리 제외)만 경로 배열로 만들어 좌/우 네비 대상으로 넘긴다.
     function openPreview(path) {
+        win.peekHide()                      // 호버 피크가 떠 있으면 닫고 프리뷰 진입
         var files = win.explorerFiles       // 현재 보이는(필터 반영) 목록 기준으로 좌/우 이동
         var list = []
         var start = 0
@@ -1131,6 +1132,51 @@ ApplicationWindow {
             } else {
                 controller.exportImage(selectedFile, p)
             }
+        }
+    }
+
+    // ---------- 썸네일 호버 피크 ----------
+    // 탐색기 파일 행에 마우스를 올리면 즉시 EXIF 썸네일을 원본 크기(최대 160px,
+    // 업스케일 없음)로 행 우측에 팝업 표시(딜레이 없음 — EXIF 썸네일이라 로드 ~ms).
+    // 행 이탈/더블클릭 로드/우클릭 메뉴/스크롤/프리뷰 진입 시 닫힘.
+    property var _peekRow: null            // 팝업 소유 delegate(이탈 이벤트 소유자 판별용)
+    function peekShow(item, path) {
+        if (previewWin.visible) return
+        win._peekRow = item
+        thumbPeek.pathKey = path
+        var pos = item.mapToItem(null, item.width, item.height / 2)   // 행 우측 중앙(씬 좌표)
+        thumbPeek.anchorX = pos.x
+        thumbPeek.anchorY = pos.y
+        thumbPeek.visible = true
+    }
+    function peekHide() {
+        win._peekRow = null
+        thumbPeek.visible = false
+    }
+    Rectangle {
+        id: thumbPeek
+        property string pathKey: ""
+        property real anchorX: 0
+        property real anchorY: 0
+        visible: false
+        z: 900                             // 프리뷰 오버레이(1000)보다 아래, 나머지 위
+        // 이미지 비동기 로드로 크기가 늦게 확정돼도 따라가도록 바인딩으로 배치
+        width: peekImg.width + 8
+        height: peekImg.height + 8
+        x: Math.min(anchorX + 4, win.width - width - 8)
+        y: Math.max(8, Math.min(anchorY - height / 2, win.height - height - 8))
+        color: "#1e1e1e"
+        border.color: "#555555"
+        border.width: 1
+        radius: 4
+        Image {
+            id: peekImg
+            x: 4; y: 4
+            asynchronous: true
+            cache: true
+            sourceSize.width: 160          // EXIF 썸네일 원본(세로사진은 120px 그대로)
+            source: thumbPeek.pathKey === "" ? ""
+                    : "image://thumb/" + encodeURIComponent(thumbPeek.pathKey)
         }
     }
 
@@ -1347,6 +1393,7 @@ ApplicationWindow {
                     }
                     enabled: !controller.busy      // 로드 진행 중엔 사진 변경 차단
                     opacity: controller.busy ? 0.5 : 1.0   // 비활성 시각 표시
+                    onContentYChanged: win.peekHide()      // 스크롤 시 호버 피크 닫기
 
                     B.ScrollBar.vertical: B.ScrollBar {
                         id: fileVbar
@@ -1503,7 +1550,20 @@ ApplicationWindow {
                         MouseArea {
                             anchors.fill: parent
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            hoverEnabled: true
+                            // 파일 행 마우스 인 → 피크 즉시 표시, 아웃 → 닫기.
+                            // 닫기는 팝업 소유 행(_peekRow===row)일 때만 — 행 간 빠른 이동 시
+                            // 이전 행의 이탈(false)이 새 행의 진입(true)보다 늦게 도착해
+                            // 방금 띄운 팝업을 꺼버리는 이벤트 순서 경쟁 방지.
+                            onContainsMouseChanged: {
+                                if (containsMouse && !row.modelData.isDir)
+                                    win.peekShow(row, row.modelData.path)
+                                else if (win._peekRow === row)
+                                    win.peekHide()
+                            }
                             onClicked: (mouse) => {
+                                if (mouse.button === Qt.RightButton)
+                                    win.peekHide()          // 메뉴와 겹치지 않게(좌클릭 선택은 유지)
                                 fileListView.forceActiveFocus()     // 이후 방향키 탐색 활성화
                                 if (mouse.button === Qt.RightButton) {
                                     fileListView.currentIndex = row.index
@@ -1516,6 +1576,7 @@ ApplicationWindow {
                                 }
                             }
                             onDoubleClicked: {
+                                win.peekHide()
                                 if (row.modelData.isDir)
                                     controller.setFolderPath(row.modelData.path)
                                 else if (!win.batchSelectMode)
