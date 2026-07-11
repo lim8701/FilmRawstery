@@ -38,6 +38,11 @@ ApplicationWindow {
     property bool dateStamp: false
     Shortcut { sequence: "D"; onActivated: win.dateStamp = !win.dateStamp }
 
+    // AI 캡션 오버레이 표시 여부 (C 키로 토글). 끄면 로드 시 자동 생성도 중단(연산 낭비 방지).
+    property bool captionOverlay: true
+    onCaptionOverlayChanged: controller.setCaptionEnabled(captionOverlay)
+    Shortcut { sequence: "C"; onActivated: win.captionOverlay = !win.captionOverlay }
+
     // 좌측 File Explorer 패널 표시 여부 (B 키로 토글)
     property bool showExplorer: true
     Shortcut { sequence: "B"; onActivated: win.showExplorer = !win.showExplorer }
@@ -2713,8 +2718,9 @@ ApplicationWindow {
                     }
 
                     // 원본 비교 버튼: 클릭(또는 \ 키)으로 원본↔편집본 토글(좌하단). 크롭 페이지에선 숨김.
-                    // 하단 캡션 바가 보이면 그 위로 올려 겹침 방지.
+                    // 하단 AI 캡션 패널(전체 폭)이 보이면 항상 그 위에 배치(일관 규칙).
                     Rectangle {
+                        id: cmpBtn
                         visible: controller.imagePath !== "" && win.activePanel === 0
                         anchors.left: parent.left
                         anchors.bottom: parent.bottom
@@ -2766,28 +2772,39 @@ ApplicationWindow {
                         }
                     }
 
-                    // 캡션 바(하단): [상세도 콤보 | 캡션]. 사진 로드 시 자동 생성(저장본
-                    // 있으면 즉시 표시), 콤보 변경 시 해당 상세도 자동 생성/표시. 생성 중엔
-                    // 상태 문구(모델 다운로드 %/Generating…)가 캡션 자리에 표시됨.
+                    // AI 캡션 패널(하단 전체 폭, 외곽선 없는 반투명 바, C 키 토글):
+                    // [AI CAPTION | 상세도 콤보 | 캡션]. Compare original 은 항상 이 패널 위에
+                    // 배치(일관 규칙). 사진 로드 시 자동 생성(저장본 있으면 즉시 표시), 콤보
+                    // 변경 시 해당 상세도 자동 생성/표시. 생성 중엔 상태 문구(모델 다운로드 %/
+                    // Generating…) 표시.
                     Rectangle {
                         id: captionBar
-                        visible: cropClip.visible && controller.imagePath !== ""
+                        visible: win.captionOverlay && cropClip.visible
+                                 && controller.imagePath !== ""
                         anchors.left: parent.left
                         anchors.right: parent.right
                         anchors.bottom: parent.bottom
                         color: "#cc1e1e1e"
-                        height: capRow.implicitHeight + 12
+                        height: capRow.implicitHeight + 16
+                        // 상단 구분선만(외곽선 대신) — 이미지와 패널 경계 표시
+                        Rectangle {
+                            anchors.left: parent.left
+                            anchors.right: parent.right
+                            anchors.top: parent.top
+                            height: 1
+                            color: "#55ffffff"
+                        }
                         RowLayout {
                             id: capRow
                             anchors.left: parent.left
                             anchors.right: parent.right
                             anchors.verticalCenter: parent.verticalCenter
-                            anchors.leftMargin: 10
-                            anchors.rightMargin: 10
+                            anchors.leftMargin: 12
+                            anchors.rightMargin: 12
                             spacing: 10
                             // 타이틀 — 무슨 UI 인지 인지용(촬영정보 오버레이와 동일 톤)
                             Label {
-                                text: "AI Caption"
+                                text: "AI Caption  (C)"
                                 color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
                                 font.capitalization: Font.AllUppercase
                             }

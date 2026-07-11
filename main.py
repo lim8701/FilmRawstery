@@ -707,8 +707,10 @@ class Controller(QObject):
         self._caption_status = ""
         self._caption_level = 0     # 상세도 콤보 기본값 = Short(0)
         self._caption_model_ready = False   # 모델 파일 존재 캐시(True 후엔 재검사 생략)
-        # 이미지 전환 시 caption Property 재평가(사진별 캡션 표시 동기화)
-        self.imageChanged.connect(self.captionChanged)
+        self._caption_enabled = True        # 오버레이 표시 중일 때만 자동 생성(C 토글 연동)
+        # ⚠️캡션 재평가 시그널은 imageChanged 체인이 아니라 fresh_load 블록에서 직접 발화 —
+        # imageChanged 는 _ui_path 갱신 *전*에 emit 되어 이전 사진 기준으로 읽혀버림
+        # (사이드카 저장 캡션이 로드 시 표시 안 되던 버그).
         self._files = []            # [{"name","path","isDir"}, ...] 현재 폴더 항목
         self._likes = set()         # 현재 폴더에서 좋아요된 파일명 집합
         self._likes_folder = ""     # _likes 가 속한 폴더(저장 대상 경로)
@@ -888,12 +890,24 @@ class Controller(QObject):
         self.captionChanged.emit()
         self._maybe_auto_caption()
 
+    @Slot(bool)
+    def setCaptionEnabled(self, on: bool) -> None:  # noqa: N802 (QML 슬롯)
+        """캡션 오버레이 토글(C) 연동 — 꺼진 동안엔 로드 시 자동 생성 안 함(연산 낭비
+        방지). 다시 켜면 현재 사진 캡션이 없을 때 즉시 이어서 생성."""
+        on = bool(on)
+        if on == self._caption_enabled:
+            return
+        self._caption_enabled = on
+        if on:
+            self._maybe_auto_caption()
+
     def _maybe_auto_caption(self) -> None:
         """현재 사진·상세도의 저장 캡션이 없으면 백그라운드 생성 시작(있으면 no-op).
-        모델 미다운로드 PC 에선 자동 시작 안 함(~1.1GB 는 사용자 선택 — 캡션 바 클릭
-        = generateCaption 명시 호출 시에만 다운로드)."""
-        if (not self._caption_busy and self._ui_path and self._get_caption() == ""
-                and self._get_caption_model_ready()):
+        오버레이가 꺼져 있으면(setCaptionEnabled) 안 함. 모델 미다운로드 PC 에서도
+        자동 시작 안 함(~1.1GB 는 사용자 선택 — 캡션 바 클릭 = generateCaption 명시
+        호출 시에만 다운로드)."""
+        if (self._caption_enabled and not self._caption_busy and self._ui_path
+                and self._get_caption() == "" and self._get_caption_model_ready()):
             self.generateCaption(self._caption_level)
 
     @Slot(str)
@@ -2167,7 +2181,8 @@ class Controller(QObject):
             self._fresh_load = False
             self._ui_path = self._path
             self.editsReady.emit()
-            self._maybe_auto_caption()   # 저장된 캡션 없으면 자동 생성(하단 캡션 바)
+            self.captionChanged.emit()   # _ui_path 확정 후 캡션 재평가(사이드카 저장분 표시)
+            self._maybe_auto_caption()   # 저장된 캡션 없으면 자동 생성(하단 캡션 패널)
 
     def _get_url(self) -> str:
         return self._url
