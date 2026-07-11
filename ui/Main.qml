@@ -1136,22 +1136,36 @@ ApplicationWindow {
     }
 
     // ---------- 썸네일 호버 피크 ----------
-    // 탐색기 파일 행에 마우스를 올리면 즉시 EXIF 썸네일을 원본 크기(최대 160px,
-    // 업스케일 없음)로 행 우측에 팝업 표시(딜레이 없음 — EXIF 썸네일이라 로드 ~ms).
-    // 행 이탈/더블클릭 로드/우클릭 메뉴/스크롤/프리뷰 진입 시 닫힘.
+    // 탐색기 파일 행에 마우스를 올리고 잠깐(250ms) 멈추면 EXIF 썸네일을 원본 크기
+    // (최대 160px, 업스케일 없음)로 행 우측에 팝업 표시. 행을 벗어나면 즉시 닫히고,
+    // 다음 행에서도 250ms 멈춰야 다시 뜸(즉시 추종 없음 — 빠른 이동 중 번쩍임 방지,
+    // 행 안 이동은 리셋 안 함). 더블클릭 로드/우클릭 메뉴/스크롤/프리뷰 진입 시도 닫힘.
     property var _peekRow: null            // 팝업 소유 delegate(이탈 이벤트 소유자 판별용)
-    function peekShow(item, path) {
-        if (previewWin.visible) return
-        win._peekRow = item
-        thumbPeek.pathKey = path
-        var pos = item.mapToItem(null, item.width, item.height / 2)   // 행 우측 중앙(씬 좌표)
+    function _peekPlace(it) {              // 행 우측 중앙(씬 좌표)에 팝업 배치+표시
+        var pos = it.mapToItem(null, it.width, it.height / 2)
         thumbPeek.anchorX = pos.x
         thumbPeek.anchorY = pos.y
         thumbPeek.visible = true
     }
+    function peekShow(item, path) {
+        if (previewWin.visible) return
+        win._peekRow = item
+        thumbPeek.pathKey = path           // 대기 중 미리 로드(팝업 시 즉시 표시)
+        thumbPeek.visible = false          // 직전 행 팝업은 즉시 닫음(행 이탈=닫힘)
+        peekTimer.restart()                // 새 행에 250ms 멈추면 다시 띄움
+    }
     function peekHide() {
+        peekTimer.stop()
         win._peekRow = null
         thumbPeek.visible = false
+    }
+    Timer {
+        id: peekTimer
+        interval: 250
+        onTriggered: {
+            if (win._peekRow && !previewWin.visible)
+                win._peekPlace(win._peekRow)
+        }
     }
     Rectangle {
         id: thumbPeek
@@ -1393,7 +1407,24 @@ ApplicationWindow {
                     }
                     enabled: !controller.busy      // 로드 진행 중엔 사진 변경 차단
                     opacity: controller.busy ? 0.5 : 1.0   // 비활성 시각 표시
-                    onContentYChanged: win.peekHide()      // 스크롤 시 호버 피크 닫기
+                    // 스크롤 시 호버 피크 처리: 팝업 소유 행이 아직 마우스 아래면
+                    //  - 팝업이 떠 있음 → 행 새 위치로 이동(유지)
+                    //  - 대기(타이머) 중 → 취소하지 말고 재시작(스크롤 멈춘 뒤부터 250ms).
+                    //    휠 스크롤로 커서 아래 들어온 행은 진입 이벤트가 스크롤 중 1회뿐이라,
+                    //    여기서 취소해버리면 행을 나갔다 다시 들어와야만 뜨는 버그가 됨.
+                    // 행이 마우스를 벗어났으면 닫기. (클릭이 currentIndex 를 바꾸면 ListView 가
+                    // 가장자리 행 정렬로 contentY 를 미세 이동 — 무조건 닫기면 그때도 사라졌음.)
+                    onContentYChanged: {
+                        var it = win._peekRow
+                        if (it && it.peekHovered) {
+                            if (thumbPeek.visible)
+                                win._peekPlace(it)
+                            else
+                                peekTimer.restart()
+                        } else {
+                            win.peekHide()
+                        }
+                    }
 
                     B.ScrollBar.vertical: B.ScrollBar {
                         id: fileVbar
@@ -1415,6 +1446,8 @@ ApplicationWindow {
                         height: modelData.isDir ? 28 : 64
                         readonly property bool isLoaded:
                             !modelData.isDir && modelData.path === controller.imagePath
+                        // 호버 피크 소유자 판별용(스크롤 시 팝업 유지/닫기 결정)
+                        readonly property bool peekHovered: rowMouse.containsMouse
 
                         Rectangle {
                             anchors.fill: parent
@@ -1548,6 +1581,7 @@ ApplicationWindow {
                         }
 
                         MouseArea {
+                            id: rowMouse
                             anchors.fill: parent
                             acceptedButtons: Qt.LeftButton | Qt.RightButton
                             hoverEnabled: true
