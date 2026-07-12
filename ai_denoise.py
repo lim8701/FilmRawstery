@@ -31,12 +31,18 @@ import urllib.request
 
 import numpy as np
 
+import app_dirs
+
 # 프로젝트 GitHub Releases 의 모델 전용 태그에 업로드된 자체 변환본(NAFNet 공식 가중치
 # NAFNet-SIDD-width32.pth 를 그대로 ONNX 로 변환 — 값 무변경, torch↔ort 오차 ~1e-5).
 _MODEL_URL = ("https://github.com/lim8701/FilmRawstery/releases/download/"
               "models-v1/nafnet_sidd_width32_512.onnx")
-MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-MODEL_PATH = os.path.join(MODEL_DIR, "nafnet_sidd_width32_512.onnx")
+# 저장 위치: 항상 OS 사용자 데이터 디렉터리(app_dirs — 버전/실행환경 무관 유지).
+# 예전 위치(구버전 frozen lib/models, dev 저장소 models/)에 받아둔 파일은
+# ensure_model 이 재다운로드 대신 복사(app_dirs.materialize).
+_MODEL_NAME = "nafnet_sidd_width32_512.onnx"
+MODEL_DIR = app_dirs.MODELS_DIR
+MODEL_PATH = app_dirs.model_path(_MODEL_NAME)
 
 TILE = 512      # ONNX export 고정 입력 크기(변경 시 재-export 필요)
 OVERLAP = 64    # 타일 겹침(px) — 경계 컨텍스트 확보 + 램프 블렌딩 폭
@@ -77,7 +83,8 @@ class Cancelled(Exception):
 
 
 def model_available() -> bool:
-    return os.path.exists(MODEL_PATH)
+    # legacy(구버전 폴더)에만 있어도 True — 다운로드 없이 확보 가능(ensure 시 복사)
+    return app_dirs.have(_MODEL_NAME)
 
 
 def _dml_dll_present() -> bool:
@@ -122,7 +129,7 @@ def ensure_model(progress=None) -> str:
     """모델 파일 보장(없으면 다운로드, ~117MB). progress(0..1) 콜백 옵션. 경로 반환.
     락으로 동시 다운로드 방지(이미지 전환 등으로 워커 두 개가 겹칠 때 .part 충돌 방지)."""
     with _dl_lock:
-        if not os.path.exists(MODEL_PATH):
+        if not os.path.exists(MODEL_PATH) and not app_dirs.materialize(_MODEL_NAME):
             os.makedirs(MODEL_DIR, exist_ok=True)
             tmp = MODEL_PATH + ".part"
             hook = None
@@ -135,27 +142,39 @@ def ensure_model(progress=None) -> str:
     return MODEL_PATH
 
 
-_DEVICE_CACHE = os.path.join(MODEL_DIR, "ai_denoise_device.json")
+# GPU 프로빙 캐시(머신 전용) — 모델과 같은 곳에 두어 업데이트에도 유지(재프로빙 방지).
+_DEVICE_NAME = "ai_denoise_device.json"
+_DEVICE_CACHE = app_dirs.model_path(_DEVICE_NAME)
 
 
-def _probe_dml_device(ort):
+def _probe_dml_device(ort, fresh=False):
     """DML 디바이스 0..3 을 1회 추론으로 실측해 가장 빠른 device_id 반환(없으면 None).
     듀얼 GPU 노트북은 기본(0)이 느린 쪽일 수 있고 편차가 큼(실측 dev0 485ms vs dev1 146ms).
-    결과는 json 으로 캐시(1회 프로빙 ~수 초). GPU 구성 변경 시 파일 삭제하면 재프로빙."""
+    결과는 json 으로 캐시(1회 프로빙 ~수 초). fresh=True 면 캐시 무시하고 재실측
+    (드라이버/어댑터 변경으로 캐시된 device_id 가 무효해진 경우 — _session 이 감지)."""
     import time
-    try:
-        with open(_DEVICE_CACHE, encoding="utf-8") as f:
-            return int(json.load(f)["device_id"])
-    except Exception:
-        pass
+    if not fresh:
+        try:
+            app_dirs.materialize(_DEVICE_NAME)   # 구버전 폴더의 프로빙 캐시 재사용(워커 스레드)
+            with open(_DEVICE_CACHE, encoding="utf-8") as f:
+                return int(json.load(f)["device_id"])
+        except Exception:
+            pass
     best, best_t = None, float("inf")
     x = np.zeros((1, 3, TILE, TILE), dtype=np.float32)
     for dev in range(4):
         try:
             if dev > 0:
                 time.sleep(0.1)         # 디바이스 사이 양보 — GPU 연속 점유로 UI 렌더 정지 완화
-            s = ort.InferenceSession(
-                MODEL_PATH, providers=[("DmlExecutionProvider", {"device_id": dev})])
+            # 존재하지 않는 device_id 를 시험하면 ORT 파이썬 래퍼가 "EP Error … Falling
+            # back to CPU and retrying" 블록을 콘솔에 출력(정상 탐색 과정) — 사용자가
+            # 오류로 오인하므로 프로빙 중에는 출력을 삼킨다(결과는 아래서 직접 판정).
+            import contextlib
+            import io
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                s = ort.InferenceSession(
+                    MODEL_PATH, providers=[("DmlExecutionProvider", {"device_id": dev})])
             # 존재하지 않는 device_id 는 예외 대신 조용히 CPU 로 폴백됨(ORT 동작) → 감지해 중단
             if s.get_providers()[0] != "DmlExecutionProvider":
                 del s
@@ -189,12 +208,33 @@ def _session():
         avail = set(ort.get_available_providers())
         try:
             if "DmlExecutionProvider" in avail:
-                dev = _probe_dml_device(ort)
-                if dev is not None:
-                    _session_obj = ort.InferenceSession(
-                        MODEL_PATH,
-                        providers=[("DmlExecutionProvider", {"device_id": dev}),
-                                   "CPUExecutionProvider"])
+                # 1차=캐시된 디바이스. 캐시가 현재 GPU 구성에서 무효(드라이버 업데이트/어댑터
+                # 열거 변경)면 ORT 가 예외 없이 세션 안에서 CPU 로 폴백(EP Error 로그만 출력)
+                # → 실제 EP 를 확인해 감지하고, 캐시 삭제 후 재실측으로 1회 재시도.
+                import contextlib
+                import io
+                for attempt in (0, 1):
+                    dev = _probe_dml_device(ort, fresh=(attempt == 1))
+                    if dev is None:
+                        break
+                    # 무효 device 면 ORT 가 "EP Error" 블록을 출력하며 CPU 폴백 —
+                    # 노이즈는 삼키고 아래서 실제 EP 를 판정해 명확한 메시지로 처리.
+                    with contextlib.redirect_stdout(io.StringIO()), \
+                            contextlib.redirect_stderr(io.StringIO()):
+                        s = ort.InferenceSession(
+                            MODEL_PATH,
+                            providers=[("DmlExecutionProvider", {"device_id": dev}),
+                                       "CPUExecutionProvider"])
+                    if s.get_providers()[0] == "DmlExecutionProvider":
+                        _session_obj = s
+                        break
+                    del s                       # DML 이 안 잡힘 → 폴백 세션은 버림
+                    if attempt == 0:
+                        print(f"[ai-nr] 캐시된 DML device {dev} 무효 → 캐시 삭제 후 재프로빙")
+                        try:
+                            os.remove(_DEVICE_CACHE)
+                        except OSError:
+                            pass
             elif "CoreMLExecutionProvider" in avail:
                 _session_obj = ort.InferenceSession(
                     MODEL_PATH, providers=["CoreMLExecutionProvider", "CPUExecutionProvider"])

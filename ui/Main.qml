@@ -3045,9 +3045,38 @@ ApplicationWindow {
                     }
                 }
 
+                // ── 마스킹 모델 다운로드: 실제 진행률 프로그레스바(AI 디노이즈와 동일 UX) ──
+                ColumnLayout {
+                    visible: controller.segDownloading && !controller.aiNrDownloading
+                             && !controller.exporting && !win.batchActive
+                    anchors.centerIn: parent
+                    spacing: 12
+                    Label {
+                        text: "Downloading masking model…  "
+                              + Math.round(controller.segDlProgress * 100) + "%"
+                        color: "white"; font.pixelSize: 14
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Rectangle {   // 진행 바(앰버) — AI 디노이즈/필름 카운터와 같은 컨셉 컬러
+                        Layout.alignment: Qt.AlignHCenter
+                        width: 280; height: 8; radius: 4
+                        color: "#333333"
+                        Rectangle {
+                            width: parent.width * Math.min(1.0, controller.segDlProgress)
+                            height: parent.height; radius: 4; color: "#E0A226"
+                        }
+                    }
+                    Label {
+                        text: "first use only · ~105 MB"
+                        color: "#9a9a9a"; font.pixelSize: 11
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                }
+
                 // ── 그 외(디코드·세그): 기존 스피너 ──
                 ColumnLayout {
                     visible: !controller.exporting && !win.batchActive && !controller.aiNrDownloading
+                             && !controller.segDownloading
                     anchors.centerIn: parent
                     spacing: 12
                     BusyIndicator {

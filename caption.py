@@ -21,8 +21,13 @@ import urllib.request
 
 import numpy as np
 
+import app_dirs
+
 _REPO = "https://huggingface.co/onnx-community/Florence-2-base-ft/resolve/main"
-MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
+# 저장 위치: 항상 OS 사용자 데이터 디렉터리(app_dirs — 버전/실행환경 무관 유지).
+# 예전 위치(구버전 frozen lib/models, dev 저장소 models/)에 받아둔 파일은
+# ensure_model 이 재다운로드 대신 복사(app_dirs.materialize).
+MODEL_DIR = app_dirs.MODELS_DIR
 
 # 로컬 파일명 -> repo 상대경로. onnx 4개 + 토크나이저/설정 4개.
 _FILES = {
@@ -55,18 +60,24 @@ def _path(name: str) -> str:
 
 
 def is_ready() -> bool:
-    """모든 모델/토크나이저 파일이 로컬에 있는지(없으면 첫 실행 시 대용량 다운로드)."""
-    return all(os.path.exists(_path(n)) for n in _FILES)
+    """모든 모델/토크나이저 파일을 확보 가능한지(새 경로 or 구버전 폴더 — 둘 다 없으면
+    첫 사용 시 대용량 다운로드가 필요하다는 뜻). 부작용 없음 — UI 스레드 안전."""
+    return all(app_dirs.have(n) for n in _FILES)
 
 
 def ensure_model(progress=None) -> None:
-    """모델 파일 보장(없으면 다운로드, 총 ~1.1GB). progress(0..1) 콜백 옵션.
-    락으로 동시 다운로드 방지. 파일별 원자적 tmp→rename(부분파일 방지)."""
+    """모델 파일 보장(구버전 폴더에서 복사 or 다운로드, 총 ~1.1GB). progress(0..1) 콜백
+    옵션. 락으로 동시 다운로드 방지. 복사/다운로드 모두 원자적 tmp→rename(부분파일 방지)."""
     with _dl_lock:
         done = sum(os.path.getsize(_path(n)) for n in _FILES if os.path.exists(_path(n)))
         for name, rel in _FILES.items():
             dst = _path(name)
             if os.path.exists(dst):
+                continue
+            if app_dirs.materialize(name):     # 구버전 폴더 복사(재다운로드 생략)
+                done += os.path.getsize(dst)
+                if progress is not None:
+                    progress(min(1.0, done / _TOTAL_BYTES))
                 continue
             os.makedirs(MODEL_DIR, exist_ok=True)
             tmp = dst + ".part"
@@ -151,11 +162,14 @@ class _Bpe:
 
 
 def _load_state():
-    """세션/토크나이저 lazy 로드(1회, ~3s). 이후 호출은 캐시 재사용."""
+    """세션/토크나이저 lazy 로드(1회, ~3s). 이후 호출은 캐시 재사용.
+    파일이 사용자 디렉터리에 없으면(legacy-only 포함) ensure_model 로 먼저 확보 —
+    외부에서 generate 를 단독 호출해도 안전(파일 전부 있으면 즉시 통과)."""
     global _state
     with _sess_lock:
         if _state is not None:
             return _state
+        ensure_model()
         import onnxruntime as ort
         opts = ort.SessionOptions()
         opts.log_severity_level = 3

@@ -606,6 +606,7 @@ class Controller(QObject):
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
     _skyReady = Signal(object)   # (내부) 하늘 세그 워커 -> 메인 스레드 (seq, mask)
     _segStatusSig = Signal(str)  # (내부) 세그 워커 -> 메인 스레드 상태 문구 전달
+    _segDlSig = Signal(object)   # (내부) 세그 워커 -> 메인 스레드 (downloading, 진행률 0..1)
     _exportProgressSig = Signal(float)  # (내부) export 워커 -> 메인 스레드 진행률(0..1)
     _hazeReady = Signal(object)  # (내부) 디헤이즈 추정 워커 -> 메인 스레드 (seq, (t, A, conf))
     _nrReady = Signal(object)    # (내부) NR 베이스 워커 -> 메인 스레드 (seq, 디노이즈드 luma)
@@ -657,6 +658,8 @@ class Controller(QObject):
         self._sky_seq = 0           # 비동기 세그/재조합 순번(오래된 결과 폐기)
         self._sky_busy = False      # 세그 추론/재조합 진행 중
         self._seg_status = ""       # 세그 상태 문구(모델 다운로드 중 등). 빈 문자열=없음
+        self._seg_downloading = False   # 마스킹 모델 다운로드 중(전용 프로그레스바 표시)
+        self._seg_dl_prog = 0.0         # 다운로드 진행률 0..1
         self._sky_mask = None       # 마지막 마스크 (numpy float32 [0,1], 프록시 해상도) — CPU export 용
         self._proxy_img = None      # 마지막 프록시 QImage(세그 입력 디코드용)
         self._seg_probs = None      # 캐시된 150클래스 softmax(저해상도) — 이미지당 추론 1회
@@ -725,6 +728,7 @@ class Controller(QObject):
         self._fullDecoded.connect(self._on_full_decoded)
         self._skyReady.connect(self._on_sky_ready)
         self._segStatusSig.connect(self._on_seg_status)
+        self._segDlSig.connect(self._on_seg_dl)
         self._exportProgressSig.connect(self._on_export_progress)
         self._hazeReady.connect(self._on_haze_ready)
         self._nrReady.connect(self._on_nr_ready)
@@ -954,17 +958,20 @@ class Controller(QObject):
             import caption as cap
             tasks = ("<CAPTION>", "<DETAILED_CAPTION>", "<MORE_DETAILED_CAPTION>")
             task = tasks[max(0, min(2, level))]
-            if not cap.is_ready():
-                last = [-1]
+            # 항상 ensure — 파일이 다 있으면 즉시 통과, legacy(구버전/저장소 models)에만
+            # 있으면 사용자 디렉터리로 복사, 아예 없으면(옵트인 클릭) 다운로드.
+            downloading = not cap.is_ready()
+            last = [-1]
 
-                def prog(v):
-                    pct = int(v * 100)
-                    if pct != last[0]:      # 1% 단위로만 시그널(과도 emit 방지)
-                        last[0] = pct
-                        self._caption_status = f"Downloading model… {pct}% of ~1.1 GB"
-                        self.captionChanged.emit()
-                cap.ensure_model(prog)
-                self._caption_model_ready = True   # 이후 로드부터 자동 캡션 활성
+            def prog(v):
+                pct = int(v * 100)
+                if pct != last[0]:      # 1% 단위로만 시그널(과도 emit 방지)
+                    last[0] = pct
+                    self._caption_status = (f"Downloading model… {pct}% of ~1.1 GB"
+                                            if downloading else f"Preparing model… {pct}%")
+                    self.captionChanged.emit()
+            cap.ensure_model(prog)
+            self._caption_model_ready = True   # 이후 로드부터 자동 캡션 활성
             self._caption_status = "Generating…"
             self.captionChanged.emit()
 
@@ -1962,11 +1969,25 @@ class Controller(QObject):
         mask = None
         try:
             if self._seg_probs is None:                 # 이미지당 추론 1회 → 캐시
-                # 모델이 아직 없으면 최초 1회 다운로드(~105MB) → 다운로드 구간에만 문구 표시.
+                # 모델이 아직 없으면 최초 1회 다운로드(~105MB) → 진행률 % 문구 표시.
+                # (legacy 에 있으면 ensure 가 복사만 하므로 '다운로드' 문구는 진짜 없을 때만)
                 if not os.path.exists(sky_seg.MODEL_PATH):
-                    self._segStatusSig.emit("Downloading sky model… (first use, ~105MB)")
-                    sky_seg.ensure_model()               # 실제 다운로드(블로킹)
-                    self._segStatusSig.emit("")          # 다운로드 끝 → 이후는 'Detecting mask…'
+                    if not sky_seg.model_available():
+                        # 진짜 다운로드일 때만 전용 프로그레스바(AI 디노이즈와 동일 UX).
+                        # 명칭 주의: 하늘 전용이 아니라 150클래스 세그멘테이션(마스킹 전체).
+                        self._segDlSig.emit((True, 0.0))
+                        _last = [0.0]
+
+                        def _dl_prog(f):
+                            if f - _last[0] >= 0.01 or f >= 1.0:   # 1% 스로틀
+                                _last[0] = f
+                                self._segDlSig.emit((True, f))
+                        try:
+                            sky_seg.ensure_model(_dl_prog)
+                        finally:
+                            self._segDlSig.emit((False, 1.0))   # 실패해도 반드시 해제
+                    else:
+                        sky_seg.ensure_model()               # legacy 복사(순간, 표시 없음)
                 rgb8 = self._sky_input_rgb()
                 probs, hw = sky_seg.infer_softmax(rgb8)
                 self._seg_probs = probs
@@ -2043,10 +2064,26 @@ class Controller(QObject):
             self._seg_status = s
             self.segStatusChanged.emit()
 
+    @Slot(object)
+    def _on_seg_dl(self, payload) -> None:
+        """워커 스레드 → 메인 스레드: 마스킹 모델 다운로드 (진행중, 진행률) 갱신."""
+        downloading, frac = payload
+        self._seg_downloading = bool(downloading)
+        self._seg_dl_prog = float(frac)
+        self.segStatusChanged.emit()
+
     def _get_seg_status(self) -> str:
         return self._seg_status
 
+    def _get_seg_downloading(self) -> bool:
+        return self._seg_downloading
+
+    def _get_seg_dl_prog(self) -> float:
+        return self._seg_dl_prog
+
     segStatus = Property(str, _get_seg_status, notify=segStatusChanged)
+    segDownloading = Property(bool, _get_seg_downloading, notify=segStatusChanged)
+    segDlProgress = Property(float, _get_seg_dl_prog, notify=segStatusChanged)
 
     def _get_adjust_coeffs(self):
         import coeffs
@@ -2432,6 +2469,8 @@ def main() -> int:
     _load_heavy_modules()        # numpy/scipy/rawpy 등은 splash 표시 후 로드(앞 구간 단축)
     ensure_shader()
     ensure_luts()
+    import app_dirs
+    app_dirs.migrate_legacy_async()   # legacy(구버전/저장소 models)→사용자 디렉터리 일괄 복사(백그라운드)
     date_stamp.font_family()   # 번들 DSEG7 폰트 1회 등록(메인 스레드)
     engine = QQmlApplicationEngine()
 

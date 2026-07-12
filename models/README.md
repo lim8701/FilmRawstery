@@ -1,8 +1,23 @@
 # models/ — ONNX 모델
 
 이 폴더의 `*.onnx` 파일은 **용량이 커서 git에 커밋하지 않는다**(`.gitignore`). 최초 사용 시
-`sky_seg.ensure_model()` / `ai_denoise.ensure_model()` 가 아래 출처에서 자동 다운로드한다
-(`urllib`, 원자적 tmp→rename).
+각 모듈의 `ensure_model()` 이 아래 출처에서 자동 다운로드한다(`urllib`, 원자적 tmp→rename).
+
+## 저장 위치 (`app_dirs.py`)
+
+dev/배포 구분 없이 **항상 OS 사용자 데이터 디렉터리**에 저장한다(일관성 — zip 업데이트마다
+새 폴더에 풀려도, dev 폴더를 지워도 재다운로드 없음):
+
+- Windows: `%LOCALAPPDATA%\FilmRawstery\models` (머신 전용 대용량 — Roaming 제외)
+- macOS: `~/Library/Application Support/FilmRawstery/models` (Caches 는 OS 가 지울 수 있음)
+- Linux: `${XDG_DATA_HOME:-~/.local/share}/FilmRawstery/models` (XDG 규약)
+
+**legacy 마이그레이션**: 예전 위치(구버전 frozen 은 exe 옆 `lib/models`, dev 는 이 폴더)에
+받아둔 파일은 첫 사용 시 재다운로드 대신 새 위치로 **복사**된다(`app_dirs.materialize`).
+GPU 프로빙 캐시(`ai_denoise_device.json`)도 동일. 복사가 끝난 뒤 이 폴더의 대용량 파일은
+지워도 된다(.gitignore 규칙은 legacy 안전망으로 유지).
+
+앱을 삭제해도 사용자 디렉터리의 모델은 남는다 — 완전 제거하려면 위 경로를 함께 삭제.
 
 ## 하늘 세그멘테이션 (Sky segmentation)
 

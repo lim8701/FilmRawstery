@@ -23,14 +23,20 @@ import urllib.request
 import numpy as np
 from scipy.ndimage import binary_fill_holes, uniform_filter, zoom
 
+import app_dirs
+
 # ── 모델 ────────────────────────────────────────────────────────────────────
 # SegFormer-B2(ADE20K). B0(~3.7M)는 채광창+구름 등 까다로운 장면에서 하늘을 windowpane 으로
 # 오분류·확신도 약함 → B2(~27M)로 상향(하늘 인식·구름 채움 큰 개선, 실측 확인). 모든 변형이
 # sky=클래스2·ImageNet 정규화 동일. 더 키우려면 b4/b5(640) 가능하나 크기·속도 급증(b5 324MB·~4s).
 _REPO = "Xenova/segformer-b2-finetuned-ade-512-512"
 _MODEL_URL = f"https://huggingface.co/{_REPO}/resolve/main/onnx/model.onnx"
-MODEL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models")
-MODEL_PATH = os.path.join(MODEL_DIR, "segformer_b2_ade.onnx")
+# 저장 위치: 항상 OS 사용자 데이터 디렉터리(app_dirs — 버전/실행환경 무관 유지).
+# 예전 위치(구버전 frozen lib/models, dev 저장소 models/)에 받아둔 파일은
+# ensure_model 이 재다운로드 대신 복사(app_dirs.materialize).
+_MODEL_NAME = "segformer_b2_ade.onnx"
+MODEL_DIR = app_dirs.MODELS_DIR
+MODEL_PATH = app_dirs.model_path(_MODEL_NAME)
 
 # ── SegFormer 전처리 (preprocessor_config.json 와 일치) ──────────────────────
 # 추론 입력 긴 변(종횡비 유지, 각 변 32의 배수=SegFormer stride 로 라운딩).
@@ -86,12 +92,23 @@ GUIDED_EPS = 1e-4            # guided filter 정규화(엣지 보존 강도; 작
 _session_obj = None
 
 
-def ensure_model() -> str:
-    """모델 파일 보장(없으면 다운로드). 경로 반환."""
-    if not os.path.exists(MODEL_PATH):
+def model_available() -> bool:
+    """다운로드 없이 확보 가능한지(사용자 디렉터리 또는 legacy 에 존재). 부작용 없음."""
+    return app_dirs.have(_MODEL_NAME)
+
+
+def ensure_model(progress=None) -> str:
+    """모델 파일 보장(구버전 폴더에서 복사 or 다운로드). progress(0..1) 콜백 옵션
+    (다운로드 진행률 — legacy 복사는 순간이라 콜백 없이 완료). 경로 반환."""
+    if not os.path.exists(MODEL_PATH) and not app_dirs.materialize(_MODEL_NAME):
         os.makedirs(MODEL_DIR, exist_ok=True)
         tmp = MODEL_PATH + ".part"
-        urllib.request.urlretrieve(_MODEL_URL, tmp)   # SegFormer-B2 ONNX ~105MB
+        hook = None
+        if progress is not None:
+            def hook(nblk, blksz, total):  # noqa: E306
+                if total > 0:
+                    progress(min(1.0, nblk * blksz / total))
+        urllib.request.urlretrieve(_MODEL_URL, tmp, reporthook=hook)  # ~105MB
         os.replace(tmp, MODEL_PATH)                    # 원자적 교체(부분파일 방지)
     return MODEL_PATH
 
