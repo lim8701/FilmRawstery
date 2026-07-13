@@ -82,6 +82,18 @@ CAPTIONS_FILE_NAME = ".filmrawsterycaptions.json"
 _OLD_SIDECARS = [(".camrawedits", EDITS_DIR_NAME), (".camrawlikes.json", LIKES_FILE_NAME)]
 
 
+def _atomic_write_json(path, data) -> None:
+    """사이드카 JSON 원자적 쓰기(tmp→os.replace). open("w") 직접 쓰기는 truncate 후
+    크래시/전원단절 시 파일이 통째로 비어버리고, 로더가 조용히 빈 값으로 폴백해
+    폴더 전체의 likes/캡션(또는 그 파일의 편집)이 소실된다 — 모델 다운로드와 동일한
+    tmp→rename 패턴으로 방지."""
+    p = Path(path)
+    tmp = p.with_name(p.name + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, p)
+
+
 def _migrate_sidecars(folder: str) -> None:
     """구 사이드카 이름(.camraw*)을 신 이름(.filmrawstery*)으로 1회 이동(신 이름이 없을 때만).
     이미 신 이름이 있거나 구 이름이 없으면 아무 것도 안 함(멱등)."""
@@ -599,7 +611,7 @@ class Controller(QObject):
     cmChanged = Signal()         # 디스플레이 색관리 LUT 갱신 알림(모니터 전환/로드)
     hazeChanged = Signal()       # 디헤이즈 투과율 맵/대기광/conf 갱신 알림(DCP)
     nrChanged = Signal()         # 휘도 NR 베이스 텍스처/준비 상태 갱신 알림
-    aiNrChanged = Signal()       # AI 디노이즈(SCUNet) 사용 여부/상태 문구 갱신 알림
+    aiNrChanged = Signal()       # AI 디노이즈(NAFNet) 사용 여부/상태 문구 갱신 알림
     captionChanged = Signal()    # 캡션 텍스트/생성 상태 갱신 알림(Florence-2)
     updateChanged = Signal()     # 새 버전 발견 알림(updateVersion/updateUrl 갱신)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
@@ -780,35 +792,38 @@ class Controller(QObject):
 
     @staticmethod
     def _save_likes(folder: str, liked_set: set) -> None:
-        """좋아요 집합을 {파일명: true} JSON 으로 폴더에 저장."""
+        """좋아요 집합을 {파일명: true} JSON 으로 폴더에 저장(원자적 쓰기)."""
         try:
-            p = Controller._likes_path(folder)
             data = {name: True for name in sorted(liked_set)}
-            with open(p, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(Controller._likes_path(folder), data)
         except Exception as exc:
             print(f"[likes] 저장 실패: {exc}")
 
     @Slot(str, result=bool)
     def isLiked(self, path: str) -> bool:  # noqa: N802 (QML 슬롯)
-        return Path(path).name in self._likes
+        # 캐시(self._likes)는 탐색기 폴더 전용 — 탐색기/프리뷰가 그 폴더면 O(1).
+        # 다른 폴더(프리뷰가 외부 폴더일 때) 질의는 디스크에서 읽어 배지 오염 방지
+        # (파일명만 비교하면 DSCF####.RAF 가 폴더마다 충돌).
+        if str(Path(path).parent) == self._likes_folder:
+            return Path(path).name in self._likes
+        return Path(path).name in self._load_likes(str(Path(path).parent))
 
     @Slot(str)
     def toggleLike(self, path: str) -> None:  # noqa: N802 (QML 슬롯)
-        """파일의 좋아요 상태를 토글하고 즉시 폴더 JSON 에 저장(크래시 안전)."""
+        """파일의 좋아요 상태를 토글하고 즉시 폴더 JSON 에 저장(크래시 안전).
+        ⚠️탐색기 폴더 캐시(self._likes)는 절대 다른 폴더로 바꾸지 않는다 — 예전엔
+        프리뷰가 외부 폴더 파일을 토글하면 캐시가 그 폴더로 스왑돼, likesChanged 후
+        탐색기 하트가 통째로 다른 폴더 기준으로 오염됐음."""
         if not path:
             return
         name = Path(path).name
         folder = str(Path(path).parent)
-        # 프리뷰 대상이 현재 탐색기 폴더와 다를 수 있으므로 해당 폴더 상태를 로드해 갱신
-        if folder != self._likes_folder:
-            self._likes = self._load_likes(folder)
-            self._likes_folder = folder
-        if name in self._likes:
-            self._likes.discard(name)
+        if folder == self._likes_folder:
+            s = self._likes                       # 탐색기 폴더 = 캐시 직접 갱신
         else:
-            self._likes.add(name)
-        self._save_likes(folder, self._likes)
+            s = self._load_likes(folder)          # 외부 폴더 = 별도 로드(캐시 불변)
+        s.discard(name) if name in s else s.add(name)
+        self._save_likes(folder, s)
         self._like_rev += 1
         self.likesChanged.emit()
 
@@ -839,10 +854,8 @@ class Controller(QObject):
     @staticmethod
     def _save_captions(folder: str, captions: dict) -> None:
         try:
-            p = Controller._captions_path(folder)
             data = {k: captions[k] for k in sorted(captions)}
-            with open(p, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(Controller._captions_path(folder), data)
         except Exception as exc:
             print(f"[caption] 저장 실패: {exc}")
 
@@ -944,13 +957,19 @@ class Controller(QObject):
     def generateCaption(self, level: int = 0) -> None:  # noqa: N802 (QML 슬롯)
         """현재 사진의 영어 캡션 생성(level: 0=짧게/1=상세/2=문단). 백그라운드 실행.
         최초 1회는 모델 다운로드(~1.1GB, 진행률=captionStatus)."""
-        if self._caption_busy or not self._ui_path:
+        path = self._ui_path
+        if not path:
             return
-        self._caption_busy = True
+        # busy 체크-후-설정을 락으로 원자화 — 워커 finally 의 _maybe_auto_caption(워커
+        # 스레드)과 메인 스레드 호출이 겹쳐 두 워커가 동시에 도는 레이스 방지.
+        with self._caption_lock:
+            if self._caption_busy:
+                return
+            self._caption_busy = True
         self._caption_status = "Preparing…"
         self.captionChanged.emit()
         threading.Thread(target=self._caption_worker,
-                         args=(self._ui_path, int(level)), daemon=True).start()
+                         args=(path, int(level)), daemon=True).start()
 
     def _caption_worker(self, path: str, level: int) -> None:
         import traceback
@@ -1055,8 +1074,13 @@ class Controller(QObject):
 
     @Slot(str, result=bool)
     def hasEdits(self, path: str) -> bool:  # noqa: N802 (QML 슬롯)
-        """파일에 저장된 편집 사이드카가 있는지(현재 폴더 캐시 기준). 썸네일 배지용."""
-        return Path(path).name in self._edited
+        """파일에 저장된 편집 사이드카가 있는지. 썸네일 배지용.
+        캐시(_edited)는 탐색기 폴더 전용 — 다른 폴더 질의는 사이드카 존재를 직접 확인
+        (파일명만 비교하면 폴더 간 DSCF####.RAF 충돌)."""
+        p = Path(path)
+        if str(p.parent) == self._edited_folder:
+            return p.name in self._edited
+        return Controller._edits_path(str(p.parent), p.name).is_file()
 
     @Slot("QVariantMap")
     def saveEdits(self, params) -> None:  # noqa: N802 (QML 슬롯)
@@ -1071,8 +1095,7 @@ class Controller(QObject):
             d.mkdir(parents=True, exist_ok=True)
             data = {k: params[k] for k in params}   # QVariantMap -> dict
             data["appVersion"] = APP_VERSION        # 이 편집을 만든 앱 버전(추후 지원/디버깅용, 참고용 기록 — 읽어서 되돌리지 않음)
-            with open(d / f"{p.name}.json", "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            _atomic_write_json(d / f"{p.name}.json", data)
             self._pending_edits = data               # 현재 파일 캐시 동기화
             # 썸네일 편집 배지 즉시 반영(현재 탐색기 폴더 파일일 때)
             if str(p.parent) == self._edited_folder and p.name not in self._edited:
@@ -1145,16 +1168,20 @@ class Controller(QObject):
             return
         path = file_url.toLocalFile()
         pdict = {k: params[k] for k in params}     # QVariantMap -> 평범한 dict
-        sky_mask = self._sky_mask                  # 요청 시점 스냅샷(export 중 마스크 변경/이미지 전환과 분리)
+        # 요청 시점 스냅샷 — export 중 마스크 변경/이미지 전환과 분리.
+        # ⚠️소스 경로/WB 도 반드시 스냅샷: 워커에서 self._path 를 읽으면 export 중 다른
+        # 사진을 로드했을 때 '새 사진 + 이전 편집값'이 이전 파일명으로 저장되는 버그.
+        src = (self._path, self._kelvin, self._tint)
+        sky_mask = self._sky_mask
         haze = (self._haze_t, list(self._haze_A), self._haze_conf)   # DCP 추정 스냅샷(동일 이유)
         self._exporting = True
         self._export_progress = 0.0
         self.exportProgressChanged.emit()
         self._set_export_status("Exporting… (full resolution, may take tens of seconds)")
-        threading.Thread(target=self._do_export, args=(path, pdict, sky_mask, haze),
+        threading.Thread(target=self._do_export, args=(path, pdict, src, sky_mask, haze),
                          daemon=True).start()
 
-    def _do_export(self, path: str, params: dict, sky_mask=None, haze=None) -> None:
+    def _do_export(self, path: str, params: dict, src, sky_mask=None, haze=None) -> None:
         try:
             import pipeline
             lut_arr, lut_n = None, 0
@@ -1163,8 +1190,9 @@ class Controller(QObject):
             ident = [i / 255.0 for i in range(256)]
             curves = params.get("curves") or [ident, ident, ident, ident]
             curve_rgb = pipeline.compose_curves(*curves)
+            src_path, src_kelvin, src_tint = src   # 요청 시점 스냅샷(라이브 self._path 금지)
             arr = pipeline.render_full(
-                self._path, self._kelvin, self._tint, params, lut_arr, lut_n, curve_rgb,
+                src_path, src_kelvin, src_tint, params, lut_arr, lut_n, curve_rgb,
                 bitdepth=int(params.get("bitDepth", 8)), sky_mask=sky_mask,
                 progress=lambda f: self._exportProgressSig.emit(f), haze=haze)
             ok = pipeline.save_image(arr, path)
@@ -1189,11 +1217,12 @@ class Controller(QObject):
         self._export_progress = 0.0   # GPU 는 진행률 콜백 없음 → 0 유지(오버레이는 인디터미닛 표시)
         self.exportProgressChanged.emit()
         self._set_export_status("GPU exporting… (full-resolution decode)")
-        threading.Thread(target=self._do_full_decode, daemon=True).start()
+        # 소스 경로 스냅샷 — 디코드 중 다른 사진을 로드해도 요청 시점 파일을 디코드(CPU export 동일).
+        threading.Thread(target=self._do_full_decode, args=(self._path,), daemon=True).start()
 
-    def _do_full_decode(self) -> None:
+    def _do_full_decode(self, src_path: str) -> None:
         try:
-            img, *_ = load_full(self._path, bool(self._gpu_params.get("lensCorrection", True)))
+            img, *_ = load_full(src_path, bool(self._gpu_params.get("lensCorrection", True)))
             self._full_provider.set_image(img)
             self._fullDecoded.emit(True)
         except Exception as exc:
@@ -1211,6 +1240,17 @@ class Controller(QObject):
         self._full_url = f"image://rawfull/f?v={self._full_counter}"
         self.fullChanged.emit()   # QML srcFull.source 갱신 → 재로드
         self.fullReady.emit()     # QML: 로드 완료 시 grab
+
+    @Slot()
+    def abortGpuExport(self) -> None:  # noqa: N802 (QML 슬롯)
+        """QML 이 풀해상도 src 로드에 실패(Image.Error)했을 때 호출 — export 상태를
+        복구한다. 없으면 _exporting 이 영구 True 로 남아 이후 모든 export 가 무시됐음."""
+        if not self._exporting:
+            return
+        self._exporting = False
+        self._set_export_status("GPU export failed (image load)")
+        if self._full_provider is not None:
+            self._full_provider.clear()
 
     @Slot("QImage")
     def saveGrab(self, qimg) -> None:  # noqa: N802 (QML 슬롯)
@@ -1487,16 +1527,27 @@ class Controller(QObject):
         # 저장된 WB(temp/tint)가 있으면 절대값으로 선설정 → 초기 렌더가 저장 WB 로 디코딩
         # (없으면 as-shot 으로 시작). setWb 재디코딩 이중작업 회피.
         e = self._pending_edits
-        if e.get("temp") is not None:
-            self._kelvin = float(e["temp"])
-            self._tint = float(e.get("tint", 0.0))
-        else:
-            self._kelvin = None     # 새 파일은 as-shot 색온도로 시작
+        # ⚠️손상/수동편집 사이드카(temp="auto" 등)의 타입 오류로 로드가 통째로
+        # 실패하지 않도록 방어 — 파싱 실패 시 as-shot 으로 폴백.
+        try:
+            self._kelvin = float(e["temp"]) if e.get("temp") is not None else None
+            self._tint = float(e.get("tint", 0.0)) if self._kelvin is not None else 0.0
+        except (TypeError, ValueError):
+            self._kelvin = None
             self._tint = 0.0
         # 촬영정보는 경로에만 의존 -> 로드 시 1회 읽음(WB 변경 재디코딩과 무관)
-        self._exif_fields, self._exif_summary = read_shooting_info(path)
+        # EXIF 는 부가정보 — 손상/변칙 EXIF(예: ExposureTime 0/1)로 예외가 나도
+        # 사진 로드 자체를 막지 않는다(과거: 예외가 슬롯을 탈출해 파일이 안 열렸음).
+        try:
+            self._exif_fields, self._exif_summary = read_shooting_info(path)
+        except Exception as exc:
+            print(f"[exif] 촬영정보 읽기 실패(무시): {exc}")
+            self._exif_fields, self._exif_summary = [], ""
         # 촬영 방향(EXIF Orientation) → 데이트백을 센서 우하단 각인처럼 회전/코너 배치(세로 사진).
-        self._stamp_rot = date_stamp.rot_from_orientation(read_orientation(path))
+        try:
+            self._stamp_rot = date_stamp.rot_from_orientation(read_orientation(path))
+        except Exception:
+            self._stamp_rot = 0
         date_val = next((f["value"] for f in self._exif_fields
                          if f["label"] == "Date"), "")
         self._stamp_text = date_stamp.stamp_text_from_date(date_val)
@@ -1844,7 +1895,7 @@ class Controller(QObject):
     updateVersion = Property(str, _get_update_version, notify=updateChanged)
     updateUrl = Property(str, _get_update_url, notify=updateChanged)
 
-    # ---------- AI 디노이즈(SCUNet): 온디맨드 타일 추론으로 nrBase 를 교체 ----------
+    # ---------- AI 디노이즈(NAFNet): 온디맨드 타일 추론으로 nrBase 를 교체 ----------
     @Slot(result=bool)
     def aiNrGpuAvailable(self) -> bool:
         """GPU 가속 EP(DirectML/CoreML) 사용 가능 여부. QML 이 토글 시 확인 —
@@ -1864,7 +1915,7 @@ class Controller(QObject):
 
     @Slot(bool)
     def setAiNr(self, on: bool) -> None:
-        """AI 디노이즈 베이스 토글. on=백그라운드 SCUNet 타일 추론 시작 — 완료까지는 기존
+        """AI 디노이즈 베이스 토글. on=백그라운드 NAFNet 타일 추론 시작 — 완료까지는 기존
         가이디드 베이스가 그대로 동작(완료 시 nrBase 텍스처만 교체, 셰이더 무변경).
         off=가이디드 베이스 재계산으로 즉시 복귀. 파일별 편집값(사이드카 aiNr)."""
         on = bool(on)
@@ -1990,12 +2041,23 @@ class Controller(QObject):
                         sky_seg.ensure_model()               # legacy 복사(순간, 표시 없음)
                 rgb8 = self._sky_input_rgb()
                 probs, hw = sky_seg.infer_softmax(rgb8)
-                self._seg_probs = probs
-                self._seg_size = hw
-                self._seg_guide = (rgb8.astype(np.float32) / 255.0) @ sky_seg._LUMA
+                guide = (rgb8.astype(np.float32) / 255.0) @ sky_seg._LUMA
+                # ⚠️캐시 쓰기는 seq 가드 필수 — 추론 중 이미지가 바뀌면(_on_render_ready 가
+                # 캐시를 비움) 이전 이미지의 softmax 를 되살려 다음 워커가 '이전 이미지
+                # 마스크를 현재 이미지에' 합성하는 레이스가 있었음. stale 워커는 여기서 종료.
+                if seq != self._sky_seq:
+                    return
+                self._seg_probs, self._seg_size, self._seg_guide = probs, hw, guide
+            else:
+                # 로컬 스냅샷 — 메인 스레드가 로드 전환으로 캐시를 비우는 중이어도 찢긴
+                # 조합(probs 는 새것/size 는 None)을 읽지 않도록 한 번에 잡는다.
+                probs, hw, guide = self._seg_probs, self._seg_size, self._seg_guide
+                if probs is None or hw is None:
+                    self._skyReady.emit((seq, None))
+                    return
             ids = sky_seg.class_ids_for(keys)
             if ids:
-                mask = sky_seg.compose_mask(self._seg_probs, self._seg_size, ids, self._seg_guide)
+                mask = sky_seg.compose_mask(probs, hw, ids, guide)
         except Exception as exc:
             print(f"[mask] 세그 실패: {exc}")
             self._segStatusSig.emit("")                  # 실패(다운로드 포함) 시에도 문구 제거
@@ -2037,7 +2099,10 @@ class Controller(QObject):
         self._clear_sky()
 
     def _clear_sky(self) -> None:
-        """마스크 선택 해제(1x1 검정). 캐시(_seg_probs)는 유지 — 같은 이미지 재선택은 재추론 불필요."""
+        """마스크 선택 해제(1x1 검정). 캐시(_seg_probs)는 유지 — 같은 이미지 재선택은 재추론 불필요.
+        seq 증가 — 진행 중이던 세그 워커 결과가 해제 직후 도착해 방금 지운 마스크를
+        되살리는 레이스 방지(다른 무효화 경로와 동일 규칙)."""
+        self._sky_seq += 1
         self._mask_keys = []
         self._set_sky_mask(None)
 

@@ -45,6 +45,7 @@ _FILES = {
     "florence2_generation_config.json": "generation_config.json",
 }
 _TOTAL_BYTES = 1_090_000_000     # 진행률 표시용 대략 총량(fp32 4파일 합)
+_DL_TIMEOUT = 30                 # 소켓 읽기 타임아웃(초)
 
 # 캡션 상세도(Florence-2 태스크) -> 프롬프트 (processing_florence2.py 의 매핑과 동일)
 TASKS = {
@@ -85,15 +86,24 @@ def ensure_model(progress=None) -> None:
                 continue
             os.makedirs(MODEL_DIR, exist_ok=True)
             tmp = dst + ".part"
-            with urllib.request.urlopen(f"{_REPO}/{rel}") as r, open(tmp, "wb") as f:
-                while True:
-                    chunk = r.read(1 << 20)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    done += len(chunk)
-                    if progress is not None:
-                        progress(min(1.0, done / _TOTAL_BYTES))
+            try:
+                # 소켓 타임아웃 — 멈춘 연결이 워커/락을 영구 점유하지 않게(_DL_TIMEOUT).
+                with urllib.request.urlopen(f"{_REPO}/{rel}", timeout=_DL_TIMEOUT) as r, \
+                        open(tmp, "wb") as f:
+                    while True:
+                        chunk = r.read(1 << 20)
+                        if not chunk:
+                            break
+                        f.write(chunk)
+                        done += len(chunk)
+                        if progress is not None:
+                            progress(min(1.0, done / _TOTAL_BYTES))
+            except BaseException:
+                try:
+                    os.remove(tmp)             # 실패 시 부분 파일 정리(잔류물 방지)
+                except OSError:
+                    pass
+                raise
             os.replace(tmp, dst)
         if progress is not None:
             progress(1.0)
@@ -122,9 +132,13 @@ class _Bpe:
         with open(vocab_path, encoding="utf-8") as f:
             self.enc = json.load(f)
         self.dec = {v: k for k, v in self.enc.items()}
-        with open(merges_path, encoding="utf-8") as f:
-            merges = [ln for ln in f.read().split("\n") if ln and not ln.startswith("#")]
-        self.ranks = {tuple(m.split()): i for i, m in enumerate(merges)}
+        # HF 규약: 첫 줄(#version 헤더)만 건너뛰고 나머지는 모두 병합 규칙.
+        # ⚠️`#`-시작 라인 전체를 버리면 `##`/`###` 토큰을 만드는 정당한 규칙까지 사라져
+        #   임의 텍스트가 off-distribution 으로 토큰화됨(고정 프롬프트엔 무해했으나 정정).
+        lines = [ln for ln in open(merges_path, encoding="utf-8").read().split("\n") if ln]
+        if lines and lines[0].startswith("#version"):
+            lines = lines[1:]
+        self.ranks = {tuple(m.split()): i for i, m in enumerate(lines)}
         self.b2u = _bytes_to_unicode()
         self.u2b = {v: k for k, v in self.b2u.items()}
         self.cache = {}

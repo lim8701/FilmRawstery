@@ -20,6 +20,7 @@ def load_cube(path: str):
     데이터 순서는 red 가 가장 빠르게 변함: index = r + g*N + b*N*N
     """
     size = None
+    dom_min, dom_max = None, None
     rows = []
     with open(path, "r", encoding="utf-8") as f:
         for line in f:
@@ -29,7 +30,11 @@ def load_cube(path: str):
             key = s.split()[0].upper()
             if key == "LUT_3D_SIZE":
                 size = int(s.split()[1])
-            elif key in ("TITLE", "DOMAIN_MIN", "DOMAIN_MAX", "LUT_1D_SIZE"):
+            elif key == "DOMAIN_MIN":
+                dom_min = [float(x) for x in s.split()[1:4]]
+            elif key == "DOMAIN_MAX":
+                dom_max = [float(x) for x in s.split()[1:4]]
+            elif key in ("TITLE", "LUT_1D_SIZE"):
                 continue
             else:
                 parts = s.split()
@@ -40,6 +45,12 @@ def load_cube(path: str):
                         continue
     if size is None:
         raise ValueError(f"LUT_3D_SIZE 없음: {path}")
+    # 파이프라인/셰이더는 입력을 [0,1]로 가정하고 LUT 를 샘플한다. 비표준 도메인
+    # (예: DOMAIN_MAX 4 4 4)은 조용히 잘못된 색을 내므로 최소한 경고한다(미지원).
+    if (dom_min is not None and any(abs(v) > 1e-6 for v in dom_min)) or \
+       (dom_max is not None and any(abs(v - 1.0) > 1e-6 for v in dom_max)):
+        print(f"[lut] ⚠️비표준 DOMAIN(min={dom_min} max={dom_max}) — [0,1] 로 가정해 로드"
+              f"(색이 어긋날 수 있음): {path}")
 
     data = np.asarray(rows, dtype=np.float32)
     if data.shape[0] != size ** 3:

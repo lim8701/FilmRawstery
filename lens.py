@@ -18,13 +18,17 @@
 """
 
 import struct
+from collections import OrderedDict
 
 import numpy as np
 from scipy.ndimage import map_coordinates
 
 _RAF_MAGIC = b"FUJIFILMCCD-RAW "
 _PROFILE_CACHE = {}   # path -> (size, mtime, profile|None)
-_COORD_CACHE = {}     # (h, w, sig) -> (coords3|None, gain|None)
+# 리맵 좌표 캐시 — (h, w, sig) 별로 풀해상도는 항목당 ~700MB 라 무제한이면 여러 장
+# export 시 메모리 고갈. LRU 2개 = 현재 이미지 프록시(WB 커밋 재디코딩 적중) + export 1회.
+_COORD_CACHE = OrderedDict()     # (h, w, sig) -> (coords3|None, gain|None)
+_COORD_CACHE_MAX = 2
 
 _TAG_DIST, _TAG_CA, _TAG_VIG = 0xF00B, 0xF00F, 0xF010
 
@@ -131,6 +135,7 @@ def _coords_for(h, w, prof):
     key = (h, w, prof["sig"])
     cached = _COORD_CACHE.get(key)
     if cached is not None:
+        _COORD_CACHE.move_to_end(key)
         return cached
 
     cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
@@ -180,6 +185,9 @@ def _coords_for(h, w, prof):
         gain = (g ** (1.0 / 2.4)).astype(np.float32)[..., None]
 
     _COORD_CACHE[key] = (coords3, gain)
+    _COORD_CACHE.move_to_end(key)
+    while len(_COORD_CACHE) > _COORD_CACHE_MAX:
+        _COORD_CACHE.popitem(last=False)
     return _COORD_CACHE[key]
 
 

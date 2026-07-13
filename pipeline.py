@@ -3,7 +3,7 @@
 화면 프리뷰(GPU 셰이더, 프록시)와 동일한 단계/수식을 풀해상도에 재현한다:
 
   WB(카메라네이티브 선형화→상대게인→cam->sRGB 매트릭스→sRGB) -> 노출 -> 톤영역
-       -> 텍스처/클래리티/디헤이즈 -> 3D LUT -> 대비 -> 톤커브 -> 그레인 -> 비네팅
+       -> 텍스처/클래리티/디헤이즈 -> 3D LUT -> 대비 -> 톤커브 -> 비네팅 -> 그레인
 
 텍스처/클래리티는 공간(이웃) 연산이라 셰이더의 '프록시 텍셀' 반경을 풀해상도
 비율(full/proxy)로 스케일해 시각적으로 맞춘다. 공간 단계는 전체 배열에서,
@@ -25,6 +25,10 @@ import wb
 from wb import baked_wb, cam_to_srgb_matrix
 
 LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
+# 프리뷰 9-tap 가우시안(shaders/blur.frag, 오프셋 1·2·3·4)의 패스당 실제 σ(탭 단위):
+# √(2·(0.1945946·1+0.1216216·4+0.054054·9+0.016216·16)) = √2.854 ≈ 1.69.
+# export 블러 σ = 이 값 × (프리뷰 탭 간격 px) × scale 로 맞춰야 프리뷰=Export.
+_TAP_SIGMA = 1.69
 
 
 def _smoothstep(e0, e1, x):
@@ -57,8 +61,9 @@ def _blur_luma(lum, sigma):
 
 # ── 로컬대비 코어 (전역 _texture/_clarity/_dehaze 와 마스킹 _sky_adjust 가 공유) ──
 # amt 는 스칼라(전역) 또는 (H,W) 배열(마스킹: 계수×마스크). 로컬대비 base(고주파/local-contrast)는
-# 호출측이 넘긴다 — 전역은 현재 배열, 마스킹은 중성(neutral) 배열. ⚠️셰이더 adjust.frag 의
-# 텍스처/클래리티/디헤이즈 분기와 동일 수식 유지(프리뷰=Export). dehaze 는 CLAUDE.md상 임시 톤모델.
+# 호출측이 넘긴다 — 전역·마스킹 모두 **중성(neutral) 베이스**(셰이더 dispSrc 대응)에서 뽑는다.
+# ⚠️셰이더 adjust.frag 의 텍스처/클래리티/디헤이즈 분기와 동일 수식 유지(프리뷰=Export).
+# dehaze 는 하이브리드('+' DCP 물리 복원 + 잔여 톤모델, '−' 흰 베일 톤모델 — CLAUDE.md 참조).
 def _b3(x):
     """스칼라는 그대로, (H,W) 배열은 (H,W,1)로 — (H,W,3) 채널 연산 브로드캐스트용."""
     return x[..., None] if np.ndim(x) else x
@@ -88,22 +93,18 @@ def _dehaze_core(c, amt, ld):
     return l + (c - l) * (1.0 + a * coeffs.DEHAZE_SAT)
 
 
-def _texture(c, amt, sigma):
-    # 중주파 디테일 = 원본 - 작은반경 가우시안 (코어 공유)
-    return _texture_core(c, amt, c - _blur_rgb(c, sigma))
-
-
-def _clarity(c, amt, sigma):
-    lum = c @ LUMA
-    return _clarity_core(c, amt, lum - _blur_luma(lum, sigma))
-
-
-def _sharpen(c, disp, amt, radius_px, detail, mask, scale):
-    """언샤프 마스크(휘도) — 셰이더 5.5 블록과 동일. 고주파를 disp(=dispSrc) 에서 뽑아
-    현상 결과 c 의 휘도에 가산(색 불변). 반경 블러 + Detail 미세 고주파 + 엣지 마스킹."""
-    Ld = (disp @ LUMA).astype(np.float32)
-    Lr = _blur_luma(Ld, max(0.3, 1.2 * radius_px * scale))   # 반경 블러(프리뷰 sharpBlur 대응)
-    Lt = _blur_luma(Ld, max(0.3, 1.5 * scale))               # 미세 블러(texBlur 대응)
+# ⚠️전역 텍스처/클래리티/샤프닝/디헤이즈의 하이패스 소스는 **중성 베이스**(neutral_disp
+# = 셰이더 dispSrc/texBlur/claBlur, as-shot WB·노출 0)여야 한다 — 편집본 기준으로 뽑으면
+# 노출을 올린 사진에서 고주파가 밝기 스케일만큼 커져 export 가 프리뷰보다 강해진다
+# (NR 의 '과거 버그'와 동일 원리; 셰이더는 네 효과 모두 s0=dispSrc 에서 뽑는다).
+def _sharpen(c, Ln, amt, radius_px, detail, mask, scale):
+    """언샤프 마스크(휘도) — 셰이더 5.5 블록과 동일. 고주파를 중성 베이스 휘도
+    Ln(=neutral_disp 휘도, 셰이더 dispSrc 대응)에서 뽑아 현상 결과 c 의 휘도에
+    가산(색 불변). 반경 블러 + Detail 미세 고주파 + 엣지 마스킹."""
+    Ld = Ln
+    # 프리뷰 sharpBlur 탭 간격 = radius px, texBlur = 1.25px → σ = _TAP_SIGMA × 그 간격.
+    Lr = _blur_luma(Ld, max(0.3, _TAP_SIGMA * radius_px * scale))   # 반경 블러(sharpBlur 대응)
+    Lt = _blur_luma(Ld, max(0.3, _TAP_SIGMA * 1.25 * scale))        # 미세 블러(texBlur 대응)
     hp = (Ld - Lr) + detail * (Ld - Lt)
     step = max(1, int(round(scale)))                         # 프록시 1px ~ scale 풀px
     gx = np.roll(Ld, -step, axis=1) - np.roll(Ld, step, axis=1)
@@ -131,10 +132,9 @@ def _dehaze_apply(c, amt, ld, t=None, A=None, conf=0.0):
     return mixed       # 스칼라: 위 any(amt>0) 통과 = 양수
 
 
-def _dehaze(c, amt, sigma, t_full=None, A=None, conf=0.0):
-    """전역(+마스크 합산) 디헤이즈 (프리뷰 셰이더 6단계와 동일) — 로컬대비는 현재 c 기준."""
-    lum = c @ LUMA
-    ld = lum - _blur_luma(lum, sigma)
+def _dehaze(c, amt, ld, t_full=None, A=None, conf=0.0):
+    """전역(+마스크 합산) 디헤이즈 (프리뷰 셰이더 6단계와 동일).
+    ld=중성 로컬대비(셰이더 s0−claBlur 대응) — 호출측(render_full)이 nlum−lb 로 전달."""
     return _dehaze_apply(c, amt, ld, t=t_full, A=A, conf=conf)
 
 
@@ -491,8 +491,12 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
     stamp_rot = int(p.get("stampRot", 0))   # 촬영 방향(센서→업라이트 CW 회전) — 데이트백 회전/코너
     # --- 전역/공간 단계 (전체 배열). 노출/하이라이트는 filmic 프론트엔드에서 이미 처리됨 ---
-    sigma_tex = 1.5 * scale     # 프리뷰 텍스처 블러에 대응
-    sigma_cla = 7.0 * scale     # 프리뷰 클래리티/디헤이즈/톤영역 마스크 블러에 대응
+    # 프리뷰 블러(shaders/blur.frag)는 오프셋 1·2·3·4 탭의 9-tap 가우시안 → 패스당
+    # 실제 σ = √(2·(w1+4w2+9w3+16w4)) = √2.854 ≈ 1.69 탭(가중치 0.1946/0.1216/0.0541/0.0162).
+    # 예전 상수(1.5, 7.0)는 σ≈1.2/탭 가정에서 나온 파생 오류라 export 가 프리뷰보다 ~1.4배
+    # 좁았음. 프리뷰 탭 간격: texBlur 1.25px, claBlur 1.5px×(÷4 다운샘플)=6px 프록시.
+    sigma_tex = _TAP_SIGMA * 1.25 * scale   # 프리뷰 텍스처 블러(1.25px/탭) 대응 ≈ 2.11×scale
+    sigma_cla = _TAP_SIGMA * 6.0 * scale     # 프리뷰 클래리티/디헤이즈/톤영역 마스크(6px/탭) ≈ 10.1×scale
     c = disp
     # hi/sh 국소 톤맵 마스크 = 중성 베이스(neutral_disp)의 국소 평균 휘도. 셰이더 claBlur(중성) 대응.
     nlum = (neutral_disp @ LUMA).astype(np.float32)
@@ -544,12 +548,20 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
             # luma(blur_rgb) == blur(luma) (선형 연산) → lb 재사용
             chroma_detail = (neutral_disp - nlum[..., None]) - (bl_ - lb[..., None])
         c = np.clip(c - chroma_detail * cn, 0.0, 1.0)
+    # 중성 하이패스(셰이더 texBlur/claBlur/dispSrc 대응) — 전역과 마스크(sky) 경로가 공유.
+    # ⚠️편집본(c/disp) 기준으로 뽑으면 노출 편집 시 export 효과가 프리뷰보다 강해짐(상단 주석).
+    nd_texhi = nd_lc = None
+    if tex != 0.0 or (skym_full is not None and sky["texture"] != 0.0):
+        nd_texhi = (neutral_disp - _blur_rgb(neutral_disp, sigma_tex)).astype(np.float32)
+    if (cla != 0.0 or deh != 0.0
+            or (skym_full is not None and (sky["clarity"] != 0.0 or sky["dehaze"] != 0.0))):
+        nd_lc = (nlum - lb).astype(np.float32)
     if tex != 0.0:
-        c = _texture(c, tex, sigma_tex)
+        c = _texture_core(c, tex, nd_texhi)
     if cla != 0.0:
-        c = _clarity(c, cla, sigma_cla)
+        c = _clarity_core(c, cla, nd_lc)
     if sharp_amt > 0.0:
-        c = _sharpen(c, disp, sharp_amt, sharp_radius, sharp_detail, sharp_mask, scale)
+        c = _sharpen(c, nlum, sharp_amt, sharp_radius, sharp_detail, sharp_mask, scale)
     # DCP t-맵 — 전역 '+' 디헤이즈와 하늘 '+' 디헤이즈(스트립 루프)가 공용. 필요 시에만 업샘플.
     haze_t_full = haze_A = None
     haze_conf = 0.0
@@ -566,7 +578,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     if skym_full is not None and sky["dehaze"] != 0.0:
         deh_amt = deh + sky["dehaze"] * skym_full
     if np.any(np.asarray(deh_amt) != 0.0):
-        c = _dehaze(c, deh_amt, sigma_cla, t_full=haze_t_full, A=haze_A, conf=haze_conf)
+        c = _dehaze(c, deh_amt, nd_lc, t_full=haze_t_full, A=haze_A, conf=haze_conf)
     np.clip(c, 0.0, 1.0, out=c)
     _prog(0.55)   # 전역/공간 단계(블러·텍스처·클래리티·샤프닝·디헤이즈·NR) 완료
 
@@ -580,7 +592,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         vig_mask = None
 
     # 필름 그레인 필드(흑백 단색, 전체 H,W 1회 생성 -> 스트립 시드 이음매 방지).
-    # 셰이더 value-noise 와 '성격(셀 크기/강도)' 일치: gridN=mix(1500,150,size),
+    # 셰이더 value-noise 와 '성격(셀 크기/강도)' 일치: gridN=mix(1500,500,size),
     # 정사각 입자(gridN/aspect)로 거친 그리드를 bilinear 업샘플. 패턴 픽셀일치는 기대 안 함.
     if grain_amt > 0.0:
         gridN = int(round(1500.0 + (500.0 - 1500.0) * grain_size))  # 셰이더 mix 와 동일
@@ -592,15 +604,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     else:
         grain2d = None
 
-    # 하늘(로컬) 조정용 중성 로컬대비(셰이더 dispSrc 블러 대응) — 텍스처/클래리티 시만 계산.
-    # (마스크 디헤이즈는 전역 6단계로 이전돼 여기선 불필요)
-    nd_texhi = nd_lc = None
-    if skym_full is not None:
-        if sky["texture"] != 0.0:
-            nd_texhi = (neutral_disp - _blur_rgb(neutral_disp, sigma_tex)).astype(np.float32)
-        if sky["clarity"] != 0.0:
-            ndl = (neutral_disp @ LUMA).astype(np.float32)
-            nd_lc = (ndl - _blur_luma(ndl, sigma_cla)).astype(np.float32)
+    # 하늘(로컬) 조정용 중성 하이패스(nd_texhi/nd_lc)는 전역 단계에서 이미 계산·공유됨
+    # (전역 텍스처/클래리티/디헤이즈와 동일한 중성 베이스 — 셰이더 texBlur/claBlur 대응).
 
     # --- LUT/대비/커브/비네팅 (메모리 큰 LUT 는 스트립) ---
     maxv = 65535.0 if bitdepth == 16 else 255.0

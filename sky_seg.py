@@ -18,6 +18,7 @@ Building/Water/…). PySide6/QML 비의존 — numpy in/out 독립 모듈(export
 """
 
 import os
+import threading
 import urllib.request
 
 import numpy as np
@@ -40,7 +41,7 @@ MODEL_PATH = app_dirs.model_path(_MODEL_NAME)
 
 # ── SegFormer 전처리 (preprocessor_config.json 와 일치) ──────────────────────
 # 추론 입력 긴 변(종횡비 유지, 각 변 32의 배수=SegFormer stride 로 라운딩).
-# ↑ 키우면 가는 가지/전선/경계 디테일↑, 추론 시간↓(1024≈280ms, 1536≈900ms @ proxy). 튜닝 대상.
+# ↑ 키우면 가는 가지/전선/경계 디테일↑, 추론 시간↑(1024≈280ms, 1536≈900ms @ proxy). 튜닝 대상.
 INPUT_LONG_EDGE = 1024
 _MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
 _STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
@@ -92,6 +93,33 @@ GUIDED_EPS = 1e-4            # guided filter 정규화(엣지 보존 강도; 작
 _session_obj = None
 
 
+_dl_lock = threading.Lock()
+_sess_lock = threading.Lock()
+_DL_TIMEOUT = 30    # 소켓 읽기 타임아웃(초) — 멈춘 연결이 워커/락을 영구 점유하는 것 방지
+
+
+def _download(url, dst, progress=None) -> None:
+    """URL → dst 청크 다운로드. 소켓 타임아웃 + 실패 시 부분 파일 정리. progress(0..1)."""
+    try:
+        with urllib.request.urlopen(url, timeout=_DL_TIMEOUT) as r, open(dst, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if progress is not None and total > 0:
+                    progress(min(1.0, got / total))
+    except BaseException:
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
+        raise
+
+
 def model_available() -> bool:
     """다운로드 없이 확보 가능한지(사용자 디렉터리 또는 legacy 에 존재). 부작용 없음."""
     return app_dirs.have(_MODEL_NAME)
@@ -99,27 +127,29 @@ def model_available() -> bool:
 
 def ensure_model(progress=None) -> str:
     """모델 파일 보장(구버전 폴더에서 복사 or 다운로드). progress(0..1) 콜백 옵션
-    (다운로드 진행률 — legacy 복사는 순간이라 콜백 없이 완료). 경로 반환."""
-    if not os.path.exists(MODEL_PATH) and not app_dirs.materialize(_MODEL_NAME):
-        os.makedirs(MODEL_DIR, exist_ok=True)
-        tmp = MODEL_PATH + ".part"
-        hook = None
-        if progress is not None:
-            def hook(nblk, blksz, total):  # noqa: E306
-                if total > 0:
-                    progress(min(1.0, nblk * blksz / total))
-        urllib.request.urlretrieve(_MODEL_URL, tmp, reporthook=hook)  # ~105MB
-        os.replace(tmp, MODEL_PATH)                    # 원자적 교체(부분파일 방지)
+    (다운로드 진행률 — legacy 복사는 순간이라 콜백 없이 완료). 경로 반환.
+    락으로 동시 다운로드 방지 — 마스크 체크박스 연타로 워커가 겹치면 같은 .part 에
+    겹쳐 써서 손상된 모델이 영구 설치되는 문제(ai_denoise 와 동일 규칙)."""
+    with _dl_lock:
+        if not os.path.exists(MODEL_PATH) and not app_dirs.materialize(_MODEL_NAME):
+            os.makedirs(MODEL_DIR, exist_ok=True)
+            tmp = MODEL_PATH + ".part"
+            _download(_MODEL_URL, tmp, progress)           # ~105MB, 타임아웃+실패 정리
+            os.replace(tmp, MODEL_PATH)                    # 원자적 교체(부분파일 방지)
     return MODEL_PATH
 
 
 def _session():
-    """캐시된 ONNX Runtime 세션(CPU)."""
+    """캐시된 ONNX Runtime 세션(CPU). 락으로 이중 생성 방지 — 마스크 워커가 겹치면
+    ~105MB 세션이 중복 생성돼 한쪽이 프로세스 수명 동안 누수됨."""
     global _session_obj
     if _session_obj is None:
-        import onnxruntime as ort
-        ensure_model()
-        _session_obj = ort.InferenceSession(MODEL_PATH, providers=["CPUExecutionProvider"])
+        with _sess_lock:
+            if _session_obj is None:
+                import onnxruntime as ort
+                ensure_model()
+                _session_obj = ort.InferenceSession(
+                    MODEL_PATH, providers=["CPUExecutionProvider"])
     return _session_obj
 
 

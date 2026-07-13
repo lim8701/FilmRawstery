@@ -336,7 +336,11 @@ ApplicationWindow {
         stampField.text = _ev(p, "stampText", controller.stampText)
         // 프로그램으로 text 를 바꾸면 onTextEdited 가 안 불리므로 직접 push(스탬프 렌더 갱신).
         controller.setStampText(stampField.text)
-        controller.setLensCorrection(_ev(p, "lensCorrection", true))
+        // 체크박스도 명시 대입(aiNrCheck 동일) — 사용자가 한 번이라도 클릭하면
+        // `checked: controller.lensCorrection` 바인딩이 파괴되어, 이후 사이드카 복원이
+        // 박스에 반영되지 않고 낡은 값이 자동저장으로 역전파되던 버그 방지.
+        lensCheck.checked = _ev(p, "lensCorrection", true)
+        controller.setLensCorrection(lensCheck.checked)
         var cp = _ev(p, "curves", null)
         if (cp) { curveEditor.setChannelPoints(cp); controller.setCurve(curveEditor.allLuts()) }
         else curveEditor.resetAll()
@@ -379,6 +383,13 @@ ApplicationWindow {
         vignetteSlider.value = 0.0; grainSlider.value = 0.0; grainSizeSlider.value = 0.5
         tempSlider.value = controller.asShotKelvin; tintSlider.value = controller.asShotTint
         simCombo.currentIndex = 0; simStrengthSlider.value = 1.0
+        // 날짜 스탬프/렌즈 보정도 초기화 — 누락 시 이전 사진의 상태가 무편집 사진으로
+        // 누수되고(editParams 는 저장하는데 reset 은 안 지움), Reset 버튼으로도 안 지워졌음.
+        win.dateStamp = false
+        stampField.text = controller.stampText
+        controller.setStampText(stampField.text)
+        lensCheck.checked = true
+        controller.setLensCorrection(true)
         curveEditor.resetAll()
         win.resetGeometry()
         win.resetSky()
@@ -431,6 +442,7 @@ ApplicationWindow {
         controller.setCurve(curveEditor.allLuts())
         controller.saveEdits(win.editParams())   // 붙여넣은 편집을 현재 이미지 사이드카에 저장
         win.refreshHistogram()
+        win.histPush(JSON.stringify(win.editParams()))   // undo 스텝 기록(붙여넣기 되돌리기 가능)
     }
 
     // ===== 배치 export (탐색기 체크박스로 선택한 파일들, 순차) =====
@@ -825,6 +837,9 @@ ApplicationWindow {
             if (editSaveTimer.running && controller.imagePath !== "")
                 controller.saveEdits(win.editParams())
             editSaveTimer.stop()
+            // 대기 중인 키보드 WB 커밋도 취소 — 아니면 사진 전환 직후 발화해 이전 파일의
+            // Kelvin 을 새 파일에 setWb(잘못된 WB 재디코딩)로 밀어넣는다.
+            wbTimer.stop()
         }
     }
 
@@ -1116,6 +1131,9 @@ ApplicationWindow {
             var want = win._selectAfterScan
             win._selectAfterScan = ""
             fileListView.currentIndex = -1
+            // 폴더가 바뀌면 배치 체크 목록 초기화 — 이전 폴더에서 체크한 파일이 화면에
+            // 안 보인 채 다음 배치 export 에 몰래 포함되던 문제 방지.
+            if (win.batchCheckedCount > 0) win.batchClearChecked()
             if (want !== "")
                 Qt.callLater(function() { win.selectInExplorer(want) })   // 목록 바인딩 갱신 뒤
         }
@@ -1872,15 +1890,25 @@ ApplicationWindow {
                     Image {
                         id: srcFull; visible: false; cache: false; smooth: true
                         source: controller.fullUrl
-                        onStatusChanged: if (status === Image.Ready && grabPending) {
-                            grabPending = false; doGrab()
+                        onStatusChanged: {
+                            if (status === Image.Ready && grabPending) {
+                                grabPending = false; doGrab()
+                            } else if (status === Image.Error && grabPending) {
+                                // 풀해상도 로드 실패 → export 상태 복구(멈춤 방지) + 로더 해제
+                                grabPending = false
+                                controller.abortGpuExport()
+                                Qt.callLater(function() { gpuExportLoader.active = false })
+                            }
                         }
                     }
                     Connections {
                         target: controller
                         function onFullReady() {
                             if (srcFull.status === Image.Ready) doGrab()
-                            else grabPending = true
+                            else if (srcFull.status === Image.Error) {
+                                controller.abortGpuExport()
+                                Qt.callLater(function() { gpuExportLoader.active = false })
+                            } else grabPending = true
                         }
                     }
                     ShaderEffect {
@@ -2645,11 +2673,18 @@ ApplicationWindow {
                                         var nx = Math.max(0, Math.min(1, p.x / cropOverlay.width))
                                         var ny = Math.max(0, Math.min(1, p.y / cropOverlay.height))
                                         if (win.cropAspect > 0) {
-                                            // 잠금(모서리): 반대 코너 고정, 너비로 높이 결정
+                                            // 잠금(모서리): 반대 코너 고정, 너비로 높이 결정.
+                                            // ⚠️클램프는 여기서 '비율 보존형'으로 — setCropRect 의
+                                            // 축별 클램프에 맡기면 한 축만 잘려 잠금 비율이 깨졌음
+                                            // (예: 가로 캔버스에 세로 3:2 박스를 크게 끌 때).
                                             var ax = parent.hl ? (win.cropX + win.cropW) : win.cropX
                                             var ay = parent.ht ? (win.cropY + win.cropH) : win.cropY
-                                            var nw = Math.abs(nx - ax)
                                             var kn = win.cropAspect / Math.max(0.0001, viewport.cA)
+                                            var maxW = Math.min(1.0, kn,
+                                                                parent.hl ? ax : 1.0 - ax,
+                                                                (parent.ht ? ay : 1.0 - ay) * kn)
+                                            var minW = Math.max(0.05, 0.05 * kn)
+                                            var nw = Math.max(minW, Math.min(maxW, Math.abs(nx - ax)))
                                             var nh = nw / kn
                                             var newL = parent.hl ? (ax - nw) : ax
                                             var newT = parent.ht ? (ay - nh) : ay

@@ -4,8 +4,8 @@
 (예전엔 셰이더 리터럴 ↔ pipeline 리터럴을 따로 고쳐야 했고, 한쪽을 빠뜨리면 프리뷰≠export).
 계수 변경 시 셰이더 재컴파일도 불필요(uniform 주입) — 라이트룸 비교 튜닝 반복이 빨라짐.
 
-⚠️ 로컬대비/디헤이즈/하늘 WB 계열만 단일화했다. 전역 톤(Highlights/Shadows 1.0, Whites/Blacks
-0.3, Vignette 0.8, Grain 0.12 등)은 아직 셰이더·pipeline 리터럴로 중복 — 추후 확장 가능.
+전역 톤(Highlights/Shadows 1.0, Whites/Blacks 0.3, Vignette 0.8, Grain 0.12 등)도 여기 정의돼
+셰이더에는 uniform, pipeline 에는 coeffs.* 로 주입된다(리터럴 중복 없음).
 """
 
 # 디헤이즈 톤모델 — '−'(흰 베일) 방향 + 물리 모델 폴백(어두운 장면)용. 셰이더 dehazeTone == pipeline._dehaze_core.

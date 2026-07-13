@@ -123,6 +123,33 @@ def provider_label() -> str:
 
 
 _dl_lock = threading.Lock()
+_sess_lock = threading.Lock()
+
+
+_DL_TIMEOUT = 30    # 소켓 읽기 타임아웃(초) — 멈춘 연결이 워커/락을 영구 점유하는 것 방지
+
+
+def _download(url, dst, progress=None) -> None:
+    """URL → dst 청크 다운로드(원자적 아님 — 호출측이 .part→rename). 소켓 타임아웃 적용,
+    실패 시 부분 파일(dst) 정리. progress(0..1) 콜백 옵션."""
+    try:
+        with urllib.request.urlopen(url, timeout=_DL_TIMEOUT) as r, open(dst, "wb") as f:
+            total = int(r.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                chunk = r.read(1 << 20)
+                if not chunk:
+                    break
+                f.write(chunk)
+                got += len(chunk)
+                if progress is not None and total > 0:
+                    progress(min(1.0, got / total))
+    except BaseException:
+        try:
+            os.remove(dst)
+        except OSError:
+            pass
+        raise
 
 
 def ensure_model(progress=None) -> str:
@@ -132,12 +159,7 @@ def ensure_model(progress=None) -> str:
         if not os.path.exists(MODEL_PATH) and not app_dirs.materialize(_MODEL_NAME):
             os.makedirs(MODEL_DIR, exist_ok=True)
             tmp = MODEL_PATH + ".part"
-            hook = None
-            if progress is not None:
-                def hook(nblk, blksz, total):  # noqa: E306
-                    if total > 0:
-                        progress(min(1.0, nblk * blksz / total))
-            urllib.request.urlretrieve(_MODEL_URL, tmp, reporthook=hook)
+            _download(_MODEL_URL, tmp, progress)   # 타임아웃 + 실패 시 .part 정리
             os.replace(tmp, MODEL_PATH)    # 원자적 교체(부분파일 방지)
     return MODEL_PATH
 
@@ -200,9 +222,15 @@ def _probe_dml_device(ort, fresh=False):
 
 
 def _session():
-    """캐시된 ONNX Runtime 세션 — GPU EP(DirectML 최속 디바이스/CoreML) 우선, 실패 시 CPU."""
+    """캐시된 ONNX Runtime 세션 — GPU EP(DirectML 최속 디바이스/CoreML) 우선, 실패 시 CPU.
+    락으로 이중 초기화 방지 — 프리뷰 워커와 export 스레드가 동시에 들어오면 DML 프로빙이
+    서로 간섭해 느린 디바이스가 영구 캐시되고 GPU 세션 하나가 누수됐음."""
     global _session_obj, _provider_label
-    if _session_obj is None:
+    if _session_obj is not None:
+        return _session_obj
+    with _sess_lock:
+        if _session_obj is not None:
+            return _session_obj
         import onnxruntime as ort
         ensure_model()
         avail = set(ort.get_available_providers())
@@ -278,11 +306,13 @@ def denoise_rgb(rgb: np.ndarray, progress=None, cancel=None,
     sess = _session()
     inp = sess.get_inputs()[0].name
     h, w = rgb.shape[:2]
-    # TILE 미만이면 reflect 패딩(끝에 크롭). 512 가 곧 최소 처리 단위.
+    # TILE 미만이면 패딩(끝에 크롭). 512 가 곧 최소 처리 단위.
+    # mode="symmetric"(경계 픽셀 포함 대칭) — 짧은 변에서 pad 폭이 변보다 커도 안전하고
+    # 경계 이중 픽셀이 없어 reflect 보다 타일 경계가 깔끔.
     ph, pw = max(h, TILE), max(w, TILE)
     src = rgb
     if (ph, pw) != (h, w):
-        src = np.pad(rgb, ((0, ph - h), (0, pw - w), (0, 0)), mode="reflect")
+        src = np.pad(rgb, ((0, ph - h), (0, pw - w), (0, 0)), mode="symmetric")
     stride = TILE - OVERLAP
     ys = list(range(0, max(ph - TILE, 0) + 1, stride))
     xs = list(range(0, max(pw - TILE, 0) + 1, stride))

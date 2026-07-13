@@ -79,7 +79,9 @@ def _fmt_shutter(tag):
         return None
     if not den:
         return None
-    if num and num != 1 and den % num == 0:      # 2/4 같은 형태 정규화
+    if num <= 0:                                 # 0/x 등 변칙 EXIF → 표시 생략(0 나눗셈 방지)
+        return None
+    if num != 1 and den % num == 0:              # 2/4 같은 형태 정규화
         den, num = den // num, 1
     if num == 1:
         return f"1/{den}s"
