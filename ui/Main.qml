@@ -1919,6 +1919,12 @@ ApplicationWindow {
                                 Qt.callLater(function() { gpuExportLoader.active = false })
                             } else grabPending = true
                         }
+                        // 파이썬 측 디코드 실패 — QML 은 감지 못 하므로 여기서 로더 해제
+                        // (안 하면 pipeFull 파이프라인이 계속 살아있어 재평가됨).
+                        function onFullAborted() {
+                            grabPending = false
+                            Qt.callLater(function() { gpuExportLoader.active = false })
+                        }
                     }
                     ShaderEffect {
                         id: pipeFull

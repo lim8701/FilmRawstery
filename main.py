@@ -610,6 +610,7 @@ class Controller(QObject):
     flushEdits = Signal()        # 이미지 전환 직전: QML 이 *이전* 파일로 편집 저장(플러시)
     fullChanged = Signal()       # GPU export: 풀해상도 src URL 갱신(QML Image 재로드용)
     fullReady = Signal()         # GPU export: 풀해상도 디코드 완료(QML 이 grab 준비)
+    fullAborted = Signal()       # GPU export: 파이썬 측 디코드 실패 → QML 로더 해제(active=false)
     skyMaskChanged = Signal()    # 하늘 마스크 텍스처 갱신 알림(생성/클리어 모두)
     skySelected = Signal()       # 하늘 마스크 '생성 완료'만(클리어 제외) → QML 이 오버레이 자동 표시
     skyBusyChanged = Signal()    # 하늘 세그멘테이션(추론) 진행 중 표시
@@ -1252,6 +1253,12 @@ class Controller(QObject):
         if not ok:
             self._exporting = False
             self._set_export_status("GPU export failed (decode)")
+            # 디코드 실패는 QML 이 감지 못 함(fullChanged/fullReady 미발화 → srcFull 상태변화
+            # 없음). 명시적으로 로더 해제 신호를 보내지 않으면 gpuExportLoader 가 active=true
+            # 로 남아 pipeFull(모든 슬라이더 바인딩) 파이프라인이 계속 재평가된다.
+            if self._full_provider is not None:
+                self._full_provider.clear()
+            self.fullAborted.emit()
             return
         self._full_counter += 1
         self._full_url = f"image://rawfull/f?v={self._full_counter}"
