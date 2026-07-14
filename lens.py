@@ -142,7 +142,8 @@ def _coords_for(h, w, prof):
     ys, xs = np.mgrid[0:h, 0:w].astype(np.float32)
     dx = xs - cx
     dy = ys - cy
-    rn = np.sqrt(dx * dx + dy * dy).astype(np.float32) / np.float32(np.hypot(cx, cy))  # 코너=1
+    diag = np.float32(max(np.hypot(cx, cy), 1e-6))   # 1px 이미지(cx=cy=0)에서 0나눗셈 방지
+    rn = np.sqrt(dx * dx + dy * dy).astype(np.float32) / diag  # 코너=1
 
     # 왜곡: dest 반경 → src 반경 역테이블 (s = r_src/r_dst 리맵 스케일)
     if "dk" in prof and np.any(np.abs(prof["dv"]) > 1e-9):

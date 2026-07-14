@@ -260,7 +260,7 @@ def _warp_perspective(arr, kxn, kyn, s):
     h, w = arr.shape[:2]
     H = _persp_homography(w, h, kxn, kyn, s)
     Hinv = np.linalg.inv(H)
-    ys, xs = np.indices((h, w), dtype=np.float64)
+    ys, xs = np.indices((h, w), dtype=np.float32)   # float32로 충분(6000px) — float64는 ~1.2GB
     ones = np.ones_like(xs)
     sx = Hinv[0, 0] * xs + Hinv[0, 1] * ys + Hinv[0, 2] * ones
     sy = Hinv[1, 0] * xs + Hinv[1, 1] * ys + Hinv[1, 2] * ones
@@ -462,6 +462,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         expo_gain = 2.0 ** float(p.get("exposure", 0.0))
     linsrgb = (nat @ M.T) * expo_gain
     disp = wb.filmic(linsrgb).astype(np.float32)                     # scene→display[0,1]
+    del rgb16, nat, linsrgb   # 이후 미사용 — 26MP 공간단계 피크에서 조기 해제(수백 MB)
     # 하이라이트 디새추레이션: near-clip 센서클립 색끼(예: 불꽃 코어 청록) 제거 → 중성(흰색).
     # ⚠️쿨(청/녹 우세) 하이라이트만 중성화한다 — 밝은 빨강/주황 광원(예: 네온·간판)은
     # 보존해야 하므로 max(G,B)-R 로 게이트(따뜻한 색은 음수→게이트 0). filmic 뒤 display 공간.
@@ -585,8 +586,8 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
 
     # 비네팅 마스크(정규화 좌표, 해상도 무관)
     if vig != 0.0:
-        yy = (np.arange(h, dtype=np.float32) / (h - 1)) - 0.5
-        xx = (np.arange(w, dtype=np.float32) / (w - 1)) - 0.5
+        yy = (np.arange(h, dtype=np.float32) / max(1, h - 1)) - 0.5   # 1px 변에서 0나눗셈(NaN) 방지
+        xx = (np.arange(w, dtype=np.float32) / max(1, w - 1)) - 0.5
         rr = np.sqrt(yy[:, None] ** 2 + xx[None, :] ** 2) / 0.7071
         vig_mask = (1.0 + vig * coeffs.VIGNETTE * _smoothstep(0.35, 1.0, rr)).astype(np.float32)
     else:

@@ -80,14 +80,15 @@ def baked_wb(cam_xyz, daylight_ref):
 
 
 def srgb_to_linear(c):
-    """sRGB(또는 rawpy gamma=(2.4,12.92)) -> 선형. 셰이더 srgbToLinear 와 정합."""
-    c = np.clip(np.asarray(c, float), 0.0, 1.0)
+    """sRGB(또는 rawpy gamma=(2.4,12.92)) -> 선형. 셰이더 srgbToLinear 와 정합.
+    float32 유지(모든 호출부가 float32 이미지) — float64 승격 시 26MP export 배열이 2배."""
+    c = np.clip(np.asarray(c, np.float32), 0.0, 1.0)
     return np.where(c <= 0.04045, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
 
 
 def linear_to_srgb(c):
-    """선형 -> sRGB. 셰이더 linearToSrgb 와 정합."""
-    c = np.clip(np.asarray(c, float), 0.0, 1.0)
+    """선형 -> sRGB. 셰이더 linearToSrgb 와 정합. float32 유지(위 사유 동일)."""
+    c = np.clip(np.asarray(c, np.float32), 0.0, 1.0)
     return np.where(c <= 0.0031308, c * 12.92, 1.055 * (c ** (1.0 / 2.4)) - 0.055)
 
 

@@ -285,7 +285,13 @@ class LutProvider(QQuickImageProvider):
 
     def load_dir(self, luts_dir: Path) -> None:
         for cube in sorted(luts_dir.glob("*.cube")):
-            lut, n = load_cube(str(cube))
+            # 사용자 교체 .cube(손상/헤더누락/1D 등) 하나가 앱 시작을 통째로 막지 않도록
+            # 파일별로 방어 — 실패는 스킵+경고(해당 필름룩만 미로드, 나머지는 정상).
+            try:
+                lut, n = load_cube(str(cube))
+            except Exception as exc:
+                print(f"[lut] ⚠️로드 실패로 스킵: {cube.name} ({exc})")
+                continue
             self._atlases[cube.stem] = atlas_qimage(lut, n)
             self.size = n
         print(f"[lut] {len(self._atlases)}개 로드, N={self.size}")
@@ -1546,6 +1552,10 @@ class Controller(QObject):
         except (TypeError, ValueError):
             self._kelvin = None
             self._tint = 0.0
+        # 저장된 렌즈보정 상태도 첫 디코드 전에 선설정 → 이전 이미지 상태가 새기고 즉시
+        # 재디코딩되는 이중작업/기하 흔들림 방지(WB 프리시드와 동일 취지, 기본값 True).
+        lc = e.get("lensCorrection")
+        self._lens = bool(lc) if lc is not None else True
         # 촬영정보는 경로에만 의존 -> 로드 시 1회 읽음(WB 변경 재디코딩과 무관)
         # EXIF 는 부가정보 — 손상/변칙 EXIF(예: ExposureTime 0/1)로 예외가 나도
         # 사진 로드 자체를 막지 않는다(과거: 예외가 슬롯을 탈출해 파일이 안 열렸음).

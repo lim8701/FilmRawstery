@@ -22,14 +22,17 @@ def load_cube(path: str):
     size = None
     dom_min, dom_max = None, None
     rows = []
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, "r", encoding="utf-8-sig") as f:  # BOM 있는 익스포터 대응(첫 키워드 보존)
         for line in f:
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
-            key = s.split()[0].upper()
+            parts = s.split()
+            key = parts[0].upper()
             if key == "LUT_3D_SIZE":
-                size = int(s.split()[1])
+                if len(parts) < 2:
+                    raise ValueError(f"LUT_3D_SIZE 값 없음: {path}")
+                size = int(parts[1])
             elif key == "DOMAIN_MIN":
                 dom_min = [float(x) for x in s.split()[1:4]]
             elif key == "DOMAIN_MAX":
