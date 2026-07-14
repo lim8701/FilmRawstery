@@ -110,6 +110,8 @@ def _fmt_ev(tag):
 
 def _fmt_date(tag):
     # "2026:04:20 18:16:23" -> "2026-04-20 18:16:23"
+    if tag is None:
+        return None                 # str(None)=="None"(truthy)이 'Date: None' 로 새어나감
     s = str(tag).strip()
     return s.replace(":", "-", 2) if s else None
 

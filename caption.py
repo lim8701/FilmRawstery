@@ -90,14 +90,21 @@ def ensure_model(progress=None) -> None:
                 # 소켓 타임아웃 — 멈춘 연결이 워커/락을 영구 점유하지 않게(_DL_TIMEOUT).
                 with urllib.request.urlopen(f"{_REPO}/{rel}", timeout=_DL_TIMEOUT) as r, \
                         open(tmp, "wb") as f:
+                    total = int(r.headers.get("Content-Length") or 0)
+                    got = 0
                     while True:
                         chunk = r.read(1 << 20)
                         if not chunk:
                             break
                         f.write(chunk)
+                        got += len(chunk)
                         done += len(chunk)
                         if progress is not None:
                             progress(min(1.0, done / _TOTAL_BYTES))
+                    if total > 0 and got != total:
+                        # 짧은 read/CDN 절단/200 에러본문이 성공으로 위장돼 승격되면
+                        # 이후 세션 로드가 매번 실패(수동 삭제 전까지 영구 불능)한다.
+                        raise IOError(f"incomplete download: {got}/{total} bytes ({rel})")
             except BaseException:
                 try:
                     os.remove(tmp)             # 실패 시 부분 파일 정리(잔류물 방지)
@@ -169,7 +176,9 @@ class _Bpe:
         ids = []
         for tok in self._PAT.findall(text):
             u = "".join(self.b2u[b] for b in tok.encode("utf-8"))
-            ids.extend(self.enc[p] for p in self._bpe(u))
+            # vocab 밖 서브워드는 건너뜀(KeyError 방지) — 고정 프롬프트엔 없지만 임의 입력 대비.
+            ids.extend(tid for p in self._bpe(u)
+                       if (tid := self.enc.get(p)) is not None)
         return ids
 
     def decode(self, ids, skip=()):

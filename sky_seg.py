@@ -112,6 +112,10 @@ def _download(url, dst, progress=None) -> None:
                 got += len(chunk)
                 if progress is not None and total > 0:
                     progress(min(1.0, got / total))
+            if total > 0 and got != total:
+                # 짧은 read/CDN 절단/200 에러본문이 성공으로 위장돼 승격되면
+                # 이후 세션 생성이 매번 실패(수동 삭제 전까지 영구 불능)한다.
+                raise IOError(f"incomplete download: {got}/{total} bytes from {url}")
     except BaseException:
         try:
             os.remove(dst)

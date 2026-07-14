@@ -665,6 +665,7 @@ class Controller(QObject):
         self._ai_downloading = False  # AI 모델 다운로드 중(이미지 영역 차단 오버레이 + 프로그레스바)
         self._ai_dl_prog = 0.0      # 다운로드 진행률 0..1
         self._nr_chroma = False     # 현재 nrBase 가 AI RGB(크로마 유효) 베이스인지 — 셰이더 게이트
+        self._nr_ai_seq = -1        # AI(RGB) 베이스가 적용된 seq — 뒤늦은 가이디드 폴백의 덮어쓰기 방지
         self._sky_url = "image://skymask/m?v=0"
         self._sky_counter = 0
         self._sky_seq = 0           # 비동기 세그/재조합 순번(오래된 결과 폐기)
@@ -1012,6 +1013,10 @@ class Controller(QObject):
             rgb = np.frombuffer(img.constBits(), np.uint8).reshape(
                 e, img.bytesPerLine())[:, : e * 3].reshape(e, e, 3).copy()
             text = cap.generate(rgb, task)
+            if not text.strip():
+                # 빈 결과를 저장하면 _maybe_auto_caption 가드(캡션=="")가 계속 통과해
+                # 같은 사진을 영원히 재추론함 → 실패로 처리(재시도 안 함).
+                raise RuntimeError("caption model returned empty text")
 
             # 저장은 '생성을 시작한 파일·상세도' 기준 — 생성 중 사진/상세도를 바꿔도 안전
             p = Path(path)
@@ -1056,7 +1061,10 @@ class Controller(QObject):
             if not ep.is_file():
                 return {}
             with open(ep, "r", encoding="utf-8") as f:
-                return json.load(f)
+                data = json.load(f)
+            # top-level 이 dict 가 아니면(손상/수기편집으로 [] 나 숫자 등) 이후 _load 의
+            # e.get(...) 가 AttributeError 로 터져 파일이 조용히 안 열림 → 빈 dict 로 폴백.
+            return data if isinstance(data, dict) else {}
         except Exception:
             return {}
 
@@ -1147,6 +1155,8 @@ class Controller(QObject):
         """QML 이 계산한 4개 채널 커브([master, r, g, b], 각 256값)로 LUT 텍스처 갱신.
         마스터→채널 합성을 256×3 LUT 로 구워 R/G/B 열에 저장."""
         import pipeline
+        if curves is None or len(curves) < 4:
+            return                    # 잘못된 QVariantList → IndexError 로 슬롯 밖 전파 방지
         m, r, g, b = curves[0], curves[1], curves[2], curves[3]
         self._curve_provider.set_lut(pipeline.compose_curves(m, r, g, b))
         self._curve_counter += 1
@@ -1201,6 +1211,7 @@ class Controller(QObject):
             msg = f"Failed: {exc}"
         finally:
             self._exporting = False
+            self._exportProgressSig.emit(0.0)   # 진행률 리셋(실패 시 stale 값이 오버레이에 남는 것 방지)
         print(f"[export] {msg}")
         self._set_export_status(msg)   # 워커 스레드 -> 시그널은 메인으로 큐잉됨
 
@@ -1814,6 +1825,12 @@ class Controller(QObject):
         seq, packed = payload
         if seq != self._nr_seq:
             return                       # 이미지 전환됨 → 낡은 결과 폐기
+        has_chroma = bool(packed is not None and packed[1])
+        if not has_chroma and self._nr_ai_seq == seq:
+            # AI(RGB) 베이스가 이미 이 seq 로 적용됨 — 가이디드는 AI 완료 전 폴백일 뿐.
+            # 뒤늦게 도착한 가이디드(luma-only/None)가 AI 베이스를 덮어써 조용히
+            # 크로마 NR 을 잃는(품질 저하) 레이스 방지.
+            return
         if packed is None:
             self._nr_ready = False
             self._nr_chroma = False
@@ -1825,6 +1842,8 @@ class Controller(QObject):
                 self._nr_provider.set_image(qimg)
             self._nr_chroma = has_chroma
             self._nr_ready = True
+            if has_chroma:
+                self._nr_ai_seq = seq
         self._nr_counter += 1
         self._nr_url = f"image://nrbase/n?v={self._nr_counter}"
         self.nrChanged.emit()

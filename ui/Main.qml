@@ -14,6 +14,15 @@ ApplicationWindow {
            + (controller.updateVersion !== "" ? "   -  new " + controller.updateVersion + " available" : "")
     color: "#1a1a1a"
 
+    // 텍스트 입력(날짜 필드 등)이나 콤보박스가 포커스를 가지면 단일문자 단축키
+    // (I/D/C/B/J/L)를 비활성화 — 입력/타입어헤드 글자가 전역 토글로 새는 것 방지.
+    // Controls 2 TextField/TextArea 는 TextInput/TextEdit 파생이라 타입으로 판별.
+    readonly property bool _typing: {
+        var it = activeFocusItem
+        return !!it && (it instanceof TextInput || it instanceof TextEdit
+                        || it instanceof ComboBox)
+    }
+
     // === 종료 확인 ===
     // X/Alt+F4 로 닫을 때 한 번 확인. allowClose 가 true 면(확인 후) 그대로 닫힘.
     property bool allowClose: false
@@ -32,20 +41,20 @@ ApplicationWindow {
 
     // 촬영정보 플로팅 패널 표시 여부 (I 키로 토글)
     property bool infoOverlay: true
-    Shortcut { sequence: "I"; onActivated: win.infoOverlay = !win.infoOverlay }
+    Shortcut { sequence: "I"; enabled: !win._typing; onActivated: win.infoOverlay = !win.infoOverlay }
 
     // 날짜 스탬프(필름 데이트백) 표시 여부 (D 키로 토글). 기본 off.
     property bool dateStamp: false
-    Shortcut { sequence: "D"; onActivated: win.dateStamp = !win.dateStamp }
+    Shortcut { sequence: "D"; enabled: !win._typing; onActivated: win.dateStamp = !win.dateStamp }
 
     // AI 캡션 오버레이 표시 여부 (C 키로 토글). 끄면 로드 시 자동 생성도 중단(연산 낭비 방지).
     property bool captionOverlay: true
     onCaptionOverlayChanged: controller.setCaptionEnabled(captionOverlay)
-    Shortcut { sequence: "C"; onActivated: win.captionOverlay = !win.captionOverlay }
+    Shortcut { sequence: "C"; enabled: !win._typing; onActivated: win.captionOverlay = !win.captionOverlay }
 
     // 좌측 File Explorer 패널 표시 여부 (B 키로 토글)
     property bool showExplorer: true
-    Shortcut { sequence: "B"; onActivated: win.showExplorer = !win.showExplorer }
+    Shortcut { sequence: "B"; enabled: !win._typing; onActivated: win.showExplorer = !win.showExplorer }
 
     // 원본 비교(Before/After): true 면 프리뷰가 무편집 현상(dispPre)으로 전환. 버튼/\ 키로 토글.
     property bool compareOn: false
@@ -56,7 +65,7 @@ ApplicationWindow {
 
     // 클리핑 경고 오버레이(프리뷰): 하이라이트=빨강 / 섀도=파랑. J 키로 토글(라이트룸과 동일).
     property bool clipWarn: false
-    Shortcut { sequence: "J"; onActivated: win.clipWarn = !win.clipWarn }
+    Shortcut { sequence: "J"; enabled: !win._typing; onActivated: win.clipWarn = !win.clipWarn }
     // Undo / Redo (편집 스냅샷)
     Shortcut { sequences: [StandardKey.Undo]; onActivated: win.undo() }                    // Ctrl+Z
     Shortcut { sequences: [StandardKey.Redo, "Ctrl+Shift+Z"]; onActivated: win.redo() }    // Ctrl+Y / Ctrl+Shift+Z
@@ -691,7 +700,7 @@ ApplicationWindow {
 
     // 탐색기 "좋아요만 보기" 필터 (L 키로 토글)
     property bool showLikedOnly: false
-    Shortcut { sequence: "L"; onActivated: win.showLikedOnly = !win.showLikedOnly }
+    Shortcut { sequence: "L"; enabled: !win._typing; onActivated: win.showLikedOnly = !win.showLikedOnly }
     // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAF 만.
     //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
     property var explorerFiles: {
@@ -3605,9 +3614,11 @@ ApplicationWindow {
                     spacing: 6
                     CheckBox {
                         id: clipWarnCheck
-                        checked: win.clipWarn
                         onToggled: win.clipWarn = checked
                     }
+                    // J 단축키가 win.clipWarn 을 바꿔도 첫 클릭 후엔 인라인 바인딩이
+                    // 파괴돼 박스가 추종 못 함 → 독립 Binding 으로 재푸시.
+                    Binding { target: clipWarnCheck; property: "checked"; value: win.clipWarn }
                     Label {
                         Layout.fillWidth: true
                         text: "Clipping warning  (J) — highlights red / shadows blue"
@@ -3624,9 +3635,11 @@ ApplicationWindow {
                     visible: controller.hasDisplayCM
                     CheckBox {
                         id: displayCmCheck
-                        checked: win.displayCM
                         onToggled: win.displayCM = checked
                     }
+                    // Ctrl+Shift+M 단축키가 win.displayCM 을 바꿔도 첫 클릭 후엔 인라인
+                    // 바인딩이 파괴돼 박스가 추종 못 함 → 독립 Binding 으로 재푸시.
+                    Binding { target: displayCmCheck; property: "checked"; value: win.displayCM }
                     Label {
                         Layout.fillWidth: true
                         text: "Display color management  (Ctrl+Shift+M) — match monitor gamut"
@@ -4257,9 +4270,12 @@ ApplicationWindow {
                     CheckBox {
                         id: stampCheck
                         enabled: controller.imagePath !== ""
-                        checked: win.dateStamp
                         onToggled: win.dateStamp = checked
                     }
+                    // 인라인 checked: 바인딩은 첫 클릭 시 컨트롤 내부 write 로 파괴돼
+                    // 이후 D 단축키/로드/리셋의 win.dateStamp 변경이 박스에 반영 안 됨.
+                    // 독립 Binding 은 win.dateStamp 변경마다 재푸시하므로 desync 없음.
+                    Binding { target: stampCheck; property: "checked"; value: win.dateStamp }
                     Label {
                         Layout.fillWidth: true
                         text: "Film date stamp  (D)"
@@ -4561,9 +4577,16 @@ ApplicationWindow {
                                     delegate: RowLayout {
                                         Layout.fillWidth: true; spacing: 6
                                         CheckBox {
-                                            checked: win.maskKeys.indexOf(modelData.key) >= 0
+                                            id: maskKeyCheck
                                             enabled: controller.imagePath !== "" && !controller.skyBusy
                                             onToggled: win.toggleMaskKey(modelData.key, checked)
+                                        }
+                                        // 인라인 checked: 바인딩은 첫 클릭 시 파괴 → Clear(resetSky)
+                                        // 나 이미지 로드(applySkyEdits)의 maskKeys 변경이 박스에
+                                        // 반영 안 됨. 독립 Binding 이 변경마다 재푸시(desync 방지).
+                                        Binding {
+                                            target: maskKeyCheck; property: "checked"
+                                            value: win.maskKeys.indexOf(modelData.key) >= 0
                                         }
                                         Label {
                                             Layout.fillWidth: true; text: modelData.label
@@ -4593,8 +4616,14 @@ ApplicationWindow {
                                 Layout.fillWidth: true; spacing: 6
                                 CheckBox {
                                     id: skyShowCheck
-                                    checked: win.showSkyMask
                                     onToggled: win.showSkyMask = checked
+                                }
+                                // 인라인 checked: 바인딩은 첫 클릭 시 파괴 → 이후 슬라이더
+                                // 드래그/resetSky/onSkySelected 의 showSkyMask 변경이 박스에
+                                // 반영 안 됨. 독립 Binding 이 변경마다 재푸시(desync 방지).
+                                Binding {
+                                    target: skyShowCheck; property: "checked"
+                                    value: win.showSkyMask
                                 }
                                 Label {
                                     Layout.fillWidth: true; text: "Show mask overlay (red)"

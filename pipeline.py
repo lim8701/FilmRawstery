@@ -409,6 +409,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         # 프록시와 동일: 카메라 네이티브(매트릭스 미적용) + TREF daylight 베이크 + 감마 저장.
         rgb16 = raw.postprocess(user_wb=baked_wb(cam, ref),
                                 output_color=rawpy.ColorSpace.raw,
+                                demosaic_algorithm=rawpy.DemosaicAlgorithm.LINEAR,
                                 output_bps=16, no_auto_bright=True,
                                 gamma=(2.4, 12.92),
                                 highlight_mode=rawpy.HighlightMode.Clip)

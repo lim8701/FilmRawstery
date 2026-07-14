@@ -114,6 +114,8 @@ def render_sprite(text, text_h_px):
     gh, gw = max(2, H // 36), max(2, W // 36)
     nlow = zoom(rng.random((gh, gw), dtype=np.float32),
                 (H / gh, W / gw), order=1)[:H, :W]
+    if nlow.shape != (H, W):     # zoom 라운딩이 언더슈트하면 슬라이스로 못 채움 → edge 패드
+        nlow = np.pad(nlow, ((0, H - nlow.shape[0]), (0, W - nlow.shape[1])), mode="edge")
     glow = (w_mid + w_halo + w_band) * (0.78 + 0.22 * nlow)
     inten = np.clip(w_core + glow, 0.0, 1.0)
     col = np.clip(rgb, 0.0, 1.0)
