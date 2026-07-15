@@ -17,6 +17,7 @@ Building/Water/…). PySide6/QML 비의존 — numpy in/out 독립 모듈(export
 최초 호출 시 자동 다운로드(models/ 캐시). torch/transformers 불필요(onnxruntime 만 사용).
 """
 
+import hashlib
 import os
 import threading
 import urllib.request
@@ -31,7 +32,12 @@ import app_dirs
 # 오분류·확신도 약함 → B2(~27M)로 상향(하늘 인식·구름 채움 큰 개선, 실측 확인). 모든 변형이
 # sky=클래스2·ImageNet 정규화 동일. 더 키우려면 b4/b5(640) 가능하나 크기·속도 급증(b5 324MB·~4s).
 _REPO = "Xenova/segformer-b2-finetuned-ade-512-512"
-_MODEL_URL = f"https://huggingface.co/{_REPO}/resolve/main/onnx/model.onnx"
+# 이동 참조(main) 대신 커밋 리비전 고정 + 다운로드 후 SHA-256 검증(HF LFS oid).
+# 업스트림 리포/계정 변조 시 조작된 .onnx 가 조용히 ort.InferenceSession(네이티브 파서)에
+# 넘어가는 것 방지. 모델 업그레이드 시 _REV + _MODEL_SHA256 을 함께 갱신한다.
+_REV = "df795789e70f4089c8658907679c6fd2367c89a5"
+_MODEL_URL = f"https://huggingface.co/{_REPO}/resolve/{_REV}/onnx/model.onnx"
+_MODEL_SHA256 = "819c15e6af8c4de3359c1de7ab0a17d0dde495df1d16f8908a7163f8038e0fa0"
 # 저장 위치: 항상 OS 사용자 데이터 디렉터리(app_dirs — 버전/실행환경 무관 유지).
 # 예전 위치(구버전 frozen lib/models, dev 저장소 models/)에 받아둔 파일은
 # ensure_model 이 재다운로드 대신 복사(app_dirs.materialize).
@@ -98,9 +104,11 @@ _sess_lock = threading.Lock()
 _DL_TIMEOUT = 30    # 소켓 읽기 타임아웃(초) — 멈춘 연결이 워커/락을 영구 점유하는 것 방지
 
 
-def _download(url, dst, progress=None) -> None:
-    """URL → dst 청크 다운로드. 소켓 타임아웃 + 실패 시 부분 파일 정리. progress(0..1)."""
+def _download(url, dst, progress=None, sha256=None) -> None:
+    """URL → dst 청크 다운로드. 소켓 타임아웃 + 실패 시 부분 파일 정리. progress(0..1).
+    sha256 주어지면 다운로드 내용 해시를 대조 — 불일치 시 raise(부분/조작 파일 승격 차단)."""
     try:
+        h = hashlib.sha256() if sha256 else None
         with urllib.request.urlopen(url, timeout=_DL_TIMEOUT) as r, open(dst, "wb") as f:
             total = int(r.headers.get("Content-Length") or 0)
             got = 0
@@ -109,6 +117,8 @@ def _download(url, dst, progress=None) -> None:
                 if not chunk:
                     break
                 f.write(chunk)
+                if h is not None:
+                    h.update(chunk)
                 got += len(chunk)
                 if progress is not None and total > 0:
                     progress(min(1.0, got / total))
@@ -116,6 +126,10 @@ def _download(url, dst, progress=None) -> None:
                 # 짧은 read/CDN 절단/200 에러본문이 성공으로 위장돼 승격되면
                 # 이후 세션 생성이 매번 실패(수동 삭제 전까지 영구 불능)한다.
                 raise IOError(f"incomplete download: {got}/{total} bytes from {url}")
+            if h is not None and h.hexdigest() != sha256:
+                # 고정 리비전과 다른 내용(변조/교체) → 승격 금지. 네이티브 ONNX 파서로
+                # 넘어가기 전에 차단(RCE 표면).
+                raise IOError(f"sha256 mismatch: got {h.hexdigest()} expected {sha256}")
     except BaseException:
         try:
             os.remove(dst)
@@ -138,7 +152,7 @@ def ensure_model(progress=None) -> str:
         if not os.path.exists(MODEL_PATH) and not app_dirs.materialize(_MODEL_NAME):
             os.makedirs(MODEL_DIR, exist_ok=True)
             tmp = MODEL_PATH + ".part"
-            _download(_MODEL_URL, tmp, progress)           # ~105MB, 타임아웃+실패 정리
+            _download(_MODEL_URL, tmp, progress, _MODEL_SHA256)  # ~105MB, 타임아웃+해시검증+실패 정리
             os.replace(tmp, MODEL_PATH)                    # 원자적 교체(부분파일 방지)
     return MODEL_PATH
 
