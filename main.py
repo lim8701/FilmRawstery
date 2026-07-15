@@ -649,6 +649,8 @@ class Controller(QObject):
         self._has_cm = False                     # 유효 CM LUT 존재(=광색역 모니터)
         self._cm_url = "image://displaycm/c?v=0"
         self._cm_counter = 0
+        self._cm_dst = None                      # sRGB→모니터 QColorSpace(스탬프 오버레이 CM 용)
+        self._cm_enabled = True                  # displayCM 토글(win.displayCM) — 스탬프 CM 게이트
         self._curve_provider = curve_provider
         self._stamp_provider = stamp_provider
         self._full_provider = full_provider     # GPU export 풀해상도 src
@@ -1324,17 +1326,29 @@ class Controller(QObject):
             import display_cm
             icc = display_cm.display_icc_path(device_name or None)
             atlas, n = display_cm.build_cm_atlas(icc, 33)
+            self._cm_dst = display_cm.dst_colorspace(icc)   # 스탬프 오버레이도 동일 변환 적용
         except Exception as exc:
             print(f"[display-cm] 실패: {exc}")
             atlas, n, icc = None, 0, None
+            self._cm_dst = None
         self._cm_provider.set_atlas(atlas, n)
         self._cm_n = self._cm_provider.size
         self._has_cm = self._cm_n > 1
         self._cm_counter += 1
         self._cm_url = f"image://displaycm/c?v={self._cm_counter}"
         self.cmChanged.emit()
+        self._update_stamp_layer()   # 모니터 전환 → 스탬프 오버레이도 새 CM 으로 재보정
         print(f"[display-cm] {'적용' if self._has_cm else '항등(sRGB/없음)'} "
               f"N={self._cm_n} dev={device_name or 'primary'} icc={icc}")
+
+    @Slot(bool)
+    def setDisplayCmEnabled(self, on) -> None:  # noqa: N802 (QML 슬롯)
+        """win.displayCM 토글 반영 — 스탬프 오버레이 CM 게이트(사진 셰이더와 동기). 즉시 재보정."""
+        on = bool(on)
+        if on == self._cm_enabled:
+            return
+        self._cm_enabled = on
+        self._update_stamp_layer()
 
     def _get_cm_n(self) -> int:
         return self._cm_n
@@ -1700,6 +1714,12 @@ class Controller(QObject):
         if self._stamp_text:
             layer, wr, hr = date_stamp.sprite_layer(self._stamp_text, rot=self._stamp_rot)
             self._stamp_wr, self._stamp_hr = wr, hr
+            # 프리뷰 스탬프도 사진과 동일한 디스플레이 색관리(광색역 보정)를 거치게 한다 —
+            # 안 하면 사진만 보정되고 스탬프는 raw sRGB 라 프리뷰에서 스탬프 색감이 어긋난다.
+            # export 는 표준 sRGB 라 stamp_export 는 미적용(원본 sRGB 유지).
+            if self._cm_enabled and self._cm_dst is not None:
+                import display_cm
+                display_cm.apply_display_cm(layer, self._cm_dst)
         else:
             layer = QImage(1, 1, QImage.Format.Format_ARGB32)
             layer.fill(0)            # 투명 1x1 — sampler/Image 항상 유효하게 유지

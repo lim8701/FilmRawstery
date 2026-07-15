@@ -79,6 +79,21 @@ def build_cm_atlas(icc_path: str | None, n: int = 33):
     return img, n
 
 
+def dst_colorspace(icc_path: str | None):
+    """ICC 경로 → sRGB→패널 변환 대상 QColorSpace(없거나 sRGB면 None=항등). 스탬프 오버레이용."""
+    return _load_dst_space(icc_path)
+
+
+def apply_display_cm(img, dst) -> None:
+    """QImage(sRGB 가정)에 sRGB→dst 색변환을 in-place 적용(알파 보존). dst None 이면 무동작.
+    프리뷰 스탬프 오버레이를 사진과 동일하게 광색역 보정(export 는 raw sRGB 라 미적용) —
+    사진(shader cmLut)과 동일한 변환이라 프리뷰 안에서 스탬프 색감이 사진과 정합한다."""
+    if dst is None or img is None or img.isNull():
+        return
+    img.setColorSpace(_srgb_space())
+    img.convertToColorSpace(dst)
+
+
 def _load_dst_space(icc_path: str | None):
     """ICC 경로 → 유효한 디스플레이 QColorSpace. sRGB 동일/무효/없음이면 None(=항등)."""
     if not icc_path:

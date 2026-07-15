@@ -62,6 +62,8 @@ ApplicationWindow {
 
     // 디스플레이 색관리(프리뷰 전용 sRGB→모니터 색역 보정, display_cm.py). Ctrl+Shift+M 토글. export 불변.
     property bool displayCM: true
+    // 스탬프 오버레이도 사진과 같이 CM 을 거치게 — 토글을 컨트롤러에 전달(스프라이트 재보정).
+    onDisplayCMChanged: controller.setDisplayCmEnabled(displayCM)
 
     // 클리핑 경고 오버레이(프리뷰): 하이라이트=빨강 / 섀도=파랑. J 키로 토글(라이트룸과 동일).
     property bool clipWarn: false
