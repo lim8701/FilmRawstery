@@ -2964,6 +2964,7 @@ ApplicationWindow {
                 anchors.fill: parent
                 visible: controller.exporting || win.batchActive || controller.busy
                          || controller.skyBusy || controller.aiNrDownloading
+                         || controller.aiNrInitializing
                 color: "#aa000000"
                 MouseArea { anchors.fill: parent }   // 진행 중 이미지 입력 차단
 
@@ -3095,6 +3096,26 @@ ApplicationWindow {
                     }
                     Label {
                         text: "first use only · ~117 MB"
+                        color: "#9a9a9a"; font.pixelSize: 11
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                }
+
+                // ── AI 세션 초기화(GPU 점유로 화면이 잠깐 멈춤): 정적 안내 ──
+                //   GPU stall 중엔 새 프레임이 present 안 되어 스피너가 정지해 보이므로,
+                //   애니메이션 대신 명확한 정적 메시지로 '준비 중'임을 알린다(마지막 프레임 유지).
+                ColumnLayout {
+                    visible: controller.aiNrInitializing && !controller.aiNrDownloading
+                             && !controller.exporting && !win.batchActive
+                    anchors.centerIn: parent
+                    spacing: 8
+                    Label {
+                        text: "Preparing AI denoise…"
+                        color: "white"; font.pixelSize: 14
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Label {
+                        text: "first use — may pause briefly"
                         color: "#9a9a9a"; font.pixelSize: 11
                         Layout.alignment: Qt.AlignHCenter
                     }

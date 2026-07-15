@@ -632,6 +632,7 @@ class Controller(QObject):
     _aiNrStatusSig = Signal(object)  # (내부) AI NR 워커 -> 메인 스레드 (seq, 상태 문구)
     _aiNrDlSig = Signal(object)      # (내부) AI 모델 다운로드 워커 -> 메인 (downloading, 진행률 0..1)
                                      #  ⚠️seq 없음 — 다운로드는 모델 전역(이미지 무관), finally 로 항상 해제
+    _aiNrInitSig = Signal(bool)      # (내부) ORT 세션 초기화(GPU 점유) 오버레이 ON/OFF — 세션 전역
     _updateSig = Signal(object)      # (내부) 업데이트 확인 워커 -> 메인 (새 버전 태그, 릴리스 URL)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
@@ -671,6 +672,7 @@ class Controller(QObject):
         self._update_url = ""       # 새 버전 릴리스 페이지 URL
         self._ai_downloading = False  # AI 모델 다운로드 중(이미지 영역 차단 오버레이 + 프로그레스바)
         self._ai_dl_prog = 0.0      # 다운로드 진행률 0..1
+        self._ai_initializing = False  # ORT 세션 초기화 중(GPU 점유 → 차단 오버레이 'Preparing…')
         self._nr_chroma = False     # 현재 nrBase 가 AI RGB(크로마 유효) 베이스인지 — 셰이더 게이트
         self._nr_ai_seq = -1        # AI(RGB) 베이스가 적용된 seq — 뒤늦은 가이디드 폴백의 덮어쓰기 방지
         self._sky_url = "image://skymask/m?v=0"
@@ -754,6 +756,7 @@ class Controller(QObject):
         self._nrReady.connect(self._on_nr_ready)
         self._aiNrStatusSig.connect(self._on_ai_nr_status)
         self._aiNrDlSig.connect(self._on_ai_nr_dl)
+        self._aiNrInitSig.connect(self._on_ai_nr_init)
         self._updateSig.connect(self._on_update_found)
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
@@ -1563,6 +1566,14 @@ class Controller(QObject):
         # 재디코딩되는 이중작업/기하 흔들림 방지(WB 프리시드와 동일 취지, 기본값 True).
         lc = e.get("lensCorrection")
         self._lens = bool(lc) if lc is not None else True
+        # 저장된 aiNr 이미지면 ORT 세션을 아래 _render() 디코드와 병렬로 미리 워밍 →
+        # 로드 완료 직후 세션 초기화(GPU 점유) freeze 를 로드 대기 안으로 흡수(모델 있을 때만).
+        if e.get("aiNr"):
+            try:
+                import ai_denoise
+                ai_denoise.prewarm()
+            except Exception:
+                pass
         # 촬영정보는 경로에만 의존 -> 로드 시 1회 읽음(WB 변경 재디코딩과 무관)
         # EXIF 는 부가정보 — 손상/변칙 EXIF(예: ExposureTime 0/1)로 예외가 나도
         # 사진 로드 자체를 막지 않는다(과거: 예외가 슬롯을 탈출해 파일이 안 열렸음).
@@ -1996,10 +2007,18 @@ class Controller(QObject):
             dev = ai_denoise.provider_label()    # "GPU" | "CPU"
             if ai_denoise._session_obj is None:
                 # 최초 1회: onnxruntime DLL 로드 + (DML) 디바이스 프로빙/셰이더 컴파일에
-                # 수 초 — GPU 를 점유해 화면이 잠깐 멈출 수 있어 상태를 먼저 알리고,
-                # 그 상태가 보이는 동안 세션 초기화를 여기서 소화한다.
+                # 수 초 — GPU 를 점유해 화면이 잠깐 멈춘다. 차단 오버레이를 먼저 켜고 한 프레임
+                # 그려질 시간을 준 뒤 세션을 만든다 → GPU stall 중 마지막 프레임('Preparing…')이
+                # 화면에 남아 '정체불명 freeze' 대신 '준비 중' 화면으로 보인다. (로드 시 prewarm
+                # 이 이미 만들었으면 이 블록은 건너뜀 → 오버레이 안 뜸.)
                 self._aiNrStatusSig.emit((seq, f"AI denoise: initializing ({dev}, first use)…"))
-                ai_denoise._session()
+                self._aiNrInitSig.emit(True)
+                import time
+                time.sleep(0.2)          # 오버레이 프레임이 present 될 시간(GPU stall 전)
+                try:
+                    ai_denoise._session()
+                finally:
+                    self._aiNrInitSig.emit(False)   # 실패해도 오버레이 반드시 해제
             self._aiNrStatusSig.emit((seq, f"AI denoise: computing… 0% ({dev})"))
             res = ai_denoise.denoise_rgb(        # RGB 전체 — luma(휘도)+chroma(컬러) NR 베이스
                 disp,
@@ -2032,6 +2051,11 @@ class Controller(QObject):
         self._ai_dl_prog = float(prog)
         self.aiNrChanged.emit()
 
+    @Slot(bool)
+    def _on_ai_nr_init(self, on) -> None:
+        self._ai_initializing = bool(on)
+        self.aiNrChanged.emit()
+
     def _get_ai_nr(self) -> bool:
         return self._ai_nr
 
@@ -2044,10 +2068,14 @@ class Controller(QObject):
     def _get_ai_dl_prog(self) -> float:
         return self._ai_dl_prog
 
+    def _get_ai_initializing(self) -> bool:
+        return self._ai_initializing
+
     aiNr = Property(bool, _get_ai_nr, notify=aiNrChanged)
     aiNrStatus = Property(str, _get_ai_status, notify=aiNrChanged)
     aiNrDownloading = Property(bool, _get_ai_downloading, notify=aiNrChanged)
     aiNrDlProgress = Property(float, _get_ai_dl_prog, notify=aiNrChanged)
+    aiNrInitializing = Property(bool, _get_ai_initializing, notify=aiNrChanged)
 
     def _mask_worker(self, seq: int, keys) -> None:
         import os
