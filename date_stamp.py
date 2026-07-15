@@ -42,6 +42,7 @@ C_HALO = np.array([0.94, 0.24, 0.06], np.float32)   # 적주황 외곽 번짐
 # Image 오버레이 동일 합성). 스프라이트 RGBA 에 핫코어→앰버→헤일로 글로우가 이미 베이크돼 있어
 # 단순 source-over 로도 빛나는 데이트백 룩이 난다.
 STAMP_STRENGTH = 0.92   # 프리뷰 stampOverlay.opacity 와 일치
+STAMP_GRAIN = 0.18      # 데이트백 필름 그레인 강도(스탬프 밝기 변조) — 튜닝 대상
 
 
 def font_family():
@@ -131,6 +132,18 @@ def render_sprite(text, text_h_px):
     core_black = col * coreA                                       # 코어 over black
     g = col * np.clip(aa * (1.0 - coreA * 0.5) * 1.2, 0.0, 1.0)    # screen 글로우 항
     ob = 1.0 - (1.0 - core_black) * (1.0 - g)                      # 예전 하이브리드 over black
+    # 필름 그레인: 날짜도 그레인 있는 에멀전에 각인된 것처럼 — over-black 결과를 고주파 노이즈로
+    # 변조. 모든 채널 동일 배율이라 아래 peak 정규화에서 col2(핫 휴)는 불변이고 알파(A2=밝기)에만
+    # 그레인이 실린다. render_sprite 는 프리뷰(sprite_layer)·export(stamp_export) 공용 → 양쪽 동일
+    # 성격. 셀은 텍스트 높이 비례라 스탬프 대비 밀도 일관. 장면 그레인과 픽셀일치는 기대 안 함.
+    gcell = max(1.0, text_h_px / 12.0)
+    ggh, ggw = max(2, int(round(H / gcell))), max(2, int(round(W / gcell)))
+    grng = np.random.default_rng(11)
+    gn = zoom(grng.random((ggh, ggw), dtype=np.float32),
+              (H / ggh, W / ggw), order=1)[:H, :W]
+    if gn.shape != (H, W):
+        gn = np.pad(gn, ((0, H - gn.shape[0]), (0, W - gn.shape[1])), mode="edge")
+    ob = np.clip(ob * (1.0 + STAMP_GRAIN * (gn[..., None] - 0.5)), 0.0, 1.0)
     A2 = np.clip(ob.max(axis=2, keepdims=True), 0.0, 1.0)         # 알파 = 밝기(피크 채널)
     col2 = ob / np.maximum(A2, 1e-4)                              # 색(피크 정규화 → 핫 휴 유지)
 
