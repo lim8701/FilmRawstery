@@ -77,6 +77,12 @@ Item {
         var arr = points.slice()
         var i = 0
         while (i < arr.length && arr[i].x < nx) i++
+        // 인접 포인트와 x 가 너무 가까우면 중복 생성 금지 — 그 포인트를 잡는다(드래그 시 이동,
+        // 바로 떼면 변화 없음). 중복 x 는 evalArr 제로폭 세그먼트(불연속)를 만들고 movePoint 의
+        // 0.001 간격 불변식을 깨며 256-LUT 에서 도달 불가해진다.
+        var MINDX = 0.002
+        if (i > 0 && nx - arr[i - 1].x < MINDX) return i - 1
+        if (i < arr.length && arr[i].x - nx < MINDX) return i
         arr.splice(i, 0, {x: nx, y: ny})
         points = arr; changed(); return i
     }
