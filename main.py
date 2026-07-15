@@ -1222,10 +1222,12 @@ class Controller(QObject):
         except Exception as exc:
             msg = f"Failed: {exc}"
         finally:
-            self._exporting = False
             self._exportProgressSig.emit(0.0)   # 진행률 리셋(실패 시 stale 값이 오버레이에 남는 것 방지)
+            # 완료 상태를 먼저 확정한 뒤 _exporting 해제 — 순서가 반대면 배치 폴러가 exporting=false
+            # 를 보는 순간 exportStatus 가 아직 "Exporting…" 이라 저장된 파일을 실패로 오카운트함.
+            self._set_export_status(msg)   # 워커 스레드 -> 시그널은 메인으로 큐잉됨
+            self._exporting = False
         print(f"[export] {msg}")
-        self._set_export_status(msg)   # 워커 스레드 -> 시그널은 메인으로 큐잉됨
 
     # ---------- GPU export: 프리뷰와 동일한 셰이더로 풀해상도 렌더(프리뷰=Export 보장) ----------
     @Slot(QUrl, "QVariantMap")

@@ -1161,8 +1161,10 @@ ApplicationWindow {
             var p = win.exportParams()
             // GPU grab 은 8bit 라 16bit 선택 시 무조건 CPU 경로 사용.
             if (renderModeCombo.currentIndex === 1 && !bitDepth16Check.checked) {
-                gpuExportLoader.active = true     // 풀해상도 셰이더 체인 인스턴스화(grab 대기)
                 controller.exportImageGpu(selectedFile, p)
+                // 실제로 진행됐을 때만 로더 활성 — 슬롯 가드에 걸려 시작 안 됐는데 active=true 로
+                // 두면 grab 을 구동할 디코드가 없어 pipeFull 이 떠 있게 됨(버튼은 위에서 재진입 차단).
+                if (controller.exporting) gpuExportLoader.active = true
             } else {
                 controller.exportImage(selectedFile, p)
             }
@@ -3259,7 +3261,7 @@ ApplicationWindow {
                         id: exportMainBtn
                         text: "Export…"
                         Layout.fillWidth: true
-                        enabled: controller.imagePath !== ""
+                        enabled: controller.imagePath !== "" && !controller.exporting
                         onClicked: {
                             // 기본 파일명 = '<원본이름>_exported.png' (원본과 같은 폴더)
                             var u = controller.suggestedExportUrl()
