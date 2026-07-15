@@ -149,7 +149,10 @@ def _coords_for(h, w, prof):
     if "dk" in prof and np.any(np.abs(prof["dv"]) > 1e-9):
         rs = np.linspace(0.0, 1.3, 131)
         m = 1.0 + np.interp(rs, prof["dk"], prof["dv"]) / 100.0
-        rd = rs / m
+        # np.interp(., rd, rs) 는 rd(xp)가 오름차순이어야 함. 정상 왜곡이면 rd=rs/m 은 이미
+        # 단조 증가라 accumulate 는 항등 — 병적 프로파일(비단조)일 때만 클램프해 조용히 틀린
+        # 반경이 나오는 것을 막는다.
+        rd = np.maximum.accumulate(rs / m)
         # 채움 스케일: 배럴 보정(m>1)은 dest 코너(rn=1)가 src 코너 밖(r_src>1)을
         # 요구 → mode="nearest" 클램프로 가장자리 픽셀이 방사형으로 번짐(sweep).
         # dest 반경을 a=rd(rs=1)(<1) 배로 축소해 코너=코너 정합 — 결과를 1/a 배

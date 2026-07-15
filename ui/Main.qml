@@ -2555,6 +2555,10 @@ ApplicationWindow {
                         // 크롭 조작(이동/리사이즈/회전) 진행 중 — undo 커밋 게이트(editDragActive)가 참조.
                         property int resizeDrags: 0              // 리사이즈 핸들(Repeater) press 카운터
                         readonly property bool dragging: rotating || cropMoveArea.pressed || resizeDrags > 0
+                        // 크롭 패널을 벗어나면(핸들을 쥔 채 패널 전환 등) release 가 안 와 카운터가
+                        // 양수로 고착 → dragging/editDragActive 가 영구 true(스냅샷·저장 중단, AI-NR
+                        // 정지 latched)가 될 수 있다. 숨김 시 드래그 상태를 리셋해 방지.
+                        onVisibleChanged: if (!visible) { resizeDrags = 0; rotating = false }
 
                         // (1) 바깥 어둡게(시각용, 마우스 비소비 -> 아래 회전 영역이 받음)
                         Rectangle { color: "#88000000"; x: 0; y: 0; width: parent.width; height: parent.bt }
@@ -2681,7 +2685,8 @@ ApplicationWindow {
                                                : (parent.hr && parent.ht) || (parent.hl && parent.hb) ? Qt.SizeBDiagCursor
                                                : (parent.hl || parent.hr) ? Qt.SizeHorCursor : Qt.SizeVerCursor
                                     // Repeater delegate 라 외부에서 pressed 참조 불가 → 카운터로 집계
-                                    onPressedChanged: cropOverlay.resizeDrags += pressed ? 1 : -1
+                                    onPressedChanged: cropOverlay.resizeDrags =
+                                        Math.max(0, cropOverlay.resizeDrags + (pressed ? 1 : -1))
                                     onPositionChanged: (mouse) => {
                                         if (!pressed) return    // 호버만으로는 리사이즈 안 함(클릭&드래그 전용)
                                         var p = mapToItem(cropOverlay, mouse.x, mouse.y)
