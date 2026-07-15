@@ -502,7 +502,13 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     c = disp
     # hi/sh 국소 톤맵 마스크 = 중성 베이스(neutral_disp)의 국소 평균 휘도. 셰이더 claBlur(중성) 대응.
     nlum = (neutral_disp @ LUMA).astype(np.float32)
-    lb = _blur_luma(nlum, sigma_cla)
+    # lb(클래리티 반경 블러, 26MP 에서 sigma_cla~25 라 무거움)는 실제 소비될 때만 1회 지연 계산.
+    # 소비자: tone_zones(hi/sh/wh/bl 마스크) · 비-AI 컬러NR · 클래리티/디헤이즈 하이패스.
+    _lb = [None]
+    def get_lb():
+        if _lb[0] is None:
+            _lb[0] = _blur_luma(nlum, sigma_cla)
+        return _lb[0]
     # 마스크 하이라이트/섀도(skyHi/skyShadows)는 전역과 같은 tone_zones 에서 강도 합산
     # (셰이더 3단계 동일 — 과거 9.7 픽셀휘도 근사와 달리 전역과 동일한 영역 톤맵 반응).
     hi_eff, sh_eff = hi, sh
@@ -511,7 +517,11 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
             hi_eff = hi + sky["hi"] * skym_full
         if sky["sh"] != 0.0:
             sh_eff = sh + sky["sh"] * skym_full
-    c = np.maximum(_tone_zones(c, hi_eff, sh_eff, wh, bl, lb), 0.0)
+    # 전부 0이면 tone_zones 는 항등(exp2(0)=1 곱 + 0 가산) → 스킵해 무거운 lb 계산 회피.
+    # (c 는 이 지점에서 이미 filmic 출력 [0,1]≥0 이라 np.maximum(_,0) 도 무동작.)
+    if (hi != 0.0 or sh != 0.0 or wh != 0.0 or bl != 0.0
+            or (skym_full is not None and (sky["hi"] != 0.0 or sky["sh"] != 0.0))):
+        c = np.maximum(_tone_zones(c, hi_eff, sh_eff, wh, bl, get_lb()), 0.0)
     # 노이즈 리덕션(텍스처/샤프닝 앞) — 셰이더 3.5 단계와 동일하게 **중성 베이스**(dispSrc 대응)에서
     # 고주파/크로마를 뽑아 편집본 c 에서 뺀다. ⚠️편집본 기반으로 계산하면 노출을 올린 사진에서
     # export 의 NR 이 프리뷰보다 강해짐(과거 버그 — 밝기 스케일만큼 고주파가 커지므로).
@@ -548,7 +558,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         else:
             bl_ = _blur_rgb(neutral_disp, sigma_cla)           # 셰이더: claBlur(중성 RGB)
             # luma(blur_rgb) == blur(luma) (선형 연산) → lb 재사용
-            chroma_detail = (neutral_disp - nlum[..., None]) - (bl_ - lb[..., None])
+            chroma_detail = (neutral_disp - nlum[..., None]) - (bl_ - get_lb()[..., None])
         c = np.clip(c - chroma_detail * cn, 0.0, 1.0)
     # 중성 하이패스(셰이더 texBlur/claBlur/dispSrc 대응) — 전역과 마스크(sky) 경로가 공유.
     # ⚠️편집본(c/disp) 기준으로 뽑으면 노출 편집 시 export 효과가 프리뷰보다 강해짐(상단 주석).
@@ -557,7 +567,7 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
         nd_texhi = (neutral_disp - _blur_rgb(neutral_disp, sigma_tex)).astype(np.float32)
     if (cla != 0.0 or deh != 0.0
             or (skym_full is not None and (sky["clarity"] != 0.0 or sky["dehaze"] != 0.0))):
-        nd_lc = (nlum - lb).astype(np.float32)
+        nd_lc = (nlum - get_lb()).astype(np.float32)
     if tex != 0.0:
         c = _texture_core(c, tex, nd_texhi)
     if cla != 0.0:
