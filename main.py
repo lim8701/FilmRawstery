@@ -18,11 +18,11 @@ import threading
 from collections import OrderedDict
 from pathlib import Path
 
-from PySide6.QtCore import (Property, QBuffer, QFileSystemWatcher, QObject,
-                            QSettings, QSize, Qt, QTimer, Signal, Slot, QUrl)
+from PySide6.QtCore import (Property, QBuffer, QEvent, QFileSystemWatcher, QObject,
+                            QPointF, QSettings, QSize, Qt, QTimer, Signal, Slot, QUrl)
 from PySide6.QtGui import QGuiApplication, QImage, QImageReader, QTransform
 from PySide6.QtQml import QQmlApplicationEngine
-from PySide6.QtQuick import QQuickImageProvider
+from PySide6.QtQuick import QQuickImageProvider, QQuickItem
 
 # ⚠️ numpy/scipy/rawpy 등을 끌어오는 무거운 모듈(date_stamp, make_luts, exif_info, wb,
 #    lut, raw_loader)은 여기서 임포트하지 않는다. 최상단에 두면 QGuiApplication/splash 가
@@ -888,6 +888,12 @@ class Controller(QObject):
             self._ensure_caption_cache(str(p.parent))
             entry = self._captions.get(p.name)
             return entry.get(key, "") if isinstance(entry, dict) else ""
+
+    def _get_hashtags(self) -> str:
+        """현재 캡션 문장의 주요 단어로 만든 해시태그(표시용). 캡션의 순수 파생물이라
+        별도 상태/저장 없이 매번 계산 — captionChanged 에 묶여 자동 갱신."""
+        import hashtags
+        return hashtags.from_caption(self._get_caption())
 
     def _get_caption_busy(self) -> bool:
         return self._caption_busy
@@ -2402,6 +2408,7 @@ class Controller(QObject):
     imageUrl = Property(str, _get_url, notify=imageChanged)
     imagePath = Property(str, _get_path, notify=imageChanged)
     caption = Property(str, _get_caption, notify=captionChanged)
+    hashtags = Property(str, _get_hashtags, notify=captionChanged)
     captionBusy = Property(bool, _get_caption_busy, notify=captionChanged)
     captionStatus = Property(str, _get_caption_status, notify=captionChanged)
     captionLevel = Property(int, _get_caption_level, notify=captionChanged)
@@ -2496,6 +2503,35 @@ def apply_dark_titlebar(window) -> None:
                 hwnd, attr, ctypes.byref(v), ctypes.sizeof(v))
     except Exception as exc:
         print(f"[theme] 다크 타이틀바 적용 실패: {exc}")
+
+
+class _ClickOutsideFocusFilter(QObject):
+    """날짜 입력칸(stampField) 편집 중, 필드 바깥을 마우스로 누르면 포커스를 해제한다
+    (단축키 _typing 가드 복귀). 앱 레벨 이벤트 필터라 프리뷰 팬/줌·Compare 버튼·슬라이더
+    처럼 QML MouseArea 가 클릭을 exclusive grab 으로 가로채는 곳도 press 를 먼저 관찰한다.
+    이벤트는 소비하지 않아(return False) 커서/전달에 간섭하지 않는다 — 필드 위 HoverHandler
+    의 I-beam 커서와 정상 클릭이 그대로 유지된다. 필드가 없거나 미포커스면 완전 무동작."""
+
+    def __init__(self, field, parent=None):
+        super().__init__(parent)
+        self._field = field
+
+    def eventFilter(self, watched, event):
+        f = self._field
+        if f is not None and event.type() == QEvent.Type.MouseButtonPress:
+            try:
+                if f.property("activeFocus"):
+                    tl = f.mapToGlobal(QPointF(0.0, 0.0))
+                    w = float(f.property("width") or 0.0)
+                    h = float(f.property("height") or 0.0)
+                    gp = event.globalPosition()
+                    inside = (tl.x() <= gp.x() <= tl.x() + w
+                              and tl.y() <= gp.y() <= tl.y() + h)
+                    if not inside:
+                        f.setProperty("focus", False)
+            except Exception:
+                pass
+        return False
 
 
 def _print_banner() -> None:
@@ -2671,6 +2707,10 @@ def main() -> int:
 
     root = engine.rootObjects()[0]
     apply_dark_titlebar(root)                      # OS 타이틀바 다크 모드(Windows)
+    # 날짜 입력칸 편집 중 필드 바깥 클릭 시 포커스 해제(단축키 복귀). controller 에 부모로
+    # 물려 수명 유지. 필드는 objectName 으로 탐색(없으면 필터가 무동작).
+    _stamp_field = root.findChild(QQuickItem, "stampField")
+    app.installEventFilter(_ClickOutsideFocusFilter(_stamp_field, controller))
     _close_splash_when_ready(root, splash)         # 메인 창 첫 프레임에 스플래시 닫기
     _serve_single_instance(si_server, root, controller)   # 재실행 → 이 창 활성화(+경로 열기)
 

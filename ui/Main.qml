@@ -1230,6 +1230,10 @@ ApplicationWindow {
         }
     }
 
+    // 날짜 입력칸(stampField) 편집 중 필드 바깥 클릭 시 포커스 해제는 앱 레벨 이벤트 필터
+    // (_ClickOutsideFocusFilter, main.py)가 처리 — 프리뷰/버튼/슬라이더 grab 무관하게 포착하고
+    // 커서/전달에 간섭 없음. 필드는 objectName: "stampField" 로 파이썬에서 찾는다.
+
     RowLayout {
         anchors.fill: parent
         spacing: 0
@@ -1696,6 +1700,12 @@ ApplicationWindow {
                                         Layout.fillWidth: true
                                         currentIndex: 0
                                         model: ["jpg", "png", "tif"]
+                                        // 드롭다운 닫히면 포커스 해제 → win._typing 이 콤보에 물려 단축키가
+                                        // 죽는 것 방지(captionLevelCombo 와 동일).
+                                        Connections {
+                                            target: batchFmtCombo.popup
+                                            function onClosed() { viewport.forceActiveFocus() }
+                                        }
                                     }
                                 }
                                 Label {
@@ -1806,12 +1816,7 @@ ApplicationWindow {
             Layout.fillHeight: true
             color: "#1e1e1e"
 
-            // 날짜 입력칸 포커스 중 이미지 영역을 탭하면 포커스 해제 → 단축키 복귀.
-            // passive grab 이라 크롭/팬 등 기존 드래그 조작은 가로채지 않음.
-            TapHandler {
-                enabled: stampField.activeFocus
-                onTapped: stampField.focus = false
-            }
+            // (날짜 입력칸 포커스 해제는 창 전체 TapHandler 로 통합 — RowLayout 상단 참조)
 
             // 텍스처 소스 (화면에는 직접 안 보임, ShaderEffect 입력으로만 사용)
             Image {
@@ -2811,6 +2816,30 @@ ApplicationWindow {
                         }
                     }
 
+                    // 해시태그(AI 캡션의 주요 단어): 캡션 바 바로 위 우하단에 우측정렬로 나열.
+                    // Compare original(좌하단)과 같은 높이. 캡션 없으면 숨김, C 토글로 함께 켜고 꺼짐.
+                    Rectangle {
+                        id: hashtagBar
+                        visible: win.captionOverlay && cropClip.visible
+                                 && controller.hashtags !== ""
+                        anchors.right: parent.right
+                        anchors.bottom: parent.bottom
+                        anchors.margins: 12
+                        anchors.bottomMargin: 12 + (captionBar.visible ? captionBar.height : 0)
+                        radius: 6
+                        color: "#cc1e1e1e"
+                        border.color: "#55ffffff"; border.width: 1
+                        width: hashtagLabel.implicitWidth + 20
+                        height: hashtagLabel.implicitHeight + 14
+                        Label {
+                            id: hashtagLabel
+                            anchors.centerIn: parent
+                            text: controller.hashtags
+                            color: "#8ab4f8"; font.pixelSize: 11; font.bold: true
+                            horizontalAlignment: Text.AlignRight
+                        }
+                    }
+
                     // 원본 표시 배지: 원본 보는 중 상단중앙에 표시.
                     Rectangle {
                         visible: win.compareOn
@@ -2873,6 +2902,13 @@ ApplicationWindow {
                                 model: ["Short", "Detailed", "Paragraph"]
                                 currentIndex: controller.captionLevel   // 기본 Short(0)
                                 onActivated: controller.setCaptionLevel(currentIndex)
+                                // 드롭다운이 닫히면 포커스를 이미지 뷰로 넘긴다 — 콤보가 활성 포커스를
+                                // 쥔 채 남으면 win._typing 이 true 로 유지돼 단축키(C/I/D/…)가 콤보
+                                // 타입어헤드로 새며 먹통이 됨. 선택·취소 모두 커버(popup.onClosed).
+                                Connections {
+                                    target: captionLevelCombo.popup
+                                    function onClosed() { viewport.forceActiveFocus() }
+                                }
                             }
                             BusyIndicator {
                                 visible: controller.captionBusy
@@ -3298,6 +3334,11 @@ ApplicationWindow {
                                         currentIndex: 0     // 원본
                                         model: ["Original (Full)", "4096", "3840 (4K)",
                                                 "2560", "2048", "1920 (FHD)", "1280"]
+                                        // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
+                                        Connections {
+                                            target: resCombo.popup
+                                            function onClosed() { viewport.forceActiveFocus() }
+                                        }
                                     }
                                 }
                                 RowLayout {
@@ -3310,6 +3351,11 @@ ApplicationWindow {
                                         enabled: !bitDepth16Check.checked
                                         currentIndex: 0     // 기본 CPU
                                         model: ["CPU", "GPU"]
+                                        // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
+                                        Connections {
+                                            target: renderModeCombo.popup
+                                            function onClosed() { viewport.forceActiveFocus() }
+                                        }
                                     }
                                 }
                                 RowLayout {
@@ -3397,6 +3443,11 @@ ApplicationWindow {
                     Layout.fillWidth: true
                     currentIndex: 0
                     onActivated: win.refreshHistogram()
+                    // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
+                    Connections {
+                        target: simCombo.popup
+                        function onClosed() { viewport.forceActiveFocus() }
+                    }
                     // 라벨은 win.simLabels(= controller.filmSims 파생). 인덱스→simKeys[i]→image://lut/<key>
                     model: win.simLabels
                     // 그룹 구분선: 행(인덱스)을 추가하지 않고 그룹 시작 항목 위에 선만 그림
@@ -4327,6 +4378,7 @@ ApplicationWindow {
                     Label { text: "Date"; color: "white"; font.pixelSize: 12 }
                     TextField {
                         id: stampField
+                        objectName: "stampField"   // 앱 레벨 포커스아웃 필터(main.py)가 탐색
                         Layout.fillWidth: true
                         enabled: win.dateStamp && controller.imagePath !== ""
                         placeholderText: "'YY MM DD  (e.g. '24 05 12)"
@@ -4415,6 +4467,11 @@ ApplicationWindow {
                                 onActivated: {
                                     if (win.cropAspect > 0) win.applyCropAspect()
                                     else win.resetCropRect()
+                                }
+                                // 드롭다운 닫히면 포커스 해제(단축키 복구 — captionLevelCombo 와 동일)
+                                Connections {
+                                    target: aspectCombo.popup
+                                    function onClosed() { viewport.forceActiveFocus() }
                                 }
                             }
                             Label { text: "Orientation"; color: "white"; font.pixelSize: 12 }
