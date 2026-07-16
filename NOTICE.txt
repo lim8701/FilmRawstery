@@ -50,9 +50,13 @@ Components and licenses
                        (+ onnxruntime-ThirdPartyNotices.txt)
 10. ExifRead    — see THIRD_PARTY_LICENSES/exifread-LICENSE.txt
 
-11. DSEG7 font  (fonts/DSEG7Classic-Bold.ttf)
-    SIL Open Font License 1.1 — Copyright (c) keshikan
+11. DSEG fonts  (fonts/DSEG7Classic-*.ttf, DSEG14Classic-*.ttf)
+    SIL Open Font License 1.1 — Copyright (c) keshikan, Reserved Font Name "DSEG"
     https://github.com/keshikan/DSEG  ·  https://openfontlicense.org
+
+12. Doto font  (fonts/Doto.ttf) — 데이트백 도트매트릭스 방식(원형 도트)
+    SIL Open Font License 1.1 — Copyright (c) The Doto Project Authors
+    https://github.com/oliverlalan/Doto  ·  see THIRD_PARTY_LICENSES/Doto-OFL.txt
 
 The canonical license texts are bundled in THIRD_PARTY_LICENSES/:
   - LGPLv3.txt   (Qt/PySide6)        — GNU LGPL v3

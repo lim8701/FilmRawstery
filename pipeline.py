@@ -492,6 +492,10 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     stamp_text = str(p.get("stampText", "") or "")
     do_stamp = bool(p.get("dateStamp", False)) and stamp_text != ""
     stamp_rot = int(p.get("stampRot", 0))   # 촬영 방향(센서→업라이트 CW 회전) — 데이트백 회전/코너
+    stamp_style = str(p.get("stampStyle", "7c_bold"))   # 폰트 방식(STYLES 키)
+    stamp_size = float(p.get("stampSize", 0.032))       # 크기(숫자높이/짧은변 비율)
+    stamp_bright = float(p.get("stampBrightness", 0.8)) # 밝기(불투명도) 배율
+    stamp_margin = float(p.get("stampMargin", 0.05))    # 코너 여백/짧은변 비율
     # --- 전역/공간 단계 (전체 배열). 노출/하이라이트는 filmic 프론트엔드에서 이미 처리됨 ---
     # 프리뷰 블러(shaders/blur.frag)는 오프셋 1·2·3·4 탭의 9-tap 가우시안 → 패스당
     # 실제 σ = √(2·(w1+4w2+9w3+16w4)) = √2.854 ≈ 1.69 탭(가중치 0.1946/0.1216/0.0541/0.0162).
@@ -665,7 +669,10 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
     #   → 위치·크기가 최종(크롭) 사이즈 기준이 됨. (크롭 전 원본 코너 기준이면 크롭 시 어긋남)
     #   비네팅 뒤(LED는 렌즈를 거치지 않음). 프리뷰는 cropClip 위 오버레이로 동일 위치/합성.
     if do_stamp:
-        date_stamp.stamp_export(out, stamp_text, rot=stamp_rot)   # dtype 자동, 회전·코너 in-place
+        date_stamp.stamp_export(out, stamp_text, rot=stamp_rot,   # dtype 자동, 회전·코너 in-place
+                                style=stamp_style, size_frac=stamp_size,
+                                brightness=stamp_bright, margin_frac=stamp_margin,
+                                grain_amt=float(p.get("grainAmt", 0.0)))   # 스탬프 그레인=사진 그레인 연동
 
     return out
 

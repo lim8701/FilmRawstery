@@ -717,6 +717,11 @@ class Controller(QObject):
         self._stamp_wr = 0.0        # 스프라이트 (W,H)/짧은변 비율 — QML 오버레이 크기 산출용
         self._stamp_hr = 0.0
         self._stamp_rot = 0         # 촬영 방향(센서→업라이트 CW 회전, 0/90/180/270) — 데이트백 배치
+        self._stamp_font = "7c_bold"   # 데이트백 폰트 방식(date_stamp.STYLES 키)
+        self._stamp_size = 0.032       # 데이트백 크기 = 숫자높이/짧은변 비율(슬라이더, date_stamp.DEFAULT_SIZE_FRAC)
+        self._stamp_brightness = 0.8   # 데이트백 밝기(불투명도) 배율 — 슬라이더(date_stamp.STAMP_BRIGHTNESS)
+        self._stamp_margin = 0.05      # 데이트백 여백 = 코너 안쪽 여백/짧은변 비율 — 슬라이더(date_stamp.MARGIN_FRAC)
+        self._stamp_grain_src = 0.0    # 스탬프 그레인 소스 = 전체 grainAmt(QML 이 push) — 스탬프는 사진 필름 그레인에 연동
         self._proxy_w = 0           # 마지막 프록시 크기(스탬프 레이어 재렌더용)
         self._proxy_h = 0
         self._histogram = []        # 256-bin 휘도 히스토그램(0..1 정규화)
@@ -1302,7 +1307,13 @@ class Controller(QObject):
             import date_stamp
             _st = str(self._gpu_params.get("stampText", "") or "")
             if bool(self._gpu_params.get("dateStamp", False)) and _st:
-                date_stamp.stamp_export(arr, _st, rot=int(self._gpu_params.get("stampRot", 0)))
+                date_stamp.stamp_export(
+                    arr, _st, rot=int(self._gpu_params.get("stampRot", 0)),
+                    style=str(self._gpu_params.get("stampStyle", "7c_bold")),
+                    size_frac=float(self._gpu_params.get("stampSize", 0.032)),
+                    brightness=float(self._gpu_params.get("stampBrightness", 0.8)),
+                    margin_frac=float(self._gpu_params.get("stampMargin", 0.05)),
+                    grain_amt=float(self._gpu_params.get("grainAmt", 0.0)))
             # 해상도 프리셋(긴 변) 적용 — GPU grab 은 항상 풀해상도라 여기서 축소.
             out_edge = int(self._gpu_params.get("outEdge", 0) or 0)
             if out_edge > 0 and max(arr.shape[:2]) > out_edge:
@@ -1436,12 +1447,28 @@ class Controller(QObject):
         import date_stamp
         return date_stamp.corner_for_rot(self._stamp_rot)
 
+    def _get_stamp_font(self) -> str:
+        return self._stamp_font
+
+    def _get_stamp_size(self) -> float:
+        return self._stamp_size
+
+    def _get_stamp_brightness(self) -> float:
+        return self._stamp_brightness
+
+    def _get_stamp_margin(self) -> float:
+        return self._stamp_margin
+
     stampUrl = Property(str, _get_stamp_url, notify=stampChanged)
     stampText = Property(str, _get_stamp_text, notify=stampChanged)
     stampWRatio = Property(float, _get_stamp_wr, notify=stampChanged)   # 스프라이트 W/짧은변
     stampHRatio = Property(float, _get_stamp_hr, notify=stampChanged)   # 스프라이트 H/짧은변
     stampRot = Property(int, _get_stamp_rot, notify=stampChanged)       # 촬영 방향 CW 회전(export 전달)
     stampCorner = Property(str, _get_stamp_corner, notify=stampChanged)  # 데이트백 코너(프리뷰 배치)
+    stampFont = Property(str, _get_stamp_font, notify=stampChanged)       # 폰트 방식(STYLES 키)
+    stampSize = Property(float, _get_stamp_size, notify=stampChanged)     # 크기(숫자높이/짧은변 비율)
+    stampBrightness = Property(float, _get_stamp_brightness, notify=stampChanged)  # 밝기(불투명도) 배율
+    stampMargin = Property(float, _get_stamp_margin, notify=stampChanged) # 코너 여백/짧은변 비율(프리뷰 배치용)
 
     def _compute_histogram(self, img: QImage) -> None:
         """프록시 QImage → 히스토그램용 축소본 캐시 + 기준(입력) 히스토그램.
@@ -1714,13 +1741,73 @@ class Controller(QObject):
         self._stamp_text = text or ""
         self._update_stamp_layer()
 
+    @Slot(str)
+    def setStampFont(self, style: str) -> None:  # noqa: N802 (QML 슬롯)
+        """데이트백 폰트 방식(classic/modern/14seg) 변경 — 레이어만 재렌더."""
+        style = str(style or "7c_bold")
+        if style == self._stamp_font:
+            return
+        self._stamp_font = style
+        self._update_stamp_layer()
+
+    @Slot(float)
+    def setStampSize(self, size_frac: float) -> None:  # noqa: N802 (QML 슬롯)
+        """데이트백 크기(숫자높이/짧은변 비율) 변경 — 레이어만 재렌더."""
+        try:
+            size_frac = float(size_frac)
+        except (TypeError, ValueError):
+            return
+        if size_frac == self._stamp_size:
+            return
+        self._stamp_size = size_frac
+        self._update_stamp_layer()
+
+    @Slot(float)
+    def setStampBrightness(self, v: float) -> None:  # noqa: N802 (QML 슬롯)
+        """데이트백 밝기(불투명도) 배율 변경 — 스프라이트 재렌더."""
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return
+        if v == self._stamp_brightness:
+            return
+        self._stamp_brightness = v
+        self._update_stamp_layer()
+
+    @Slot(float)
+    def setStampMargin(self, v: float) -> None:  # noqa: N802 (QML 슬롯)
+        """데이트백 코너 여백 비율 변경 — 위치만 바뀌므로 재렌더 없이 알림만(프리뷰 QML 이 재배치)."""
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return
+        if v == self._stamp_margin:
+            return
+        self._stamp_margin = v
+        self.stampChanged.emit()
+
+    @Slot(float)
+    def setStampGrainSrc(self, grain_amt: float) -> None:  # noqa: N802 (QML 슬롯)
+        """전체 필름 그레인(grainAmt)을 스탬프 프리뷰에 반영 — 스탬프 그레인은 사진 그레인에 연동."""
+        try:
+            grain_amt = float(grain_amt)
+        except (TypeError, ValueError):
+            return
+        if grain_amt == self._stamp_grain_src:
+            return
+        self._stamp_grain_src = grain_amt
+        self._update_stamp_layer()
+
     def _update_stamp_layer(self) -> None:
         """현재 _stamp_text 로 타이트 스프라이트 + 크기 비율을 갱신. 프록시 크기와 무관(비율 기반).
         QML 이 cropClip(=최종 프레임) 위에 source-over 오버레이로 표시 → 위치/크기 최종 사이즈 기준."""
         if self._stamp_provider is None:
             return
         if self._stamp_text:
-            layer, wr, hr = date_stamp.sprite_layer(self._stamp_text, rot=self._stamp_rot)
+            layer, wr, hr = date_stamp.sprite_layer(
+                self._stamp_text, rot=self._stamp_rot,
+                style=self._stamp_font, size_frac=self._stamp_size,
+                brightness=self._stamp_brightness, grain_amt=self._stamp_grain_src)
             self._stamp_wr, self._stamp_hr = wr, hr
             # 프리뷰 스탬프도 사진과 동일한 디스플레이 색관리(광색역 보정)를 거치게 한다 —
             # 안 하면 사진만 보정되고 스탬프는 raw sRGB 라 프리뷰에서 스탬프 색감이 어긋난다.
