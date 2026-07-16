@@ -292,7 +292,7 @@ ApplicationWindow {
             "lumaNR": lumaNrSlider.value, "colorNR": colorNrSlider.value, "aiNr": aiNrCheck.checked,
             "lensCorrection": lensCheck.checked, "dateStamp": win.dateStamp, "stampText": stampField.text,
             "stampStyle": controller.stampFont, "stampSize": controller.stampSize,
-            "stampBrightness": controller.stampBrightness, "stampMargin": controller.stampMargin,
+            "stampMargin": controller.stampMargin,
             "curves": curveEditor.channelPoints,
             "quarterTurns": win.quarterTurns, "rotateAngle": rotAngleSlider.value,
             "flipH": flipHBtn.checked, "flipV": flipVBtn.checked,
@@ -355,7 +355,6 @@ ApplicationWindow {
         if (typeof _sz === "string") _sz = ({S: 0.024, M: 0.032, L: 0.044})[_sz] || 0.032  // 구 사이드카 호환
         stampSizeSlider.value = _sz
         controller.setStampSize(_sz)
-        var _br = _ev(p, "stampBrightness", 0.8); stampBrightSlider.value = _br; controller.setStampBrightness(_br)
         var _mg = _ev(p, "stampMargin", 0.05);    stampMarginSlider.value = _mg; controller.setStampMargin(_mg)
         // 체크박스도 명시 대입(aiNrCheck 동일) — 사용자가 한 번이라도 클릭하면
         // `checked: controller.lensCorrection` 바인딩이 파괴되어, 이후 사이드카 복원이
@@ -413,7 +412,6 @@ ApplicationWindow {
         controller.setStampFont("7c_bold")
         stampSizeSlider.value = 0.032
         controller.setStampSize(0.032)
-        stampBrightSlider.value = 0.8; controller.setStampBrightness(0.8)
         stampMarginSlider.value = 0.05; controller.setStampMargin(0.05)
         lensCheck.checked = true
         controller.setLensCorrection(true)
@@ -631,6 +629,7 @@ ApplicationWindow {
         || skyExpSlider.pressed || skyTempSlider.pressed || skyTintSlider.pressed
         || skySatSlider.pressed || skyHiSlider.pressed || skyShadowsSlider.pressed
         || skyTextureSlider.pressed || skyClaritySlider.pressed || skyDehazeSlider.pressed
+        || stampSizeSlider.pressed || stampMarginSlider.pressed
         || curveEditor.dragging || cropOverlay.dragging
     // 릴리즈 순간(어떤 소스든 드래그 종료) 보류 중 커밋이 있으면 즉시 실행 — 릴리즈 = undo 스텝.
     // + 드래그 상태를 컨트롤러에 전달 — AI 디노이즈 타일 루프가 조작 중 일시정지(버벅임 제거).
@@ -663,7 +662,7 @@ ApplicationWindow {
         sharpAmtSlider.value, sharpRadiusSlider.value, sharpDetailSlider.value, sharpMaskSlider.value,
         lumaNrSlider.value, colorNrSlider.value, aiNrCheck.checked,
         lensCheck.checked, win.dateStamp, stampField.text,
-        controller.stampFont, controller.stampSize, controller.stampBrightness, controller.stampMargin,
+        controller.stampFont, controller.stampSize, controller.stampMargin,
         curveEditor.channelPoints,
         win.quarterTurns, rotAngleSlider.value, flipHBtn.checked, flipVBtn.checked,
         aspectCombo.currentIndex, cropLandscapeBtn.checked,
@@ -703,7 +702,7 @@ ApplicationWindow {
             "lutStrength": simStrengthSlider.value, "curves": curveEditor.allLuts(),
             "dateStamp": win.dateStamp, "stampText": stampField.text, "stampRot": controller.stampRot,
             "stampStyle": controller.stampFont, "stampSize": controller.stampSize,
-            "stampBrightness": controller.stampBrightness, "stampMargin": controller.stampMargin,
+            "stampMargin": controller.stampMargin,
             "outEdge": win.exportEdges[resCombo.currentIndex], "lensCorrection": lensCheck.checked,
             "bitDepth": bitDepth16Check.checked ? 16 : 8,   // 16=TIFF/PNG 16bit(CPU 전용)
             // 지오메트리(현상 뒤 적용): 플립 -> 90° -> 스트레이튼(회전+채움줌) -> 종횡비 중앙크롭
@@ -2468,29 +2467,41 @@ ApplicationWindow {
                             }
                         }
 
-                        // 날짜 스탬프(필름 데이트백) 오버레이 — cropClip(=최종 크롭 프레임) 우하단에
-                        // source-over 합성. 위치/크기는 '최종(크롭) 프레임' 짧은 변 기준이라 크롭해도
-                        // 프레임 코너에 일정 비율로 붙는다(원본 코너 기준 X). cropClip 자식이라 줌/팬에
-                        // 함께 스케일. export(date_stamp.stamp_export, 동일 비율·source-over)와 정합.
-                        //   - wRatio/hRatio = 스프라이트 (W,H)/짧은변 (TEXT_FRAC·글로우 패딩 포함)
-                        //   - 마진 0.050 = date_stamp.MARGIN_FRAC, opacity 0.92 = STAMP_STRENGTH
-                        // 크롭 편집 중·원본 비교 중에는 숨김.
+                        // 날짜 스탬프(필름 데이트백) 오버레이 — cropClip(=최종 크롭 프레임) 코너에
+                        // 'screen'(가산) 합성: LED 빛이 필름을 노광하듯 배경에 빛을 더함(밝은 곳=씻겨
+                        // 사라짐). 배경(canvasHolder)을 읽어 shaders/stamp.frag 로 스크린 → export
+                        // (date_stamp.stamp_export 의 screen)와 정합. 스프라이트는 고해상도 유지(크리스프).
+                        //   - wRatio/hRatio=스프라이트(W,H)/짧은변, 마진=stampMargin, strength=STAMP_STRENGTH
+                        //   - bgMap=배경 텍스처 uv 매핑(cropClip 좌표계에서 canvasHolder 로). 크롭편집·비교 중 숨김.
                         Image {
-                            id: stampOverlay
+                            id: stampSprite        // 스탬프 스프라이트 텍스처(숨김) — ShaderEffect 샘플러
                             source: controller.stampUrl
-                            cache: false; smooth: true
+                            cache: false; smooth: true; visible: false
+                        }
+                        ShaderEffect {
+                            id: stampOverlay
                             visible: win.dateStamp && controller.stampText !== ""
                                      && !viewport.cropEdit && !win.compareOn
-                            opacity: 0.92
                             property real shortEdge: Math.min(cropClip.width, cropClip.height)
                             width: controller.stampWRatio * shortEdge
                             height: controller.stampHRatio * shortEdge
-                            // 촬영 방향에 따른 코너 배치(데이트백 현실 반영) — 스프라이트는 이미
-                            // controller 에서 회전돼 있어 여기선 코너 x/y 만 잡는다(export 와 동일).
                             property string corner: controller.stampCorner   // br/bl/tl/tr
-                            property real margin: controller.stampMargin * shortEdge   // 여백 슬라이더(프리뷰=export)
+                            property real margin: controller.stampMargin * shortEdge
                             x: (corner === "br" || corner === "tr") ? parent.width - width - margin : margin
                             y: (corner === "br" || corner === "bl") ? parent.height - height - margin : margin
+                            property variant stampTex: stampSprite
+                            property variant bgTex: ShaderEffectSource {
+                                sourceItem: canvasHolder; live: true; hideSource: false; smooth: true
+                            }
+                            // 배경 텍스처 uv 매핑: cropClip 좌표(x,y,w,h) → canvasHolder 정규화 uv.
+                            property vector4d bgMap: Qt.vector4d(
+                                (stampOverlay.x - canvasHolder.x) / canvasHolder.width,
+                                (stampOverlay.y - canvasHolder.y) / canvasHolder.height,
+                                stampOverlay.width / canvasHolder.width,
+                                stampOverlay.height / canvasHolder.height)
+                            property real strength: 0.92     // = date_stamp.STAMP_STRENGTH
+                            property real screenMix: 0.7     // = date_stamp.SCREEN_MIX (동기 유지)
+                            fragmentShader: "../shaders/stamp.frag.qsb"
                         }
                     }
 
@@ -4444,25 +4455,6 @@ ApplicationWindow {
                     Binding {
                         target: stampFontCombo; property: "currentIndex"
                         value: Math.max(0, stampFontCombo.keys.indexOf(controller.stampFont))
-                    }
-                }
-                // 밝기(불투명도) — 낮출수록 배경이 더 비쳐 은은. 더블클릭=기본 80% 리셋.
-                Label {
-                    text: "Brightness:  " + Math.round(stampBrightSlider.value * 100) + "%"
-                    color: win.dateStamp ? "white" : "#777"; font.pixelSize: 12
-                }
-                Slider {
-                    id: stampBrightSlider
-                    Layout.fillWidth: true
-                    enabled: win.dateStamp && controller.imagePath !== ""
-                    from: 0.3; to: 1.0; value: 0.8
-                    property real defaultValue: 0.8
-                    property real _lastPressMs: 0
-                    property bool _pendingReset: false
-                    onMoved: controller.setStampBrightness(value)
-                    onPressedChanged: {
-                        if (pressed) _pendingReset = win.isDblPress(stampBrightSlider)
-                        else if (_pendingReset) { value = defaultValue; controller.setStampBrightness(defaultValue); _pendingReset = false }
                     }
                 }
                 // 크기 = 숫자높이/짧은변 비율 직접 지정(슬라이더). 더블클릭=기본 3.2% 리셋.

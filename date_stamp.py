@@ -1,11 +1,14 @@
-"""필름 'Date Stamp'(쿼츠 데이트백) 오버레이 렌더.
+"""필름 'Date Stamp'(쿼츠 데이트백) 렌더 — 물리 과정 재현.
 
-EXIF 촬영일시를 7-세그먼트(DSEG7) 호박색 숫자로 그리고, 가우시안 글로우(블룸)를
-입혀 이미지 우하단에 합성한다. 프리뷰(프록시)와 export(풀해상도)가 같은 함수를
-같은 '이미지 상대' 비율(TEXT_FRAC/MARGIN_FRAC)로 호출 → 동일한 룩.
+날짜를 사진 위에 얹는 게 아니라, 데이트백 LED 가 사진과 '같은 필름 에멀전'을 빛으로
+노광하는 물리 과정을 재현한다: 가산(screen) 합성(밝은 곳 씻김/어두운 곳 선명), 사진
+필름 그레인 연동, 강한 빛의 할레이션(핫코어→앰버→적주황 번짐), 센서 프레임 기준 코너
+배치(세로 사진 회전). 프리뷰(shaders/stamp.frag, 배경 읽는 screen)와 export(stamp_export)
+가 동일 수식으로 정합. 위치/크기는 최종 프레임 짧은 변 대비 비율(크롭 무관·크리스프).
+설계·물리 매핑 상세는 docs/date_stamp.md 참조.
 
-폰트: fonts/DSEG7Classic-Bold.ttf (SIL OFL, keshikan/DSEG). 아포스트로피('),
-슬래시(/)는 DSEG7 에 없어 Qt 폴백 폰트로 렌더되지만 글로우에 묻혀 무방.
+폰트: DSEG 7/14-세그 Classic(Regular/Bold, 정체/이탤릭) + Doto 도트매트릭스 (모두 SIL OFL).
+아포스트로피(')·슬래시(/)는 세그먼트 폰트에 없어 Qt 폴백으로 렌더되나 글로우에 묻혀 무방.
 """
 import os
 import sys
@@ -58,7 +61,7 @@ SIZE_FRAC_MIN, SIZE_FRAC_MAX = 0.012, 0.050
 TEXT_FRAC = DEFAULT_SIZE_FRAC   # 하위호환 기본값
 MARGIN_FRAC = 0.050     # 우/하 여백 = 짧은 변의 5.0% (⚠️ui/Main.qml stampOverlay.margin 과 동기 유지)
 CORE_BLUR_FRAC = 0.010  # 코어 가우시안 반경/텍스트높이 (고정) — 숫자 본체 선명도
-STAMP_BRIGHTNESS = 0.8  # 스탬프 전체 밝기(불투명도) 배율 — 낮출수록 배경이 더 비쳐 은은
+STAMP_BRIGHTNESS = 0.85  # 스탬프 전체 밝기(불투명도) 배율 (고정)
 # 필름 광학 각인의 색: 핫코어(밝은 주황-노랑) → 앰버 → 적주황 헤일로로 번짐.
 C_CORE = np.array([1.00, 0.95, 0.76], np.float32)   # 노출 과다된 뜨거운 중심(흰빛쪽, 더 밝게)
 C_MID = np.array([1.00, 0.54, 0.16], np.float32)    # 앰버
@@ -70,6 +73,8 @@ C_HALO = np.array([0.94, 0.24, 0.06], np.float32)   # 적주황 외곽 번짐
 STAMP_STRENGTH = 0.92   # 프리뷰 stampOverlay.opacity 와 일치
 STAMP_GRAIN_K = 0.24    # 스탬프 그레인 = 전체 grainAmt × 이 계수(같은 에멀전 → 사진 필름 그레인에 연동).
                         # 곱셈 변조 진폭(×0.5)이 사진 그레인(add ∝ grainAmt)과 대략 맞도록 튜닝. grainAmt=0 → 매끈.
+SCREEN_MIX = 0.7        # 합성 블렌드: 1.0=순수 screen(밝은 배경서 많이 사라짐), 0.0=source-over(스티커).
+                        # 중간값=밝은 배경 과다 소멸 완화. ⚠️ui/Main.qml stampOverlay.screenMix 와 동기 유지.
 
 
 def font_family(style=DEFAULT_STYLE):
@@ -97,7 +102,7 @@ def _alpha_from_qimage(img):
     return arr[..., 3].astype(np.float32) / 255.0   # ARGB32(LE)=B,G,R,A
 
 
-def render_sprite(text, text_h_px, style=DEFAULT_STYLE, brightness=None, grain=0.0):
+def render_sprite(text, text_h_px, style=DEFAULT_STYLE, grain=0.0):
     """필름 광학 각인 스타일 날짜 스프라이트를 RGBA float (H,W,4) [0,1] 로 반환.
     코어(살짝 번짐)→다층 헤일로, 핫코어→앰버→적주황 색 그라데이션, 불규칙 번짐.
     style=폰트 방식(classic/modern/14seg)."""
@@ -185,8 +190,7 @@ def render_sprite(text, text_h_px, style=DEFAULT_STYLE, brightness=None, grain=0
 
     rgba = np.empty((H, W, 4), np.float32)
     rgba[..., :3] = np.clip(col2, 0.0, 1.0)
-    bright = STAMP_BRIGHTNESS if brightness is None else float(brightness)
-    rgba[..., 3] = np.clip(A2[..., 0] / s * bright, 0.0, 1.0)   # 합성 때 ×s → 실효 알파 = A2×밝기
+    rgba[..., 3] = np.clip(A2[..., 0] / s * STAMP_BRIGHTNESS, 0.0, 1.0)   # 합성 때 ×s → 실효 알파 = A2×밝기(고정)
     return rgba
 
 
@@ -236,7 +240,7 @@ def _clamp_frac(size_frac):
 
 
 def stamp_export(out, text, rot=0, style=DEFAULT_STYLE, size_frac=DEFAULT_SIZE_FRAC,
-                 brightness=None, margin_frac=None, grain_amt=0.0):
+                 margin_frac=None, grain_amt=0.0):
     """크롭/회전까지 끝난 '최종 프레임' out (H,W,3) 의 코너에 날짜 스프라이트를 source-over
     합성(in-place). rot=촬영 방향(센서→업라이트 CW 회전) — 데이트백을 센서 우하단 각인처럼
     회전·코너 배치(세로 사진은 90° 돌아간 코너). 위치/크기는 out 짧은 변 기준(크롭 후에도 일정).
@@ -245,7 +249,7 @@ def stamp_export(out, text, rot=0, style=DEFAULT_STYLE, size_frac=DEFAULT_SIZE_F
     mx = 65535.0 if out.dtype == np.uint16 else 255.0
     H, W, _ = out.shape
     short = min(H, W)
-    sprite = _rotate_sprite(render_sprite(text, _clamp_frac(size_frac) * short, style, brightness,
+    sprite = _rotate_sprite(render_sprite(text, _clamp_frac(size_frac) * short, style,
                                           float(grain_amt) * STAMP_GRAIN_K), rot)
     mf = MARGIN_FRAC if margin_frac is None else float(margin_frac)
     x0, y0, sp = _placement(sprite, W, H, int(round(mf * short)), corner_for_rot(rot))
@@ -253,20 +257,24 @@ def stamp_export(out, text, rot=0, style=DEFAULT_STYLE, size_frac=DEFAULT_SIZE_F
     col = sp[..., :3]
     a = np.clip(sp[..., 3:4] * STAMP_STRENGTH, 0.0, 1.0)     # (h,w,1)
     region = out[y0:y0 + sh, x0:x0 + sw, :].astype(np.float32) / mx
-    region = region * (1.0 - a) + col * a                    # source-over
+    # screen(가산, LED 빛이 필름을 노광)과 source-over 를 혼합: 순수 screen 은 밝은 하이라이트
+    # 에서 과하게 사라지므로 SCREEN_MIX 로 source-over 를 일부 섞어 완화(어두운 곳은 거의 동일).
+    over = region * (1.0 - a) + col * a                      # source-over
+    screen = 1.0 - (1.0 - region) * (1.0 - col * a)          # screen
+    region = over * (1.0 - SCREEN_MIX) + screen * SCREEN_MIX
     out[y0:y0 + sh, x0:x0 + sw, :] = np.rint(np.clip(region, 0.0, 1.0) * mx).astype(out.dtype)
     return out
 
 
 def sprite_layer(text, ref_short=1000.0, rot=0, style=DEFAULT_STYLE, size_frac=DEFAULT_SIZE_FRAC,
-                 brightness=None, grain_amt=0.0):
+                 grain_amt=0.0):
     """프리뷰 오버레이용 '타이트' 날짜 스프라이트(글로우 패딩 포함) → (QImage, wRatio, hRatio).
     rot=촬영 방향(센서→업라이트 CW 회전)으로 스프라이트를 미리 회전(export 와 동일 픽셀).
     style=폰트 방식(STYLES 키), size_frac=숫자높이/짧은변 비율 — export(stamp_export)와 동일 인자.
     wRatio/hRatio = (회전 후) 스프라이트 (W,H) / 짧은 변. QML 이 cropClip 짧은 변에 이 비율을 곱해
     Image 크기를, controller.stampCorner 코너에 MARGIN_FRAC 마진으로 배치하면 export(stamp_export,
     동일 TEXT_FRAC/MARGIN_FRAC·회전·코너)와 같은 위치/상대크기·source-over 합성이 된다(프리뷰=export)."""
-    sp = _rotate_sprite(render_sprite(text, _clamp_frac(size_frac) * ref_short, style, brightness,
+    sp = _rotate_sprite(render_sprite(text, _clamp_frac(size_frac) * ref_short, style,
                                       float(grain_amt) * STAMP_GRAIN_K), rot)   # (H,W,4) float
     sh, sw, _ = sp.shape
     u8 = np.empty((sh, sw, 4), np.uint8)              # ARGB32(LE)=B,G,R,A
