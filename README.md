@@ -68,6 +68,22 @@ Any Fujifilm body should work out of the box (everything is driven by per-file m
 ### Film Simulations
 Fujifilm looks as 3D LUTs: Provia, Velvia, Astia, Classic Chrome, Classic Negative, Nostalgic Neg, PRO Neg. Hi/Std, Eterna, Reala Ace, Bleach Bypass — with adjustable strength. The list is driven by the `.cube` files present in `luts/`, so any known LUT you drop in (e.g. B&W ACROS / Monochrome / Sepia) appears automatically, and missing ones are hidden. See [`luts/README.md`](luts/README.md) for the key filenames and where to get the B&W LUTs.
 
+### Film date stamp
+Reproduces a film **quartz date-back** — not text pasted on top, but a simulation of the LED imprint that exposed the *same emulsion* as the photo:
+- **Additive (screen) blend** — the imprint adds light the way the LED exposes film: it glows over dark areas and washes out over bright highlights, instead of sitting on top like a sticker (mixed with a touch of source-over so highlights don't erase it entirely)
+- **Same-emulsion grain** — the stamp carries the photo's film grain (linked to the Grain amount), so it's never cleanly digital
+- **Halation** — hot-core → amber → red-orange bloom, the way bright light scatters in the emulsion
+- **Segment / dot fonts** — DSEG seven-/fourteen-segment (Regular / Bold, upright / italic) plus a round-dot matrix (Doto) — all SIL OFL
+- **Frame-relative placement** — imprinted in the sensor's bottom-right corner via EXIF orientation, so portrait shots rotate it into the matching corner
+- Style / size / margin adjust and persist per-image; the date defaults to the EXIF capture date and is editable. Toggle with `D`.
+- **Preview = Export** — the preview composites via a shader that reads the underlying pixels (`shaders/stamp.frag`), matching the numpy export screen blend exactly
+
+See [`docs/date_stamp.md`](docs/date_stamp.md) for the physical model and implementation.
+
+<p align="center">
+  <img src="docs/screenshot4.png" alt="Film Rawstery — film date stamp: quartz date-back imprint (seven-segment) screen-blended into the photo, with style / size / margin controls" width="100%">
+</p>
+
 ### Geometry
 Crop (aspect-ratio presets + free drag), rotate / straighten, flip, and perspective (vertical / horizontal keystone + scale) — applied identically in preview and export.
 
@@ -79,7 +95,6 @@ Distortion, vignetting, and chromatic aberration — applied from the **per-shot
 - **Undo / redo** — snapshot history of all adjustments (`Ctrl+Z` / `Ctrl+Shift+Z`)
 - **Non-destructive, per-image persistence** — edits autosave to a `.filmrawsteryedits/<file>.json` sidecar and restore when you reopen the image
 - **File explorer** with RAF thumbnails and a likes/favorites filter
-- **Film date stamp** — DSEG7 seven-segment date back overlay
 - **Live histogram** reflecting current adjustments
 - **Full-resolution export** to JPEG / PNG / TIFF (background-threaded, UI stays responsive)
 
@@ -191,7 +206,7 @@ A hobby project — shared so others can use and learn from it.
 ## Credits
 
 - **Film-simulation LUTs** — derived from the [*FujifilmCameraProfiles*](https://github.com/abpy/FujifilmCameraProfiles) project (sRGB `.cube`), licensed CC BY-NC-SA 4.0
-- **Date-back font** — [DSEG](https://github.com/keshikan/DSEG) by Keshikan (SIL Open Font License 1.1)
+- **Date-back fonts** — [DSEG](https://github.com/keshikan/DSEG) by Keshikan (seven-/fourteen-segment) and [Doto](https://github.com/oliverlalan/Doto) by the Doto Project Authors (round-dot matrix) — both SIL Open Font License 1.1
 - **Masking model** — SegFormer-B2 finetuned on ADE20K, ONNX export by [Xenova](https://huggingface.co/Xenova/segformer-b2-finetuned-ade-512-512) (transformers.js). ⚠️ Research-oriented license — verify before commercial use; see [`models/README.md`](models/README.md)
 - **Caption model** — [Florence-2-base-ft](https://huggingface.co/microsoft/Florence-2-base-ft) by Microsoft (MIT), ONNX export by [onnx-community](https://huggingface.co/onnx-community/Florence-2-base-ft)
 - **Denoise model** — [NAFNet](https://github.com/megvii-research/NAFNet) SIDD-width32 by megvii-research (MIT), converted to ONNX for this project
