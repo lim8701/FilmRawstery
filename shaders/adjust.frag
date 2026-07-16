@@ -66,6 +66,7 @@ layout(std140, binding = 0) uniform buf {
     float skyTexture;   // 하늘 텍스처 (중주파 로컬대비, -1..1)
     float skyClarity;   // 하늘 클래리티 (중간톤 로컬대비, -1..1)
     float skyDehaze;    // 하늘 디헤이즈 (-1..1)
+    float skyContrast;  // 하늘 대비 (전역 contrast 와 동일한 곱수, 0.5..2.0, 중립 1.0)
     // 현상 계수(coeffs.py 단일 진실원, uniform 주입 — pipeline.py 와 값 공유, 셰이더 리터럴 제거).
     float dehazeKLocal; float dehazeKContrast; float dehazeKVeil; float dehazeKSat;
     float clarityK;     // 클래리티 강도(전역+하늘 공용)
@@ -443,7 +444,7 @@ void main() {
     // 마스크가 실제로 있을 때만 적용(export 의 sky_mask is not None 게이트와 정합).
     if (ubuf.skyHasMask > 0.5 && (ubuf.skyShowMask > 0.5 || ubuf.skyTemp != 0.0
         || ubuf.skyTint != 0.0 || ubuf.skySat != 0.0 || ubuf.skyTexture != 0.0
-        || ubuf.skyClarity != 0.0)) {
+        || ubuf.skyClarity != 0.0 || ubuf.skyContrast != 1.0)) {
         float m = skyM;
         if (ubuf.skyShowMask > 0.5) {
             rgb = mix(rgb, vec3(0.95, 0.25, 0.25), m * 0.5);   // 선택 영역 시각화(프리뷰 전용)
@@ -459,6 +460,7 @@ void main() {
                 float l = dot(rgb, LUMA);
                 rgb += d * ubuf.skyClarity * ubuf.clarityK * (1.0 - abs(2.0 * l - 1.0)) * m;
             }
+            rgb = (rgb - 0.5) * (1.0 + (ubuf.skyContrast - 1.0) * m) + 0.5;   // 대비(전역 contrast 곱수, 마스크 게이팅)
             float la = dot(rgb, LUMA);
             rgb = mix(vec3(la), rgb, 1.0 + ubuf.skySat * m);   // 채도
             rgb = clamp(rgb, 0.0, 1.0);

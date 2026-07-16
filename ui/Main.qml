@@ -152,6 +152,8 @@ ApplicationWindow {
         property string label: ""
         property string suffix: ""
         property real defaultValue: 0.0
+        property alias from: skySld.from
+        property alias to: skySld.to
         property var host: null
         Layout.fillWidth: true
         spacing: 2
@@ -176,14 +178,14 @@ ApplicationWindow {
     // 마스킹 조정 직렬화 — 단일 진실원(아래 키 목록). editParams/exportParams/applyEdits/editSaveWatch
     // 가 이 헬퍼로 파생되어 한 곳만 고치면 됨(예전엔 네 곳에 따로 나열 → 누락 시 저장/export 불일치).
     readonly property var skyAdjustKeys: ["skyExp", "skyTemp", "skyTint", "skySat", "skyHi",
-                                          "skyShadows", "skyTexture", "skyClarity", "skyDehaze"]
+                                          "skyShadows", "skyContrast", "skyTexture", "skyClarity", "skyDehaze"]
     function _skySlider(key) {
         switch (key) {
         case "skyExp": return skyExpSlider;        case "skyTemp": return skyTempSlider
         case "skyTint": return skyTintSlider;      case "skySat": return skySatSlider
         case "skyHi": return skyHiSlider;          case "skyShadows": return skyShadowsSlider
         case "skyTexture": return skyTextureSlider; case "skyClarity": return skyClaritySlider
-        case "skyDehaze": return skyDehazeSlider
+        case "skyDehaze": return skyDehazeSlider;  case "skyContrast": return skyContrastSlider
         }
         return null
     }
@@ -196,9 +198,11 @@ ApplicationWindow {
         return o
     }
     // 복원: 조정값 + 선택 클래스. 마스크는 클래스로부터 재생성(setMaskClasses → 재추론).
+    // skyContrast 는 곱셈자라 중립=1.0(전역 Contrast 와 동일), 나머지는 0.0.
+    function _skyDefault(k) { return k === "skyContrast" ? 1.0 : 0.0 }
     function applySkyEdits(p) {
         for (var i = 0; i < win.skyAdjustKeys.length; i++) {
-            var k = win.skyAdjustKeys[i]; win._skySlider(k).value = win._ev(p, k, 0.0)
+            var k = win.skyAdjustKeys[i]; win._skySlider(k).value = win._ev(p, k, win._skyDefault(k))
         }
         skyInvertCheck.checked = win._ev(p, "skyInvert", false)
         win.showSkyMask = false
@@ -380,6 +384,7 @@ ApplicationWindow {
         skyExpSlider.value = 0.0; skyTempSlider.value = 0.0; skyTintSlider.value = 0.0
         skySatSlider.value = 0.0; skyHiSlider.value = 0.0; skyShadowsSlider.value = 0.0
         skyTextureSlider.value = 0.0; skyClaritySlider.value = 0.0; skyDehazeSlider.value = 0.0
+        skyContrastSlider.value = 1.0
         skyInvertCheck.checked = false
         win.showSkyMask = false
         win.maskKeys = []
@@ -629,6 +634,7 @@ ApplicationWindow {
         || skyExpSlider.pressed || skyTempSlider.pressed || skyTintSlider.pressed
         || skySatSlider.pressed || skyHiSlider.pressed || skyShadowsSlider.pressed
         || skyTextureSlider.pressed || skyClaritySlider.pressed || skyDehazeSlider.pressed
+        || skyContrastSlider.pressed
         || stampSizeSlider.pressed || stampMarginSlider.pressed
         || curveEditor.dragging || cropOverlay.dragging
     // 릴리즈 순간(어떤 소스든 드래그 종료) 보류 중 커밋이 있으면 즉시 실행 — 릴리즈 = undo 스텝.
@@ -2031,6 +2037,7 @@ ApplicationWindow {
                         property real skyTexture: skyTextureSlider.value
                         property real skyClarity: skyClaritySlider.value
                         property real skyDehaze: skyDehazeSlider.value
+                        property real skyContrast: skyContrastSlider.value
                         property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
                         property real skyHasMask: controller.hasSkyMask ? 1.0 : 0.0
                         property real skyShowMask: 0.0
@@ -2360,6 +2367,7 @@ ApplicationWindow {
                         property real skyTexture: skyTextureSlider.value
                         property real skyClarity: skyClaritySlider.value
                         property real skyDehaze: skyDehazeSlider.value
+                        property real skyContrast: skyContrastSlider.value
                         property real skyInvert: skyInvertCheck.checked ? 1.0 : 0.0
                         property real skyHasMask: controller.hasSkyMask ? 1.0 : 0.0
                         property real skyShowMask: win.showSkyMask ? 1.0 : 0.0
@@ -4842,6 +4850,7 @@ ApplicationWindow {
                                 font.capitalization: Font.AllUppercase
                             }
                             SkySlider { id: skyExpSlider;     host: win; label: "Exposure"; suffix: "  (stop)" }
+                            SkySlider { id: skyContrastSlider; host: win; label: "Contrast"; from: 0.5; to: 2.0; value: 1.0; defaultValue: 1.0 }
                             SkySlider { id: skyTempSlider;    host: win; label: "Temp"; suffix: "  (− cool / + warm)" }
                             SkySlider { id: skyTintSlider;    host: win; label: "Tint"; suffix: "  (− green / + magenta)" }
                             SkySlider { id: skyHiSlider;      host: win; label: "Highlights" }

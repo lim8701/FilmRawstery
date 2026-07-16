@@ -381,6 +381,8 @@ def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
         out = _texture_core(out, sp["texture"] * m, nd_texhi)
     if sp["clarity"] != 0.0 and nd_lc is not None:             # 클래리티(중간톤 로컬대비, 중성)
         out = _clarity_core(out, sp["clarity"] * m, nd_lc)
+    if sp["contrast"] != 1.0:                                  # 대비(전역 contrast 곱수, 마스크 게이팅)
+        out = (out - 0.5) * (1.0 + (sp["contrast"] - 1.0) * m1) + 0.5
     la = (out @ LUMA)[..., None]                               # 채도
     out = la + (out - la) * (1.0 + sp["sat"] * m1)
     return np.clip(out, 0.0, 1.0).astype(np.float32)
@@ -430,9 +432,10 @@ def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
            "tint": float(p.get("skyTint", 0)), "sat": float(p.get("skySat", 0)),
            "hi": float(p.get("skyHi", 0)), "sh": float(p.get("skyShadows", 0)),
            "texture": float(p.get("skyTexture", 0)), "clarity": float(p.get("skyClarity", 0)),
-           "dehaze": float(p.get("skyDehaze", 0)), "invert": bool(p.get("skyInvert", False))}
+           "dehaze": float(p.get("skyDehaze", 0)), "contrast": float(p.get("skyContrast", 1.0)),
+           "invert": bool(p.get("skyInvert", False))}
     sky_any = any(sky[k] for k in ("exp", "temp", "tint", "sat", "hi", "sh",
-                                   "texture", "clarity", "dehaze"))
+                                   "texture", "clarity", "dehaze")) or sky["contrast"] != 1.0
     skym_full = None
     if sky_any and sky_mask is not None:
         sm = np.asarray(sky_mask, np.float32)
