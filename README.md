@@ -2,10 +2,10 @@
 
 ![Python](https://img.shields.io/badge/Python-3.13-3776AB?logo=python&logoColor=white)
 ![PySide6](https://img.shields.io/badge/PySide6-Qt-41CD52?logo=qt&logoColor=white)
-![RAW](https://img.shields.io/badge/RAW-Fujifilm%20(.RAF)-EB0A1E)
+![RAW](https://img.shields.io/badge/RAW-Fujifilm%20%2B%20multi--vendor-EB0A1E)
 ![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-555)
 
-A GPU-accelerated RAW developer and film-simulation editor for **Fujifilm cameras** (`.RAF`), built with **PySide6 (QML) + GLSL shaders**.
+A GPU-accelerated RAW developer and film-simulation editor built with **PySide6 (QML) + GLSL shaders**. Tuned for **Fujifilm** (`.RAF`) and — as of **v1.4.0** — reads **most other RAW formats too** (Canon, Nikon, Sony, DNG, and more) via rawpy/LibRaw.
 
 Edit interactively on a real-time, shader-driven preview, then export at full resolution through a numpy pipeline that mirrors the shader exactly — *what you see is what you get*.
 
@@ -15,7 +15,7 @@ Edit interactively on a real-time, shader-driven preview, then export at full re
   <img src="docs/screenshot2.png" alt="Film Rawstery — masking: AI multi-class selection (people masked) with per-mask adjustments" width="100%">
 </p>
 
-> Supports Fujifilm RAF across bodies and lenses: color matrices, white balance, and **lens corrections are all read from each file's own metadata** (the camera embeds per-shot correction tables), so no per-model profiles are needed. Developed and look-tuned primarily on an X100V.
+> **Fujifilm RAF** is the primary, look-tuned target (developed on an X100V): color matrices, white balance, and **lens corrections are read from each file's own metadata**, so no per-model profiles are needed. **Other brands** (Canon / Nikon / Sony / DNG / …) decode through the same metadata-driven color pipeline; lens corrections are Fujifilm-only (they come from Fuji's embedded tables) and the film-simulation looks are, of course, Fuji.
 
 ---
 
@@ -25,7 +25,7 @@ A hobby project, built for my own use.
 
 I shoot a lot with the **Fujifilm X100V** and edit in Lightroom — but I only use a few of its features, so paying for a subscription felt hard to justify. Film Rawstery bundles just the features I actually need into a workflow tuned the way I like it.
 
-Any Fujifilm body should work out of the box (everything is driven by per-file metadata); if I ever pick up another brand, I plan to add support for it too.
+Any Fujifilm body works out of the box (everything is driven by per-file metadata). As of v1.4.0 other brands (Canon, Nikon, Sony, DNG, …) are supported too — decoded through the same metadata-driven color pipeline — though the film-simulation looks and lens corrections remain Fuji-centric.
 
 ### The name
 
@@ -51,7 +51,7 @@ Any Fujifilm body should work out of the box (everything is driven by per-file m
 - **AI selection** — ONNX semantic segmentation (SegFormer-B2 / ADE20K) detects regions to mask; the model auto-downloads on first use
 - **Multi-class composite** — tick any combination of **Sky / Vegetation / Building / Ground / Water / Mountain / Person**; the mask is their union, recomposed live from a single cached inference
 - **Edge-refined soft mask** — guided-filter refinement against image luminance for clean branch/edge boundaries, plus invert and a red mask overlay
-- **Per-mask develop** — Exposure / Temp / Tint / Highlights / Shadows / Texture / Clarity / Dehaze / Saturation, applied only to the masked region in both preview and export
+- **Per-mask develop** — Exposure / Temp / Tint / Contrast / Highlights / Shadows / Texture / Clarity / Dehaze / Saturation, applied only to the masked region in both preview and export
 - Masks persist per-image (regenerated from the saved classes on reopen)
 
 ### AI Caption
@@ -76,7 +76,7 @@ Reproduces a film **quartz date-back** — not text pasted on top, but a simulat
 - **Segment / dot fonts** — DSEG seven-/fourteen-segment (Regular / Bold, upright / italic) plus a round-dot matrix (Doto) — all SIL OFL
 - **Frame-relative placement** — imprinted in the sensor's bottom-right corner via EXIF orientation, so portrait shots rotate it into the matching corner
 - Style / size / margin adjust and persist per-image; the date defaults to the EXIF capture date and is editable. Toggle with `D`.
-- **Preview = Export** — the preview composites via a shader that reads the underlying pixels (`shaders/stamp.frag`), matching the numpy export screen blend exactly
+- The final **export** uses the screen/source-over blend above; the live **preview** uses a lightweight source-over overlay, so on very bright highlights the previewed stamp reads a touch more solid than the exported file — a deliberate simplicity trade-off (they match on normal/dark backgrounds)
 
 See [`docs/date_stamp.md`](docs/date_stamp.md) for the physical model and implementation.
 
@@ -173,7 +173,7 @@ Runs from source with the common setup above — all dependencies ship prebuilt 
 | Path | Role |
 |------|------|
 | `main.py` | App entry point, controller, image providers (raw / lut / curve / stamp / thumb) |
-| `raw_loader.py` | RAF → display proxy (X-Trans-safe decode, headroom encoding, lens correction) |
+| `raw_loader.py` | RAW → display proxy (X-Trans-safe / Bayer-AHD decode, headroom encoding, lens correction) |
 | `pipeline.py` | Full-resolution export — numpy reproduction of the shader pipeline |
 | `sky_seg.py` | ML masking engine — ONNX SegFormer multi-class segmentation → composite soft mask |
 | `ai_denoise.py` | AI denoise engine — ONNX NAFNet tiled inference, DirectML-accelerated (luminance NR base) |
