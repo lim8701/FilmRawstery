@@ -144,7 +144,10 @@ ApplicationWindow {
     // host=win 주입(인라인 컴포넌트는 외부 id 접근 불가). value 는 alias 라 id 로 .value 참조 가능.
     component SkySlider: ColumnLayout {
         id: skyRoot
-        property alias value: skySld.value
+        // value 는 alias 가 아닌 '실 프로퍼티'(의도값 보존). alias 면 인스턴스가 from/to 보다 먼저
+        // value 를 적용할 때 좁은 기본 [-1,1]로 클램프됨(초기값 손실). 아래 Binding 이 from/to 확정
+        // 후 내부 슬라이더에 재대입해 순서 무관하게 올바른 범위로 반영.
+        property real value: 0.0
         // 내부 Slider 의 pressed 노출 — undo 릴리즈 커밋 게이트(editDragActive)가 참조.
         // ⚠️래퍼라 이게 없으면 skyXxxSlider.pressed 가 조용히 undefined(falsy)로 평가돼
         //   마스킹 슬라이더만 게이트가 안 걸림(실제 발생했던 버그).
@@ -164,15 +167,18 @@ ApplicationWindow {
         Slider {
             id: skySld
             Layout.fillWidth: true
-            from: -1.0; to: 1.0; value: 0.0
+            from: -1.0; to: 1.0
             property real _lastPressMs: 0
             property bool _pendingReset: false
             onPressedChanged: {
                 if (pressed) _pendingReset = skyRoot.host.isDblPress(skySld)
-                else if (_pendingReset) { value = skyRoot.defaultValue; _pendingReset = false }
+                else if (_pendingReset) { skyRoot.value = skyRoot.defaultValue; _pendingReset = false }
             }
-            onMoved: skyRoot.host.showSkyMask = false   // 조정 중엔 오버레이 끄고 실제 효과 보기
+            onMoved: { skyRoot.value = value; skyRoot.host.showSkyMask = false }  // 드래그 → 외부 value 동기 + 오버레이 끔
         }
+        // 독립 Binding: from/to 확정 뒤(및 이후 변경마다) skyRoot.value 를 내부 슬라이더에 재대입.
+        // 드래그의 내부 write 로 바인딩이 깨져도 외부 value 변경(리셋/복원)이 계속 반영(체크박스 Binding 패턴).
+        Binding { target: skySld; property: "value"; value: skyRoot.value }
     }
 
     // 마스킹 조정 직렬화 — 단일 진실원(아래 키 목록). editParams/exportParams/applyEdits/editSaveWatch
