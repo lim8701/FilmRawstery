@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """사진 영어 캡션 생성 — Florence-2-base-ft ONNX (MIT).
 
-RAF 내장 JPEG 프리뷰(호출측이 768x768 RGB 로 축소해 전달)를 입력으로
+RAW 내장 JPEG 프리뷰(호출측이 768x768 RGB 로 축소해 전달)를 입력으로
 영어 캡션 문장을 생성한다. numpy + onnxruntime 만 사용(Qt 독립).
 
 - 모델: onnx-community/Florence-2-base-ft (fp32 4파일 ~1.1GB) — git 미커밋,

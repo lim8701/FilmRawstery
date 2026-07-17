@@ -391,7 +391,7 @@ def _sky_adjust(c, m, sp, nd_texhi=None, nd_lc=None):
 def render_full(path, kelvin, tint, p, lut_arr, lut_n, curve_rgb,
                 proxy_edge=2560, strip=256, bitdepth=8, sky_mask=None, progress=None,
                 haze=None):
-    """풀해상도 RAF 를 조정값으로 현상해 (H,W,3) RGB 로 반환.
+    """풀해상도 RAW 를 조정값으로 현상해 (H,W,3) RGB 로 반환.
     bitdepth=8 -> uint8, 16 -> uint16(계조/헤드룸 보존, TIFF/PNG 16bit 저장용).
     progress: 선택적 콜백(0..1). 디코드/공간단계/스트립 루프 경계에서 호출(픽셀 결과 불변).
     haze: (t_small, A, conf) — haze.py 추정치(프록시 기준). '+' 디헤이즈의 DCP 물리 복원용.

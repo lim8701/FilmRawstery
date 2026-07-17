@@ -1,8 +1,9 @@
-"""RAF 촬영정보(EXIF) 추출.
+"""RAW 촬영정보(EXIF) 추출 — 후지 RAF 및 타 제조사 RAW 공용.
 
-Fuji RAF 는 독자 컨테이너라 exifread 가 파일을 직접 못 읽지만, 내부에 표준 EXIF 를
-가진 JPEG 프리뷰가 임베드돼 있다(헤더: 0x54=JPEG offset, 0x58=length, big-endian).
-그 JPEG 만 떼어 exifread 로 표준 EXIF 를 읽는다.
+TIFF 기반 RAW(CR2/NEF/ARW/DNG/ORF/RW2/PEF…)는 exifread 가 파일을 직접 읽는다. 후지 RAF 는
+독자 컨테이너라 직접은 못 읽지만, 내부에 표준 EXIF 를 가진 JPEG 프리뷰가 임베드돼 있어
+(헤더: 0x54=JPEG offset, 0x58=length, big-endian) 그 JPEG 만 떼어 읽는다. CR3(BMFF) 등
+파일 직접이 비면 임베드 프리뷰 JPEG 의 EXIF 로 폴백한다(_exif_tags 참조).
 
 주의: Fuji 필름 시뮬레이션 이름은 MakerNote 에 있어 exifread 로는 안 나온다
 (앱 자체 필름시뮬 셀렉터로 대체). 여기선 카메라/노출/렌즈 등 표준 EXIF 만 다룬다.
@@ -32,16 +33,92 @@ def _read_embedded_jpeg(raf_path, max_bytes=512 * 1024):
         return f.read(min(length, max_bytes))  # EXIF APP1 은 JPEG 앞쪽
 
 
-def read_orientation(raf_path) -> int:
-    """RAF 임베드 JPEG 의 EXIF Image Orientation(1~8) 반환. 실패/없음 시 1(가로).
+def _is_raf(path) -> bool:
+    return str(path).lower().endswith(".raf")
+
+
+def embedded_preview_jpeg(path, max_bytes=64 * 1024 * 1024):
+    """포맷 중립 임베드 프리뷰 JPEG 바이트. 실패/없음 시 None.
+
+    RAF(후지 독자 컨테이너)는 헤더 오프셋 고속 파싱, 그 외 제조사 RAW(CR2/CR3/NEF/ARW/DNG…)는
+    rawpy(LibRaw)가 컨테이너별 최대 임베드 프리뷰를 추출한다. 썸네일/프리뷰/캡션 입력 공용."""
+    if _is_raf(path):
+        return _read_embedded_jpeg(path, max_bytes=max_bytes)
+    try:
+        import rawpy
+        with rawpy.imread(str(path)) as raw:
+            thumb = raw.extract_thumb()
+            if thumb.format == rawpy.ThumbFormat.JPEG:
+                return bytes(thumb.data)          # 대다수 RAW: 임베드 JPEG 그대로
+            if thumb.format == rawpy.ThumbFormat.BITMAP:
+                return _encode_bitmap_jpeg(thumb.data)  # 일부 DNG 등: 비트맵 → JPEG 인코딩
+    except Exception:
+        pass
+    return None
+
+
+def _encode_bitmap_jpeg(arr):
+    """rawpy BITMAP 썸네일(ndarray H,W,3 RGB) → JPEG 바이트. 호출부가 JPEG 를 기대하므로
+    비트맵 썸네일뿐인 RAW(일부 DNG 등)도 썸네일/프리뷰가 뜨게 한다. 실패 시 None."""
+    try:
+        import numpy as np
+        from PySide6.QtCore import QBuffer, QByteArray
+        from PySide6.QtGui import QImage, QImageWriter
+        arr = np.ascontiguousarray(arr)
+        h, w = arr.shape[:2]
+        img = QImage(arr.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
+        ba = QByteArray()
+        buf = QBuffer(ba)
+        buf.open(QBuffer.OpenModeFlag.WriteOnly)
+        writer = QImageWriter(buf, b"jpeg")
+        writer.setQuality(90)
+        ok = writer.write(img)
+        buf.close()
+        return bytes(ba) if ok else None
+    except Exception:
+        return None
+
+
+def _exif_tags(path):
+    """포맷별 EXIF 태그 dict(exifread). 실패/의존성없음 시 {}.
+
+    RAF=임베드 JPEG, TIFF 기반 RAW(CR2/NEF/ARW/DNG/ORF/RW2/PEF…)=exifread 로 파일 직접,
+    그래도 비면(CR3 등 BMFF) 임베드 프리뷰 JPEG 의 EXIF 로 폴백."""
+    if exifread is None:
+        return {}
+    if _is_raf(path):
+        jpeg = _read_embedded_jpeg(path)
+        if not jpeg:
+            return {}
+        try:
+            return exifread.process_file(io.BytesIO(jpeg), details=False)
+        except Exception:
+            return {}
+    # TIFF 기반 RAW: exifread 가 파일을 직접 읽는다.
+    try:
+        with open(path, "rb") as f:
+            tags = exifread.process_file(f, details=False)
+        if tags:
+            return tags
+    except Exception:
+        pass
+    # 폴백(CR3 등): 임베드 프리뷰 JPEG 의 표준 EXIF.
+    jpeg = embedded_preview_jpeg(path)
+    if not jpeg:
+        return {}
+    try:
+        return exifread.process_file(io.BytesIO(jpeg), details=False)
+    except Exception:
+        return {}
+
+
+def read_orientation(path) -> int:
+    """RAW 의 EXIF Image Orientation(1~8) 반환. 실패/없음 시 1(가로).
     날짜 스탬프를 촬영 방향(센서 가로 프레임)에 맞춰 배치하는 데 쓴다."""
     if exifread is None:
         return 1
     try:
-        jpeg = _read_embedded_jpeg(raf_path)
-        if not jpeg:
-            return 1
-        tags = exifread.process_file(io.BytesIO(jpeg), details=False)
+        tags = _exif_tags(path)
         ori = tags.get("Image Orientation")
         v = int(ori.values[0]) if ori and ori.values else 1
         return v if v in (1, 2, 3, 4, 5, 6, 7, 8) else 1
@@ -116,20 +193,17 @@ def _fmt_date(tag):
     return s.replace(":", "-", 2) if s else None
 
 
-def read_shooting_info(raf_path):
-    """RAF 경로 -> (fields, summary).
+def read_shooting_info(path):
+    """RAW 경로 -> (fields, summary).
 
     fields:  [{"label": str, "value": str}, ...]  (우측 패널용, 순서 유지)
     summary: 오버레이용 2줄 문자열 (예: "23mm  f/2.8\\n1/250s  ISO 1250")
-    실패/비RAF/의존성없음 시 ([], "").
+    실패/비RAW/의존성없음 시 ([], "").
     """
     if exifread is None:
         return [], ""
     try:
-        jpeg = _read_embedded_jpeg(raf_path)
-        if not jpeg:
-            return [], ""
-        tags = exifread.process_file(io.BytesIO(jpeg), details=False)
+        tags = _exif_tags(path)
     except Exception:
         return [], ""
     if not tags:

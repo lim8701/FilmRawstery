@@ -286,7 +286,7 @@ def _session():
 def prewarm() -> None:
     """모델이 이미 있으면(=이전에 AI denoise 사용) 백그라운드로 ORT 세션을 미리 생성한다.
     저장된 aiNr 이미지 로드가 시작될 때 호출 → 세션 초기화(DML 프로빙/그래프 컴파일, GPU 점유)를
-    RAF 디코드와 병렬로 진행해 '로드 직후' 초기화 freeze 를 로드 대기 안으로 흡수. 모델 미다운로드
+    RAW 디코드와 병렬로 진행해 '로드 직후' 초기화 freeze 를 로드 대기 안으로 흡수. 모델 미다운로드
     (신규 사용자)면 no-op(다운로드 유발 금지). _sess_lock 으로 이후 워커와 안전 공유(이중 생성 없음)."""
     if _session_obj is not None or not model_available():
         return

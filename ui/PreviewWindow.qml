@@ -3,7 +3,7 @@ import QtQuick.Controls.Basic as B
 
 // 파일 탐색기 "프리뷰 모드" — 별도 OS 창이 아니라 메인 창 위를 꽉 덮는 인앱 오버레이.
 // 이미 살아있는 씬그래프를 재사용하므로 첫 오픈이 좌/우 이동만큼 즉시 뜬다(창 생성 비용 없음).
-//  - RAF 내장 풀 프리뷰(image://preview, ~2048px)를 윈도우 기본 이미지 뷰어처럼 크게 표시
+//  - RAW 내장 풀 프리뷰(image://preview, ~2048px)를 윈도우 기본 이미지 뷰어처럼 크게 표시
 //  - 좌/우 화살표(버튼·키보드)로 이전/다음 사진 이동(양 끝에서 멈춤)
 //  - 하단 하트로 좋아요(셀렉트) 토글 -> controller.toggleLike (즉시 폴더 JSON 저장)
 //  - ✕ 버튼 또는 ESC 로 닫기
@@ -14,10 +14,10 @@ Item {
     z: 1000
 
     // Main.qml 에서 채워줌
-    property var rafList: []          // 사진 경로 배열(폴더 내 RAF, 디렉터리 제외)
+    property var rawList: []          // 사진 경로 배열(폴더 내 RAW, 디렉터리 제외)
     property int idx: 0
     readonly property string currentPath:
-        (idx >= 0 && idx < rafList.length) ? rafList[idx] : ""
+        (idx >= 0 && idx < rawList.length) ? rawList[idx] : ""
     readonly property string currentName: {
         var p = currentPath
         if (!p) return ""
@@ -34,7 +34,7 @@ Item {
     signal closedAt(string path)
 
     function open(list, startIdx) {
-        rafList = list
+        rawList = list
         idx = startIdx
         visible = true
         keyScope.forceActiveFocus()
@@ -44,7 +44,7 @@ Item {
         closedAt(currentPath)
     }
     function prev() { if (idx > 0) idx-- }
-    function next() { if (idx < rafList.length - 1) idx++ }
+    function next() { if (idx < rawList.length - 1) idx++ }
 
     // 키보드 입력 수신 + 뒤(탐색기)로 클릭 통과 차단
     Item {
@@ -169,7 +169,7 @@ Item {
             anchors.rightMargin: 12
             anchors.verticalCenter: parent.verticalCenter
             kind: "right"
-            enabled: previewWin.idx < previewWin.rafList.length - 1
+            enabled: previewWin.idx < previewWin.rawList.length - 1
             onClicked: previewWin.next()
         }
 
@@ -224,7 +224,7 @@ Item {
             color: "#e6e6e6"
             font.pixelSize: 14
             text: previewWin.currentName
-                  + "    " + (previewWin.idx + 1) + " / " + previewWin.rafList.length
+                  + "    " + (previewWin.idx + 1) + " / " + previewWin.rawList.length
         }
 
         // ---------- 하단 하트(좋아요) ----------

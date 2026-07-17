@@ -267,7 +267,7 @@ ApplicationWindow {
         geoScaleSlider.value = 100
     }
 
-    // === RAF별 편집 자동 저장/복원 (사이드카 .filmrawsteryedits/<파일명>.json) ===
+    // === RAW별 편집 자동 저장/복원 (사이드카 .filmrawsteryedits/<파일명>.json) ===
     property bool _applying: false       // 복원 중 — 자동저장/WB 재디코딩 억제
     function _hasSavedEdits() { var e = controller.editsForCurrent(); return e && e.v !== undefined }
 
@@ -728,7 +728,7 @@ ApplicationWindow {
     // 탐색기 "좋아요만 보기" 필터 (L 키로 토글)
     property bool showLikedOnly: false
     Shortcut { sequence: "L"; enabled: !win._typing; onActivated: win.showLikedOnly = !win.showLikedOnly }
-    // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAF 만.
+    // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAW 만.
     //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
     property var explorerFiles: {
         controller.likeRevision               // 좋아요 토글 시 재평가용 의존
@@ -1094,7 +1094,7 @@ ApplicationWindow {
         }
     }
 
-    // 프리뷰 모드 오버레이(탐색기에서 RAF 우클릭 → 메뉴 Preview 로 염). 메인 창 위를 꽉 덮음.
+    // 프리뷰 모드 오버레이(탐색기에서 RAW 우클릭 → 메뉴 Preview 로 염). 메인 창 위를 꽉 덮음.
     // 닫으면 마지막으로 보던 사진을 탐색기에서 선택(하이라이트+스크롤)만 한다 — 로드는 안 함.
     PreviewWindow {
         id: previewWin
@@ -1141,7 +1141,7 @@ ApplicationWindow {
     }
 
     // 탐색기에서 우클릭한 파일을 프리뷰 창으로 연다.
-    // 현재 폴더의 RAF(디렉터리 제외)만 경로 배열로 만들어 좌/우 네비 대상으로 넘긴다.
+    // 현재 폴더의 RAW(디렉터리 제외)만 경로 배열로 만들어 좌/우 네비 대상으로 넘긴다.
     function openPreview(path) {
         win.peekHide()                      // 호버 피크가 떠 있으면 닫고 프리뷰 진입
         var files = win.explorerFiles       // 현재 보이는(필터 반영) 목록 기준으로 좌/우 이동
@@ -1557,6 +1557,18 @@ ApplicationWindow {
                                         sourceSize.width: 96    // → requestImage requested_size
                                         source: modelData.isDir ? ""
                                                 : "image://thumb/" + encodeURIComponent(modelData.path)
+                                    }
+                                    // 임베드 프리뷰가 없는 RAW(일부 폰 DNG 등)는 provider 가 null 반환
+                                    // → status=Error. 빈 회색 대신 '미리보기 없음'을 표시(편집/export 는 정상).
+                                    Text {
+                                        visible: !modelData.isDir && thumbImg.status === Image.Error
+                                        anchors.centerIn: parent
+                                        width: parent.width - 6
+                                        horizontalAlignment: Text.AlignHCenter
+                                        wrapMode: Text.WordWrap
+                                        text: "No preview"
+                                        color: "#888888"
+                                        font.pixelSize: 10
                                     }
                                     // 좋아요(셀렉트) 하트 배지 — likeRevision 참조로 토글/폴더변경 시 갱신
                                     Text {
@@ -2475,19 +2487,18 @@ ApplicationWindow {
                             }
                         }
 
-                        // 날짜 스탬프(필름 데이트백) 오버레이 — cropClip(=최종 크롭 프레임) 코너에
-                        // 'screen'(가산) 합성: LED 빛이 필름을 노광하듯 배경에 빛을 더함(밝은 곳=씻겨
-                        // 사라짐). 배경(canvasHolder)을 읽어 shaders/stamp.frag 로 스크린 → export
-                        // (date_stamp.stamp_export 의 screen)와 정합. 스프라이트는 고해상도 유지(크리스프).
-                        //   - wRatio/hRatio=스프라이트(W,H)/짧은변, 마진=stampMargin, strength=STAMP_STRENGTH
-                        //   - bgMap=배경 텍스처 uv 매핑(cropClip 좌표계에서 canvasHolder 로). 크롭편집·비교 중 숨김.
+                        // 날짜 스탬프(필름 데이트백) 오버레이 — cropClip(=최종 크롭 프레임) 코너에 배치.
+                        // 스프라이트(image://stamp)에 '검정 위 글로우 하이브리드'가 이미 베이크돼 있어
+                        // (date_stamp.render_sprite), 배경 재캡처 없이 QML 기본 source-over 합성만으로 데이트백
+                        // 룩이 난다. 과거엔 screen 합성을 위해 배경(canvasHolder)을 ShaderEffect 로 다시 캡처했으나
+                        // (bgTex), 그 재캡처가 줌/레이어 조건에서 배경을 밀고 가장자리 검정선을 만들어 제거함.
+                        //   - 트레이드오프: 밝은 배경에서 export(screen 70%+over 30%)보다 아주 약간 더 또렷
+                        //     (프리뷰 전용 — date_stamp.stamp_export = 최종 결과물은 그대로 정확).
+                        //   - wRatio/hRatio=스프라이트(W,H)/짧은변, 마진=stampMargin. 크롭편집·비교 중 숨김.
                         Image {
-                            id: stampSprite        // 스탬프 스프라이트 텍스처(숨김) — ShaderEffect 샘플러
-                            source: controller.stampUrl
-                            cache: false; smooth: true; visible: false
-                        }
-                        ShaderEffect {
                             id: stampOverlay
+                            source: controller.stampUrl
+                            cache: false; smooth: true; asynchronous: false
                             visible: win.dateStamp && controller.stampText !== ""
                                      && !viewport.cropEdit && !win.compareOn
                             property real shortEdge: Math.min(cropClip.width, cropClip.height)
@@ -2497,19 +2508,6 @@ ApplicationWindow {
                             property real margin: controller.stampMargin * shortEdge
                             x: (corner === "br" || corner === "tr") ? parent.width - width - margin : margin
                             y: (corner === "br" || corner === "bl") ? parent.height - height - margin : margin
-                            property variant stampTex: stampSprite
-                            property variant bgTex: ShaderEffectSource {
-                                sourceItem: canvasHolder; live: true; hideSource: false; smooth: true
-                            }
-                            // 배경 텍스처 uv 매핑: cropClip 좌표(x,y,w,h) → canvasHolder 정규화 uv.
-                            property vector4d bgMap: Qt.vector4d(
-                                (stampOverlay.x - canvasHolder.x) / canvasHolder.width,
-                                (stampOverlay.y - canvasHolder.y) / canvasHolder.height,
-                                stampOverlay.width / canvasHolder.width,
-                                stampOverlay.height / canvasHolder.height)
-                            property real strength: 0.92     // = date_stamp.STAMP_STRENGTH
-                            property real screenMix: 0.7     // = date_stamp.SCREEN_MIX (동기 유지)
-                            fragmentShader: "../shaders/stamp.frag.qsb"
                         }
                     }
 
@@ -2817,7 +2815,7 @@ ApplicationWindow {
                         anchors.centerIn: parent
                         color: "#888"
                         font.pixelSize: 16
-                        text: "Double-click a RAF file in the explorer on the left to open it"
+                        text: "Double-click a RAW file in the explorer on the left to open it"
                     }
 
                     // 원본 비교 버튼: 클릭(또는 \ 키)으로 원본↔편집본 토글(좌하단). 크롭 페이지에선 숨김.
@@ -3423,6 +3421,15 @@ ApplicationWindow {
                     font.pixelSize: 11
                     wrapMode: Text.WrapAnywhere
                     text: controller.exportStatus
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    visible: controller.loadError !== ""
+                    color: "#e08a8a"
+                    font.pixelSize: 11
+                    wrapMode: Text.WrapAnywhere
+                    text: controller.loadError
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
@@ -4363,13 +4370,13 @@ ApplicationWindow {
                     }
                     Label {
                         Layout.fillWidth: true
-                        text: "Lens profile from RAF"
+                        text: "Lens profile (embedded)"
                         color: "white"; font.pixelSize: 12
                         verticalAlignment: Text.AlignVCenter
                         wrapMode: Text.WordWrap          // 패널 폭 초과 시 잘림 대신 줄바꿈
                         ToolTip.visible: lensLblHover.hovered
                         ToolTip.delay: 600
-                        ToolTip.text: "Distortion · vignetting · chromatic aberration —\nper-shot correction tables embedded in the RAF by the camera."
+                        ToolTip.text: "Distortion · vignetting · chromatic aberration —\nper-shot correction tables embedded in the RAW by the camera (currently Fujifilm RAF)."
                         HoverHandler { id: lensLblHover }
                     }
                 }

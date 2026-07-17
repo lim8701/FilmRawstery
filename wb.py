@@ -70,8 +70,17 @@ def cam_to_srgb_matrix(cam_xyz):
     """
     cam_xyz = np.asarray(cam_xyz, float).reshape(3, 3)
     cam_rgb = cam_xyz @ _XYZ_RGB_D65                       # sRGB -> cam
-    cam_rgb = cam_rgb / cam_rgb.sum(axis=1, keepdims=True)  # 행합=1 (pre_mul)
-    return np.linalg.inv(cam_rgb)                          # cam -> sRGB(linear)
+    rowsum = cam_rgb.sum(axis=1, keepdims=True)            # 행합(=pre_mul 정규화 분모)
+    # 일부 DNG(폰/드론 등)는 rgb_xyz_matrix 가 비어(0) 있어 행합=0 → NaN → 렌더가 검정이 된다.
+    # 카메라 컬러 매트릭스를 못 얻으면 '카메라공간=sRGB'(항등)로 폴백해 최소한 정상 밝기로 현상.
+    if not np.all(np.isfinite(rowsum)) or np.any(np.abs(rowsum) < 1e-8):
+        return np.eye(3)
+    cam_rgb = cam_rgb / rowsum                             # 행합=1 (pre_mul)
+    try:
+        inv = np.linalg.inv(cam_rgb)                       # cam -> sRGB(linear)
+    except np.linalg.LinAlgError:
+        return np.eye(3)
+    return inv if np.all(np.isfinite(inv)) else np.eye(3)
 
 
 def baked_wb(cam_xyz, daylight_ref):

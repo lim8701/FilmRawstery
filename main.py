@@ -1,11 +1,11 @@
 """RAW 에디터 최소 동작 스켈레톤.
 
-  RAF 디코딩(rawpy) -> 프록시 QImage -> QML ShaderEffect(GPU) 파이프라인.
+  RAW 디코딩(rawpy/LibRaw) -> 프록시 QImage -> QML ShaderEffect(GPU) 파이프라인.
   프래그먼트 셰이더는 시작 시 번들 qsb 로 자동 컴파일한다(ensure_shader).
 
 사용:
   pip install -r requirements.txt
-  python main.py [선택: 열어둘 RAF 경로]
+  python main.py [선택: 열어둘 RAW 경로]
 """
 
 import io
@@ -109,6 +109,29 @@ def _migrate_sidecars(folder: str) -> None:
 # 시작 시 자동으로 열어볼 샘플 RAF (명령줄 인자가 없을 때 사용)
 DEFAULT_RAF = r"C:\Pic\x100v\128_FUJI\DSCF8035.RAF"
 # DEFAULT_RAF = r"C:\Pic\x100v\131_FUJI\DSCF1039.RAF"  # 임시 비활성
+
+# 탐색기에 노출/디코딩할 RAW 확장자(rawpy/LibRaw 가 현상). 후지 RAF 외 타 제조사 포함 —
+# 색 매트릭스/WB/블랙·화이트레벨을 파일 메타에서 읽으므로 기종 등록 없이 동작한다.
+# 목록은 넓게 두고, LibRaw 가 실제로 못 여는 파일/기종은 디코드 시 예외 → UI 에 '미지원 RAW'
+# 안내로 처리한다(_render_worker → loadError). 샘플 검증필: raf/cr2/cr3/crw/nef/arw/srw/dng/
+# orf/rw2/pef/rwl/dcr. 나머지(nrw/sr2/srf/3fr/iiq/mrw/kdc/erf)는 LibRaw 지원 포맷이나 미검증.
+RAW_EXTS = {
+    ".raf",                        # Fujifilm
+    ".cr2", ".cr3", ".crw",        # Canon
+    ".nef", ".nrw",                # Nikon
+    ".arw", ".sr2", ".srf",        # Sony
+    ".srw",                        # Samsung
+    ".dng",                        # Adobe / generic (Leica·폰·드론 DNG 포함)
+    ".orf",                        # Olympus / OM System
+    ".rw2",                        # Panasonic
+    ".pef",                        # Pentax
+    ".rwl",                        # Leica
+    ".3fr",                        # Hasselblad
+    ".iiq",                        # Phase One
+    ".mrw",                        # Minolta
+    ".kdc", ".dcr",                # Kodak
+    ".erf",                        # Epson
+}
 
 # GPU 고성능(외장 GPU) 강제: Windows 그래픽 설정과 동일하게 이 실행파일(python.exe)의
 # GPU 환경설정을 '고성능'으로 레지스트리에 기록한다. False 면 Windows 기본(보통 내장) 사용.
@@ -426,7 +449,7 @@ class HazeProvider(QQuickImageProvider):
 
 
 class ThumbProvider(QQuickImageProvider):
-    """RAF 임베드 JPEG -> 썸네일을 'image://thumb/<percent-encoded-path>' 로 제공.
+    """RAW 임베드 프리뷰 -> 썸네일을 'image://thumb/<percent-encoded-path>' 로 제공.
 
     ForceAsynchronousImageLoading 으로 requestImage 가 항상 Qt 워커 스레드에서
     호출되므로 GUI 가 안 멈춘다(폴더에 파일이 많아도). QML 쪽은 ListView 로
@@ -467,6 +490,8 @@ class ThumbProvider(QQuickImageProvider):
         #      EXIF/썸네일은 JPEG 선두라 앞부분 512KB 만 읽으면 충분.
         #      단 요청 크기가 원본(160px)을 넘으면 업스케일로 흐려지므로
         #      2차(내장 풀 프리뷰 축소 디코딩)로 넘어간다(그리드 썸네일 확대용).
+        #      ⚠️non-RAF 는 _read_embedded_jpeg 가 None → 2차로 감. extract_thumb 이
+        #      프리뷰 '바이트만' 추출(디코드 X)이라 이미 ~1-5ms 로 충분히 빠름(벤치 확인).
         if edge <= 160:
             try:
                 jpeg = _read_embedded_jpeg(path)
@@ -491,7 +516,7 @@ class ThumbProvider(QQuickImageProvider):
         # 2차: EXIF 썸네일이 없거나 큰 썸네일(>160px) 요청이면 내장 풀 프리뷰를
         #      요청 크기로 축소 디코딩(libjpeg 스케일드 디코딩, 13MP 풀디코딩 회피).
         try:
-            jpeg = _read_embedded_jpeg(path, max_bytes=64 * 1024 * 1024)
+            jpeg = embedded_preview_jpeg(path)
             if not jpeg:
                 return QImage()                      # null -> QML status=Error -> placeholder
             buf = QBuffer()
@@ -534,7 +559,7 @@ class ThumbProvider(QQuickImageProvider):
 
 
 class PreviewProvider(QQuickImageProvider):
-    """RAF 내장 풀 프리뷰 JPEG -> 큰 프리뷰를 'image://preview/<percent-encoded-path>' 로 제공.
+    """RAW 내장 풀 프리뷰 -> 큰 프리뷰를 'image://preview/<percent-encoded-path>' 로 제공.
 
     프리뷰 모드(PreviewWindow.qml)용. ThumbProvider 의 2차 폴백과 동일한 경로
     (내장 풀 프리뷰 JPEG 를 QImageReader.setScaledSize 로 축소 디코딩)를 쓰되,
@@ -572,7 +597,7 @@ class PreviewProvider(QQuickImageProvider):
     @staticmethod
     def _make_preview(path, edge) -> QImage:
         try:
-            jpeg = _read_embedded_jpeg(path, max_bytes=64 * 1024 * 1024)
+            jpeg = embedded_preview_jpeg(path)
             if not jpeg:
                 return QImage()
             buf = QBuffer()
@@ -597,6 +622,7 @@ class Controller(QObject):
     wbBaked = Signal()          # 재디코딩 완료(=baked WB 갱신) 알림
     curveChanged = Signal()     # 톤 커브 LUT 갱신 알림
     exportStatusChanged = Signal()
+    loadErrorChanged = Signal()        # 디코드 실패(미지원/손상 RAW) 사용자 안내 갱신 알림
     exportProgressChanged = Signal()   # CPU export 진행률(0..1) 갱신 알림(필름 카운터 오버레이용)
     exifChanged = Signal()      # 촬영정보(EXIF) 갱신 알림
     stampChanged = Signal()     # 날짜 스탬프 오버레이 갱신 알림
@@ -707,6 +733,7 @@ class Controller(QObject):
         self._curve_url = "image://curve/c?v=0"
         self._curve_counter = 0
         self._export_status = ""
+        self._load_error = ""         # 디코드 실패 시 사용자 안내(빈 문자열=정상)
         self._export_progress = 0.0   # CPU export 진행률(0..1). 워커가 _exportProgressSig 로 갱신.
         self._exporting = False
         self._exif_fields = []      # [{"label","value"}, ...] 패널용
@@ -1018,7 +1045,11 @@ class Controller(QObject):
             self.captionChanged.emit()
 
             import numpy as np
-            jpeg = _read_embedded_jpeg(path, max_bytes=64 * 1024 * 1024)
+            jpeg = embedded_preview_jpeg(path)
+            if not jpeg:
+                # 임베드 프리뷰가 없는 RAW(일부 폰 DNG 등) → 캡션 입력 불가. 깨끗이 실패 처리
+                # (QBuffer.setData(None) 예외 대신 명시적으로, 무한 재시도 방지).
+                raise RuntimeError("no embedded preview for caption input")
             buf = QBuffer()
             buf.setData(jpeg)
             buf.open(QBuffer.OpenModeFlag.ReadOnly)
@@ -1064,7 +1095,7 @@ class Controller(QObject):
             if ok:
                 self._maybe_auto_caption()
 
-    # ---------- RAF별 편집 영속화: 폴더/.filmrawsteryedits/<파일명>.json (이미지당 사이드카) ----------
+    # ---------- RAW별 편집 영속화: 폴더/.filmrawsteryedits/<파일명>.json (이미지당 사이드카) ----------
     @staticmethod
     def _edits_dir(folder: str) -> Path:
         return Path(folder) / EDITS_DIR_NAME
@@ -1075,7 +1106,7 @@ class Controller(QObject):
 
     @staticmethod
     def _read_edits(path: str) -> dict:
-        """RAF 경로의 사이드카 편집 dict 를 읽음(없거나 오류면 빈 dict)."""
+        """RAW 경로의 사이드카 편집 dict 를 읽음(없거나 오류면 빈 dict)."""
         try:
             p = Path(path)
             _migrate_sidecars(str(p.parent))   # 구 .camraw* → 신 이름 1회 이동
@@ -1092,7 +1123,7 @@ class Controller(QObject):
 
     @staticmethod
     def _load_edited_names(folder: str) -> set:
-        """폴더의 .filmrawsteryedits/ 에 사이드카(<파일명>.json)가 있는 RAF 파일명 집합을 반환.
+        """폴더의 .filmrawsteryedits/ 에 사이드카(<파일명>.json)가 있는 RAW 파일명 집합을 반환.
         썸네일 '편집됨' 배지 표시용(없거나 오류면 빈 집합)."""
         try:
             d = Controller._edits_dir(folder)
@@ -1394,6 +1425,16 @@ class Controller(QObject):
 
     exportStatus = Property(str, _get_export_status, notify=exportStatusChanged)
 
+    def _set_load_error(self, s: str) -> None:
+        if s != self._load_error:
+            self._load_error = s
+            self.loadErrorChanged.emit()
+
+    def _get_load_error(self) -> str:
+        return self._load_error
+
+    loadError = Property(str, _get_load_error, notify=loadErrorChanged)
+
     @Slot(float)
     def _on_export_progress(self, frac: float) -> None:
         """워커 스레드의 render_full progress 콜백 → 메인 스레드에서 진행률 갱신."""
@@ -1591,6 +1632,7 @@ class Controller(QObject):
         if self._path and self._path != path:
             self.flushEdits.emit()
         self._path = path
+        self._set_load_error("")   # 새 로드 시작 → 이전 파일의 에러 안내 제거
         self._fresh_load = True   # 디코딩 완료(_on_render_ready) 시 editsReady 1회 발화 → 복원
         # 이 파일의 사이드카 편집을 1회 읽어 둠(QML editsForCurrent 가 반환).
         self._pending_edits = self._read_edits(path)
@@ -1644,7 +1686,7 @@ class Controller(QObject):
 
     # ---------- 좌측 File Explorer (폴더/파일 모델) ----------
     def _scan_folder(self, folder: str, force: bool = True) -> None:
-        """폴더를 스캔해 하위폴더 + RAF 파일 목록(이름순)을 fileList 로 갱신.
+        """폴더를 스캔해 하위폴더 + RAW 파일 목록(이름순)을 fileList 로 갱신.
 
         force=True: 탐색기 탐색(폴더 이동) — 항상 갱신.
         force=False: 자동 감시 재스캔 — 같은 폴더에서 목록이 그대로면 아무 것도 안 함
@@ -1658,11 +1700,11 @@ class Controller(QObject):
         # 점으로 시작하는 폴더(.filmrawsteryedits 등)는 탐색기에 노출하지 않음
         dirs = sorted((e for e in entries if e.is_dir() and not e.name.startswith(".")),
                       key=lambda e: e.name.lower())
-        rafs = sorted((e for e in entries
-                       if e.is_file() and e.suffix.lower() == ".raf"),
+        raws = sorted((e for e in entries
+                       if e.is_file() and e.suffix.lower() in RAW_EXTS),
                       key=lambda e: e.name.lower())
         items = [{"name": d.name, "path": str(d), "isDir": True} for d in dirs]
-        items += [{"name": f.name, "path": str(f), "isDir": False} for f in rafs]
+        items += [{"name": f.name, "path": str(f), "isDir": False} for f in raws]
         # 자동 재스캔(force=False)인데 목록이 동일하면 갱신 생략(.json 저장 등 무시)
         if not force and str(p) == self._folder and items == self._files:
             return
@@ -2357,22 +2399,40 @@ class Controller(QObject):
         threading.Thread(target=self._render_worker, args=args, daemon=True).start()
 
     def _render_worker(self, seq, path, lens_on) -> None:
+        err = ""
         try:
             res = load_proxy(path, lens_correct=lens_on)
         except Exception as exc:
-            print(f"[load] 실패: {exc}")
             res = None
-        self._renderReady.emit((seq, res))   # 메인 스레드로 큐잉
+            err = self._decode_error_message(exc)
+            print(f"[load] 실패: {type(exc).__name__}: {exc}")
+        self._renderReady.emit((seq, res, err))   # 메인 스레드로 큐잉
+
+    @staticmethod
+    def _decode_error_message(exc) -> str:
+        """디코드 예외 → 사용자 안내 문구. LibRaw 가 못 여는 포맷/기종은 '미지원'으로 구분."""
+        try:
+            import rawpy
+            if isinstance(exc, rawpy.LibRawFileUnsupportedError):
+                return "Unsupported RAW format or camera — this build's LibRaw can't decode it."
+            if isinstance(exc, getattr(rawpy, "LibRawIOError", ())):
+                return "Cannot read file (missing, unreadable, or truncated)."
+        except Exception:
+            pass
+        return "Cannot open this file (corrupt or unsupported RAW)."
 
     @Slot(object)
     def _on_render_ready(self, payload) -> None:
-        seq, res = payload
+        seq, res, err = payload
         if seq != self._render_seq:
             return                            # 더 최신 렌더 진행 중 -> 폐기(busy 유지)
         self._busy = False
         self.busyChanged.emit()
         if res is None:
+            # 디코드 실패(미지원/손상 RAW) — 크래시 없이 사용자에게 안내(이전 이미지는 유지).
+            self._set_load_error(err or "Cannot open this file (unsupported or corrupt RAW).")
             return
+        self._set_load_error("")
         img, as_shot, as_shot_tint, cam, ref, cam2srgb = res
         if self._kelvin is None:
             self._kelvin = as_shot          # as-shot 으로 디코딩됨 -> 현재값 동기화
@@ -2506,9 +2566,11 @@ def _load_heavy_modules() -> None:
     길어진다(특히 콜드 스타트). splash 가 보인 뒤로 미뤄 체감 시작 시간을 줄인다.
     여기서 module-global 로 바인딩하므로 이후 Controller/provider 들이 그대로 참조한다."""
     global date_stamp, make_luts, read_shooting_info, read_orientation, _read_embedded_jpeg
+    global embedded_preview_jpeg
     global wb, atlas_qimage, load_cube, PROXY_HEADROOM, load_full, load_proxy
     import date_stamp, make_luts, wb                                  # noqa: E401
-    from exif_info import read_shooting_info, read_orientation, _read_embedded_jpeg
+    from exif_info import (read_shooting_info, read_orientation, _read_embedded_jpeg,
+                           embedded_preview_jpeg)
     from lut import atlas_qimage, load_cube
     from raw_loader import PROXY_HEADROOM, load_full, load_proxy
 

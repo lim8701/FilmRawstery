@@ -1,4 +1,4 @@
-"""RAF -> 화면 표시용 프록시 QImage 디코더.
+"""RAW -> 화면 표시용 프록시 QImage 디코더 (후지 RAF 및 타 제조사 RAW 공용, rawpy/LibRaw).
 
 편집은 축소된 프록시로 하고(인터랙티브용), 풀해상도는 나중에 export 단계에서만
 처리한다. 디코딩엔 고정 TREF(daylight) WB 만 베이크하고, 사용자 절대 색온도(Kelvin)는
@@ -23,7 +23,7 @@ LUMA = np.array([0.299, 0.587, 0.114], dtype=np.float32)
 
 
 def _embedded_jpeg_lum(raw):
-    """RAF 임베드 JPEG(카메라 현상본)의 휘도(0..1) 1D 배열. 실패 시 None.
+    """RAW 임베드 JPEG(카메라 현상본)의 휘도(0..1) 1D 배열. 실패 시 None.
     이미지별 자동 노출의 '목표 밝기'(카메라의 샷별 측광/톤 의도)를 통계로 쓴다."""
     try:
         th = raw.extract_thumb()
@@ -74,7 +74,7 @@ def _lin2srgb_lut():
 
 
 def _decode_native(path: str):
-    """RAF -> 카메라네이티브 16bit(TREF 베이크, 매트릭스 미적용) + 메타. load_proxy/load_full 공용.
+    """RAW -> 카메라네이티브 16bit(TREF 베이크, 매트릭스 미적용) + 메타. load_proxy/load_full 공용.
 
     WB 는 디코딩에 베이크하지 않는다(셰이더가 카메라공간 상대게인으로 실시간 적용). TREF(daylight)만
     베이크. X-Trans 는 half_size 격자 회피를 위해 full + LINEAR 디모자이크.
@@ -114,7 +114,7 @@ def _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, lens_profile):
 
 
 def load_proxy(path: str, max_edge: int = 2560, lens_correct: bool = True):
-    """RAF 를 디코딩해 (QImage(8bit), as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9)) 반환.
+    """RAW 를 디코딩해 (QImage(8bit), as_shot, as_shot_tint, cam_xyz(9), ref(3), cam2srgb(9)) 반환.
 
     프록시는 카메라 네이티브 RGB(매트릭스 미적용)를 TREF WB 베이크 + 헤드룸 감마 인코딩(8bit).
     셰이더가 [선형화→WB 상대게인→cam2srgb 매트릭스→filmic] 로 변환한다.
