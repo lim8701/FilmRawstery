@@ -2499,6 +2499,10 @@ ApplicationWindow {
                             id: stampOverlay
                             source: controller.stampUrl
                             cache: false; smooth: true; asynchronous: false
+                            // 스프라이트 알파는 render_sprite 에서 A2/s 로 구워져 있어(합성 때 ×s 가정),
+                            // export(stamp_export)는 ×STAMP_STRENGTH 로 상쇄한다. 프리뷰도 동일하게
+                            // opacity=STAMP_STRENGTH 를 곱해야 밝기가 맞는다(없으면 ~8.7% 더 진함).
+                            opacity: 0.92     // = date_stamp.STAMP_STRENGTH
                             visible: win.dateStamp && controller.stampText !== ""
                                      && !viewport.cropEdit && !win.compareOn
                             property real shortEdge: Math.min(cropClip.width, cropClip.height)

@@ -3,8 +3,11 @@
 날짜를 사진 위에 얹는 게 아니라, 데이트백 LED 가 사진과 '같은 필름 에멀전'을 빛으로
 노광하는 물리 과정을 재현한다: 가산(screen) 합성(밝은 곳 씻김/어두운 곳 선명), 사진
 필름 그레인 연동, 강한 빛의 할레이션(핫코어→앰버→적주황 번짐), 센서 프레임 기준 코너
-배치(세로 사진 회전). 프리뷰(shaders/stamp.frag, 배경 읽는 screen)와 export(stamp_export)
-가 동일 수식으로 정합. 위치/크기는 최종 프레임 짧은 변 대비 비율(크롭 무관·크리스프).
+배치(세로 사진 회전). Export(stamp_export)는 screen+source-over 혼합(SCREEN_MIX)으로 합성.
+⚠️프리뷰는 QML Image source-over 오버레이(opacity=STAMP_STRENGTH) — 어두운 배경에선 export
+와 사실상 같고, 밝은 배경에선 screen 씻김이 없어 '의도적으로' 조금 다르다(프리뷰 단순성 우선).
+shaders/stamp.frag(배경을 읽어 프리뷰도 screen 으로 정합시키는 경로)는 예약해 두었으나 현재
+미배선(QML 은 평범한 오버레이 사용). 위치/크기는 최종 프레임 짧은 변 대비 비율(크롭 무관).
 설계·물리 매핑 상세는 docs/date_stamp.md 참조.
 
 폰트: DSEG 7/14-세그 Classic(Regular/Bold, 정체/이탤릭) + Doto 도트매트릭스 (모두 SIL OFL).

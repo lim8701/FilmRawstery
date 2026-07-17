@@ -1,6 +1,8 @@
 #version 440
 
 // 날짜 스탬프 오버레이를 배경(파이프라인 결과)에 'screen'(가산)으로 합성한다.
+// ⚠️예약 경로 — 현재 QML 은 stampOverlay(평범한 source-over Image)를 쓰고 이 셰이더는 미배선.
+//   프리뷰를 export(screen+source-over 혼합)와 정합시키려는 향후 배선용으로 보존한다.
 // LED 빛이 필름을 노광하듯 배경에 빛을 더함 — 어두운 곳엔 선명, 밝은 하이라이트에선
 // 흰빛으로 씻겨 사라짐(export date_stamp.stamp_export 의 screen 합성과 동일 수식).
 //   stampTex : 스탬프 스프라이트(image://stamp, premultiplied RGBA — Qt 기본)
