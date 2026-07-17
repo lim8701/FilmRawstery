@@ -660,6 +660,7 @@ class Controller(QObject):
                                      #  ⚠️seq 없음 — 다운로드는 모델 전역(이미지 무관), finally 로 항상 해제
     _aiNrInitSig = Signal(bool)      # (내부) ORT 세션 초기화(GPU 점유) 오버레이 ON/OFF — 세션 전역
     _updateSig = Signal(object)      # (내부) 업데이트 확인 워커 -> 메인 (새 버전 태그, 릴리스 URL)
+    _folderScanSig = Signal(object)  # (내부) 폴더 스캔 워커 -> 메인 (seq, folder, items, likes, edited, force)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
@@ -791,6 +792,9 @@ class Controller(QObject):
         self._aiNrDlSig.connect(self._on_ai_nr_dl)
         self._aiNrInitSig.connect(self._on_ai_nr_init)
         self._updateSig.connect(self._on_update_found)
+        self._folderScanSig.connect(self._on_folder_scanned)
+        self._scan_seq = 0            # 폴더 스캔 순번(빠른 탐색 시 오래된 결과 폐기)
+        self._skip_rescan_once = False  # 우리 자신의 사이드카 저장으로 인한 watcher 재스캔 1회 무시
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
         self._watcher = QFileSystemWatcher(self)
         self._watcher.directoryChanged.connect(self._on_dir_changed)
@@ -812,6 +816,9 @@ class Controller(QObject):
         self._rescan_timer.start()            # 디바운스(재시작)
 
     def _do_auto_rescan(self) -> None:
+        if self._skip_rescan_once:
+            self._skip_rescan_once = False   # 우리 좋아요/사이드카 저장이 유발한 재스캔 1회 무시(불필요 스핀업 방지)
+            return
         if self._folder:
             self._scan_folder(self._folder, force=False)
 
@@ -868,6 +875,8 @@ class Controller(QObject):
             s = self._load_likes(folder)          # 외부 폴더 = 별도 로드(캐시 불변)
         s.discard(name) if name in s else s.add(name)
         self._save_likes(folder, s)
+        if folder == self._folder:
+            self._skip_rescan_once = True   # 이 저장이 watcher 를 깨워 폴더 재스캔(드라이브 스핀업)하는 것 방지
         self._like_rev += 1
         self.likesChanged.emit()
 
@@ -1686,43 +1695,62 @@ class Controller(QObject):
 
     # ---------- 좌측 File Explorer (폴더/파일 모델) ----------
     def _scan_folder(self, folder: str, force: bool = True) -> None:
-        """폴더를 스캔해 하위폴더 + RAW 파일 목록(이름순)을 fileList 로 갱신.
+        """폴더 스캔을 백그라운드 스레드에서 수행 → 결과만 메인(_on_folder_scanned)에 적용.
+        디렉터리 나열/타입 확인·사이드카 읽기가 자는 외장 HDD 스핀업 대기로 GUI 를 멈추지
+        않게(과거: iterdir+stat 를 메인 스레드에서 → 스핀업 동안 freeze). seq 로 오래된 스캔 폐기.
 
         force=True: 탐색기 탐색(폴더 이동) — 항상 갱신.
-        force=False: 자동 감시 재스캔 — 같은 폴더에서 목록이 그대로면 아무 것도 안 함
-                     (우리 자신의 .filmrawsterylikes.json 저장이나 무관한 변화로 깜빡이지 않음).
+        force=False: 자동 감시 재스캔 — 목록이 그대로면 UI 갱신 생략(.json 저장 등으로 안 깜빡임).
         """
-        p = Path(folder)
+        self._scan_seq += 1
+        threading.Thread(target=self._scan_worker,
+                         args=(self._scan_seq, str(folder), force), daemon=True).start()
+
+    def _scan_worker(self, seq: int, folder: str, force: bool) -> None:
+        # ⚠️파일 I/O 는 여기(워커)서만 — 자는 외장 드라이브 스핀업 대기가 메인 스레드를 막지 않게.
+        # os.scandir: 디렉터리 1회 나열로 dir/file 타입을 캐시(항목당 stat 회피, Windows).
+        dirs, raws = [], []
         try:
-            entries = list(p.iterdir())
+            with os.scandir(folder) as it:
+                for e in it:
+                    try:
+                        if e.is_dir():
+                            if not e.name.startswith("."):   # .filmrawsteryedits 등 숨김
+                                dirs.append(e.name)
+                        elif e.is_file() and os.path.splitext(e.name)[1].lower() in RAW_EXTS:
+                            raws.append(e.name)
+                    except OSError:
+                        pass
         except Exception:
-            entries = []
-        # 점으로 시작하는 폴더(.filmrawsteryedits 등)는 탐색기에 노출하지 않음
-        dirs = sorted((e for e in entries if e.is_dir() and not e.name.startswith(".")),
-                      key=lambda e: e.name.lower())
-        raws = sorted((e for e in entries
-                       if e.is_file() and e.suffix.lower() in RAW_EXTS),
-                      key=lambda e: e.name.lower())
-        items = [{"name": d.name, "path": str(d), "isDir": True} for d in dirs]
-        items += [{"name": f.name, "path": str(f), "isDir": False} for f in raws]
-        # 자동 재스캔(force=False)인데 목록이 동일하면 갱신 생략(.json 저장 등 무시)
-        if not force and str(p) == self._folder and items == self._files:
-            return
-        self._folder = str(p)
+            pass
+        dirs.sort(key=str.lower)
+        raws.sort(key=str.lower)
+        items = [{"name": n, "path": os.path.join(folder, n), "isDir": True} for n in dirs]
+        items += [{"name": n, "path": os.path.join(folder, n), "isDir": False} for n in raws]
+        likes = self._load_likes(folder)          # 사이드카 읽기(off-thread)
+        edited = self._load_edited_names(folder)   # 편집 배지용(off-thread)
+        self._folderScanSig.emit((seq, folder, items, likes, edited, force))
+
+    @Slot(object)
+    def _on_folder_scanned(self, payload) -> None:
+        seq, folder, items, likes, edited, force = payload
+        if seq != self._scan_seq:
+            return                               # 더 최신 스캔 진행 중 → 폐기
+        if not force and folder == self._folder and items == self._files:
+            return                               # 변화 없음(우리 .json 저장 등) → UI 갱신 생략
+        self._folder = folder
         self._files = items
-        self._update_watcher(self._folder)   # 현재 폴더로 감시 경로 교체
-        # 폴더 진입 시 좋아요 로컬 파일 체크 -> 썸네일 하트 반영
-        self._likes = self._load_likes(self._folder)
-        self._likes_folder = self._folder
+        self._update_watcher(folder)             # QFileSystemWatcher — 메인 스레드에서만
+        self._likes = likes                      # 폴더 진입 시 좋아요 → 썸네일 하트
+        self._likes_folder = folder
         self._like_rev += 1
-        # 편집 사이드카(.filmrawsteryedits/<name>.json) 유무 -> 썸네일 편집 배지 반영
-        self._edited = self._load_edited_names(self._folder)
-        self._edited_folder = self._folder
+        self._edited = edited                    # 편집 사이드카 유무 → 썸네일 배지
+        self._edited_folder = folder
         self._edit_rev += 1
         self.folderChanged.emit()
         self.likesChanged.emit()
         self.editsChanged.emit()
-        self._settings.setValue("explorer/lastFolder", self._folder)   # 재시작 복원용
+        self._settings.setValue("explorer/lastFolder", folder)   # 재시작 복원용   # 재시작 복원용
 
     @Slot(QUrl)
     def setFolder(self, url: QUrl) -> None:  # noqa: N802 (QML 슬롯, FolderDialog)
