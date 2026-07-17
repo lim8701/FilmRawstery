@@ -73,23 +73,39 @@ def _lin2srgb_lut():
     return _LIN2SRGB
 
 
-def _decode_native(path: str):
+def _export_demosaic(raw):
+    """Export(풀해상도) 디모자이크 선택: X-Trans(raw_pattern 6x6)=LINEAR(프록시와 정합 유지),
+    그 외 Bayer=AHD(고화질 — 쌍선형 대비 색모아레/지퍼링/무름 개선). 프록시는 항상 LINEAR.
+    ⚠️정합 트레이드오프: Bayer 는 프록시(LINEAR 축소)와 export(AHD)의 미세 디테일이 살짝 달라짐
+      (프록시가 2560 축소라 체감 작음). Fuji(X-Trans)는 양쪽 LINEAR 라 무변경.
+      → 화질/정합 재검토 시 docs/raw_demosaic.md 참고(추후 조정 후보)."""
+    # 명확한 2x2 Bayer 만 AHD. X-Trans(6x6)·None(Foveon/모노 등 CFA 없음)·이형은 LINEAR(안전 폴백).
+    rp = getattr(raw, "raw_pattern", None)
+    is_bayer = rp is not None and getattr(rp, "shape", None) == (2, 2)
+    return rawpy.DemosaicAlgorithm.AHD if is_bayer else rawpy.DemosaicAlgorithm.LINEAR
+
+
+def _decode_native(path: str, bayer_ahd: bool = False):
     """RAW -> 카메라네이티브 16bit(TREF 베이크, 매트릭스 미적용) + 메타. load_proxy/load_full 공용.
 
     WB 는 디코딩에 베이크하지 않는다(셰이더가 카메라공간 상대게인으로 실시간 적용). TREF(daylight)만
     베이크. X-Trans 는 half_size 격자 회피를 위해 full + LINEAR 디모자이크.
+    bayer_ahd=True(export 경로): Bayer 는 AHD, X-Trans 는 LINEAR(_export_demosaic). False(프록시): 항상 LINEAR.
     반환: (rgb16, cam_xyz(3x3), ref(3), as_shot, as_shot_tint, target_median)
     """
     with rawpy.imread(path) as raw:
         cam_xyz = np.array(raw.rgb_xyz_matrix)[:3, :3]
-        ref = np.array(raw.daylight_whitebalance)[:3]
-        ref = ref / ref[1]
+        ref = np.array(raw.daylight_whitebalance, dtype=float)[:3]
+        # daylight_whitebalance 가 비어있음/0/비유한(제네릭·폰·드론 DNG 등)이면 ref/ref[1] 가 NaN →
+        # user_wb NaN → 블랙 프레임. 중성 [1,1,1] 로 폴백(최소한 정상 밝기로 현상). estimate_wb 도 방어.
+        ref = ref / ref[1] if (ref[1] > 0 and np.all(np.isfinite(ref))) else np.ones(3)
         as_shot, as_shot_tint = estimate_wb(cam_xyz, ref, raw.camera_whitebalance)
         target_median = _embedded_jpeg_median(raw)   # 이미지별 자동 노출 목표(중앙값, 고휘도 강건)
         rgb16 = raw.postprocess(
             user_wb=baked_wb(cam_xyz, ref),     # TREF daylight 베이크(고정)
             output_color=rawpy.ColorSpace.raw,  # 카메라 네이티브(매트릭스 미적용)
-            demosaic_algorithm=rawpy.DemosaicAlgorithm.LINEAR,
+            demosaic_algorithm=(_export_demosaic(raw) if bayer_ahd
+                                else rawpy.DemosaicAlgorithm.LINEAR),
             output_bps=16,                      # 게인/감마를 numpy 로 적용
             no_auto_bright=True,                # 자동 밝기 보정 OFF(상대노출 보존)
             gamma=(2.4, 12.92),                 # 감마 인코딩
@@ -151,7 +167,7 @@ def load_full(path: str, lens_correct: bool = True):
 
     프록시(8bit, 프리뷰용)와 동일 인코딩 규약(셰이더 src 입력)이되 다운스케일 없음 + 16bit.
     """
-    rgb16, cam_xyz, ref, as_shot, as_shot_tint, target_median = _decode_native(path)
+    rgb16, cam_xyz, ref, as_shot, as_shot_tint, target_median = _decode_native(path, bayer_ahd=True)
     prof = lens.load_profile(path) if lens_correct else None
     disp = _encode_headroom(rgb16, cam_xyz, ref, as_shot, target_median, prof)
     code = (np.clip(disp, 0.0, 1.0) * 65535.0 + 0.5).astype(np.uint16)

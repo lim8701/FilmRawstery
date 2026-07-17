@@ -178,6 +178,8 @@ def estimate_wb(cam_xyz, daylight_ref, camera_wb):
     tint: + 마젠타(녹↓) / - 그린(녹↑), compute_user_wb 와 동일 정의.
     """
     cw = np.asarray(camera_wb, float)[:3]
+    if not (cw[1] > 0 and cw[2] > 0 and np.all(np.isfinite(cw))):
+        return TREF, 0.0                   # 카메라 WB 없음/비정상(제네릭 DNG 등) → 중성(daylight) 폴백
     cw = cw / cw[1]                         # green 정규화 -> (R/G, 1, B/G)
     target_rb = cw[0] / cw[2]              # R:B 비 (= 따뜻-차가움 축)
     Ts, ms = _wb_table(cam_xyz, daylight_ref)   # T별 green-정규화 user_wb (cam 고정이라 캐시)
