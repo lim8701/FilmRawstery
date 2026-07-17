@@ -4169,8 +4169,14 @@ ApplicationWindow {
                     property real defaultValue: 0.0
                     property real _lastPressMs: 0
                     property bool _pendingReset: false
-                    // 스탬프 그레인은 사진 필름 그레인에 연동 → 값 변경을 컨트롤러로 push(프리뷰 재렌더).
-                    onMoved: controller.setStampGrainSrc(value)
+                    // 스탬프 그레인은 사진 필름 그레인에 연동. 스탬프 스프라이트 재렌더는 CPU(numpy
+                    // gaussian/zoom)라 드래그 delta 마다 동기 실행하면 잰크 → 디바운스(멈추면 1회).
+                    // 장면 그레인 프리뷰(GPU, grainAmt 바인딩)는 영향 없이 라이브 유지.
+                    Timer {
+                        id: stampGrainTimer; interval: 150
+                        onTriggered: controller.setStampGrainSrc(grainSlider.value)
+                    }
+                    onMoved: stampGrainTimer.restart()
                     onPressedChanged: {
                         if (pressed) _pendingReset = win.isDblPress(grainSlider)
                         else if (_pendingReset) { value = defaultValue; controller.setStampGrainSrc(defaultValue); _pendingReset = false }
