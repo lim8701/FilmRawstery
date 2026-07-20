@@ -733,7 +733,27 @@ ApplicationWindow {
 
     // 탐색기 "좋아요만 보기" 필터 (L 키로 토글)
     property bool showLikedOnly: false
-    Shortcut { sequence: "L"; enabled: !win._typing; onActivated: win.showLikedOnly = !win.showLikedOnly }
+    property string _revealAfterUnfilter: ""   // 좋아요만 보기 해제 시 스크롤 복원할 선택 경로
+    // 좋아요만 보기 토글. 해제(→일반 모드) 시 현재 선택 항목 경로를 목록 재평가 전에 확보해 두고,
+    // onShowLikedOnlyChanged 에서 갱신된 목록 기준으로 그 항목까지 스크롤한다.
+    function toggleLikedOnly() {
+        if (win.showLikedOnly) {   // 켜짐 → 꺼짐: 선택 항목(하이라이트 우선, 없으면 열린 이미지) 확보
+            var sel = ""
+            if (fileListView.currentIndex >= 0 && win.explorerFiles[fileListView.currentIndex])
+                sel = win.explorerFiles[fileListView.currentIndex].path
+            if (!sel) sel = controller.imagePath
+            win._revealAfterUnfilter = sel
+        }
+        win.showLikedOnly = !win.showLikedOnly
+    }
+    onShowLikedOnlyChanged: {
+        if (win.showLikedOnly) { win._revealAfterUnfilter = ""; return }
+        var sel = win._revealAfterUnfilter
+        win._revealAfterUnfilter = ""
+        if (sel)
+            Qt.callLater(function() { win.selectInExplorer(sel) })   // 목록 바인딩 갱신 뒤 스크롤
+    }
+    Shortcut { sequence: "L"; enabled: !win._typing; onActivated: win.toggleLikedOnly() }
     // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAW 만.
     //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
     property var explorerFiles: {
@@ -1407,7 +1427,7 @@ ApplicationWindow {
                         MouseArea {
                             anchors.fill: parent
                             cursorShape: Qt.PointingHandCursor
-                            onClicked: win.showLikedOnly = !win.showLikedOnly
+                            onClicked: win.toggleLikedOnly()
                         }
                     }
                     // 배치 export 선택(체크박스) 모드 토글 — 켜면 파일 클릭=체크, 하단에 Export 바.
