@@ -1154,7 +1154,7 @@ class Controller(QObject):
         """현재 캡션 문장의 주요 단어로 만든 해시태그(표시용). 캡션의 순수 파생물이라
         별도 상태/저장 없이 매번 계산 — captionChanged 에 묶여 자동 갱신."""
         import hashtags
-        return hashtags.from_caption(self._get_caption())
+        return hashtags.from_caption(self._get_caption(), 15)   # 표시 상위 15개(검색은 무제한)
 
     def _get_caption_busy(self) -> bool:
         return self._caption_busy
