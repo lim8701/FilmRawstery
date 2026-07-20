@@ -1533,11 +1533,20 @@ ApplicationWindow {
                     Layout.preferredHeight: 22
                     spacing: 6
                     visible: controller.currentFolder !== ""
+                    // 인덱싱 대상: 항상 폴더 전체(검색/필터로 좁히지 않음 — 일관 동작).
+                    //   ⚠️검색 필터의 보이는 목록은 '이미 인덱싱된 매칭 파일'뿐이라 그걸 대상으로
+                    //   삼으면 전부 스킵되어 아무것도 안 됨. 그래서 controller.fileList(전체) 사용.
+                    // 단, show liked only 면 좋아요된 사진을 먼저 처리(우선순위). 재개 필터가 이미 된 건 스킵.
                     function targetPaths() {
-                        var out = []
-                        for (var i = 0; i < win.explorerFiles.length; i++)
-                            if (!win.explorerFiles[i].isDir) out.push(win.explorerFiles[i].path)
-                        return out
+                        var files = controller.fileList
+                        var liked = [], rest = []
+                        for (var i = 0; i < files.length; i++) {
+                            var it = files[i]
+                            if (it.isDir) continue
+                            if (win.showLikedOnly && controller.isLiked(it.path)) liked.push(it.path)
+                            else rest.push(it.path)
+                        }
+                        return liked.concat(rest)   // 좋아요 우선(showLikedOnly 시) + 폴더 전체
                     }
                     // 진행/커버리지 바 (busy=진행률, idle=커버리지 비율)
                     Rectangle {
