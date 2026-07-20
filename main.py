@@ -912,17 +912,18 @@ class Controller(QObject):
 
     @Slot(str, result=bool)
     def matchesSearch(self, path: str) -> bool:  # noqa: N802 (QML 슬롯)
-        """파일의 저장 캡션 단어에 검색 토큰이 (접두)일치하면 True. 빈 검색=전체 True,
-        미인덱싱(캡션 없음)=False. 캡션의 모든 상세도 텍스트를 합쳐 대조."""
+        """파일의 캡션 **내용어(해시태그 기준)** 에 검색 토큰이 (접두)일치하면 True. 빈 검색=전체
+        True, 미인덱싱(캡션 없음)=False. 모든 상세도 텍스트를 합쳐 hashtags.keywords 로 추출
+        (불용어/숫자/3글자미만 제외 — 표시 해시태그와 동일 규칙). 저장 원문 그대로라 재인덱싱 불요."""
         if not self._search_tokens:
             return True
-        import re
+        import hashtags
         with self._caption_lock:
             self._ensure_caption_cache(self._folder)   # 탐색기 폴더 기준(경로 구분자 파싱 회피)
             entry = self._captions.get(Path(path).name)
         if not entry:
             return False
-        words = set(re.findall(r"[a-z0-9]+", " ".join(str(v) for v in entry.values()).lower()))
+        words = set(hashtags.keywords(" ".join(str(v) for v in entry.values())))
         return all(any(w.startswith(tok) for w in words) for tok in self._search_tokens)
 
     def _get_indexed_count(self) -> int:

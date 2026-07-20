@@ -22,15 +22,22 @@ _STOP = {
 }
 
 
-def from_caption(text: str, max_tags: int = 10) -> str:
-    """영어 캡션 문장 -> '#word #word ...' 표시용 문자열(빈/무효 입력이면 '')."""
+def keywords(text: str, max_tags: int = 0) -> list:
+    """영어 캡션 문장 -> 내용어 키워드 리스트(소문자, 불용어/3글자미만/숫자/중복 제거).
+    표시용은 max_tags=10 으로 상위 N개 제한, 검색용은 0(무제한). 해시태그·검색이 이 단어
+    선택 규칙을 공유한다(검색 대상 = 해시태그 기준의 내용어)."""
     if not text:
-        return ""
+        return []
     seen = []
     for w in re.findall(r"[a-z]+", text.lower()):
         if len(w) < 3 or w in _STOP or w in seen:
             continue
         seen.append(w)
-        if len(seen) >= max_tags:
+        if max_tags and len(seen) >= max_tags:
             break
-    return " ".join("#" + w for w in seen)
+    return seen
+
+
+def from_caption(text: str, max_tags: int = 10) -> str:
+    """영어 캡션 문장 -> '#word #word ...' 표시용 문자열(빈/무효 입력이면 '')."""
+    return " ".join("#" + w for w in keywords(text, max_tags))
