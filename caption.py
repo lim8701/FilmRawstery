@@ -206,6 +206,33 @@ class _Bpe:
         return data.decode("utf-8", errors="replace")
 
 
+_provider_label = None   # 세션 생성 후 실제 EP: "GPU" | "CPU"
+
+
+def _providers(ort):
+    """GPU EP 우선(DirectML 최속 디바이스/CoreML) → CPU 폴백. ai_denoise 와 동일 방침.
+    DirectML 실측(Florence-2, RTX 3050 Ti): 비전 4.8×·디코더 2.2× 가속(SCUNet 케이스 아님)."""
+    avail = set(ort.get_available_providers())
+    if "DmlExecutionProvider" in avail:
+        dev = None
+        try:                                  # ai_denoise 가 실측·캐시한 최속 device 재사용(머신 공용)
+            import app_dirs
+            with open(app_dirs.model_path("ai_denoise_device.json"), encoding="utf-8") as f:
+                dev = int(json.load(f)["device_id"])
+        except Exception:
+            pass
+        dml = "DmlExecutionProvider" if dev is None else ("DmlExecutionProvider", {"device_id": dev})
+        return [dml, "CPUExecutionProvider"]
+    if "CoreMLExecutionProvider" in avail:    # macOS 표준 휠(속도는 기기별 — Mac 실측 필요)
+        return ["CoreMLExecutionProvider", "CPUExecutionProvider"]
+    return ["CPUExecutionProvider"]
+
+
+def provider_label() -> str:
+    """실제(세션 생성 후) 실행 장치 라벨: 'GPU' | 'CPU' (생성 전엔 'CPU' 가정)."""
+    return _provider_label or "CPU"
+
+
 def _load_state():
     """세션/토크나이저 lazy 로드(1회, ~3s). 이후 호출은 캐시 재사용.
     파일이 사용자 디렉터리에 없으면(legacy-only 포함) ensure_model 로 먼저 확보 —
@@ -218,7 +245,8 @@ def _load_state():
         import onnxruntime as ort
         opts = ort.SessionOptions()
         opts.log_severity_level = 3
-        prov = ["CPUExecutionProvider"]
+        prov = _providers(ort)   # GPU EP(DirectML/CoreML) 우선 → CPU 폴백. 세션들이 CPU 를
+        #                          목록에 포함하므로 GPU 초기화 실패 시 자동 폴백(별도 처리 불요).
 
         def sess(name):
             return ort.InferenceSession(_path(name), opts, providers=prov)
@@ -232,6 +260,10 @@ def _load_state():
         bpe = _Bpe(_path("florence2_vocab.json"), _path("florence2_merges.txt"))
         with open(_path("florence2_generation_config.json"), encoding="utf-8") as f:
             gen = json.load(f)
+        global _provider_label
+        _ep = sessions["vis"].get_providers()[0]
+        _provider_label = "GPU" if _ep in ("DmlExecutionProvider", "CoreMLExecutionProvider") else "CPU"
+        print(f"[caption] EP={_ep}")
         _state = (sessions, bpe, gen)
         return _state
 

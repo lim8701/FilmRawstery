@@ -758,14 +758,18 @@ ApplicationWindow {
     //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
     property var explorerFiles: {
         controller.likeRevision               // 좋아요 토글 시 재평가용 의존
+        controller.searchQuery                // 캡션 검색어 변경 시 재평가용 의존
         var files = controller.fileList        // folderChanged 시 재평가 + 1회만 읽기
-        if (!win.showLikedOnly)
+        var q = controller.searchQuery
+        if (!win.showLikedOnly && q === "")
             return files
         var out = []
         for (var i = 0; i < files.length; i++) {
             var it = files[i]
-            if (it.isDir || controller.isLiked(it.path))   // 폴더는 항상 표시
-                out.push(it)
+            if (it.isDir) { out.push(it); continue }        // 폴더는 항상 표시(탐색용)
+            if (win.showLikedOnly && !controller.isLiked(it.path)) continue
+            if (q !== "" && !controller.matchesSearch(it.path)) continue
+            out.push(it)
         }
         return out
     }
@@ -1461,6 +1465,35 @@ ApplicationWindow {
                 }
 
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#444" }
+
+                // 캡션 검색 — 저장된 캡션/태그 단어로 폴더 필터(인덱싱된 사진만 검색됨).
+                // TextInput(코어) + Rectangle: 네이티브 스타일에서 background 커스텀 경고 회피.
+                Rectangle {
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 28
+                    visible: controller.currentFolder !== ""
+                    radius: 5; color: "#232323"
+                    border.color: searchInput.activeFocus ? "#8ab4f8" : "#555555"
+                    border.width: 1
+                    TextInput {
+                        id: searchInput
+                        anchors.fill: parent
+                        anchors.leftMargin: 8; anchors.rightMargin: 8
+                        verticalAlignment: TextInput.AlignVCenter
+                        color: "#e6e6e6"; font.pixelSize: 12
+                        clip: true; selectByMouse: true
+                        onTextChanged: searchDebounce.restart()
+                        onActiveFocusChanged: win._typing = activeFocus   // 타이핑 중 단축키(L/B/C) 충돌 방지
+                        Keys.onEscapePressed: { text = ""; controller.setSearchQuery("") }
+                        Timer { id: searchDebounce; interval: 180; onTriggered: controller.setSearchQuery(searchInput.text) }
+                        Text {   // placeholder
+                            anchors.verticalCenter: parent.verticalCenter
+                            visible: searchInput.text === "" && !searchInput.activeFocus
+                            text: "Search captions (" + controller.indexedCount + " indexed)"
+                            color: "#777"; font.pixelSize: 12
+                        }
+                    }
+                }
 
                 // 파일/폴더 리스트 (ListView = 화면에 보이는 항목만 썸네일 요청 → 지연 로딩)
                 ListView {

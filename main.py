@@ -646,6 +646,7 @@ class Controller(QObject):
     nrChanged = Signal()         # 휘도 NR 베이스 텍스처/준비 상태 갱신 알림
     aiNrChanged = Signal()       # AI 디노이즈(NAFNet) 사용 여부/상태 문구 갱신 알림
     captionChanged = Signal()    # 캡션 텍스트/생성 상태 갱신 알림(Florence-2)
+    searchChanged = Signal()     # 탐색기 캡션 검색어 변경 알림(explorerFiles 재평가)
     updateChanged = Signal()     # 새 버전 발견 알림(updateVersion/updateUrl 갱신)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
@@ -761,6 +762,8 @@ class Controller(QObject):
         # 캡션(Florence-2): 폴더당 .filmrawsterycaptions.json {파일명: {상세도: 문장}}
         self._captions = {}
         self._captions_folder = ""
+        self._search = ""            # 탐색기 캡션 검색어(소문자)
+        self._search_tokens = []     # 토큰화된 검색어(접두 일치용)
         self._caption_lock = threading.Lock()   # 워커(생성)↔메인(표시/편집) 동시 접근 보호
         self._caption_busy = False
         self._caption_status = ""
@@ -879,6 +882,49 @@ class Controller(QObject):
             self._skip_rescan_once = True   # 이 저장이 watcher 를 깨워 폴더 재스캔(드라이브 스핀업)하는 것 방지
         self._like_rev += 1
         self.likesChanged.emit()
+
+    # ---------- 캡션 기반 폴더 검색 ----------
+    # 저장된 캡션(.filmrawsterycaptions.json) 텍스트를 토큰화해 탐색기 필터(explorerFiles)에서
+    # 대조. 인덱싱된(캡션 저장된) 파일만 검색 대상 — 미인덱싱은 on-demand/배치로 채워짐.
+    @Slot(str)
+    def setSearchQuery(self, q: str) -> None:  # noqa: N802 (QML 슬롯)
+        import re
+        q = (q or "").strip().lower()
+        toks = [t for t in re.split(r"[^a-z0-9]+", q) if t]
+        if q == self._search and toks == self._search_tokens:
+            return
+        self._search = q
+        self._search_tokens = toks
+        self.searchChanged.emit()
+
+    def _get_search_query(self) -> str:
+        return self._search
+
+    searchQuery = Property(str, _get_search_query, notify=searchChanged)
+
+    @Slot(str, result=bool)
+    def matchesSearch(self, path: str) -> bool:  # noqa: N802 (QML 슬롯)
+        """파일의 저장 캡션 단어에 검색 토큰이 (접두)일치하면 True. 빈 검색=전체 True,
+        미인덱싱(캡션 없음)=False. 캡션의 모든 상세도 텍스트를 합쳐 대조."""
+        if not self._search_tokens:
+            return True
+        import re
+        with self._caption_lock:
+            self._ensure_caption_cache(self._folder)   # 탐색기 폴더 기준(경로 구분자 파싱 회피)
+            entry = self._captions.get(Path(path).name)
+        if not entry:
+            return False
+        words = set(re.findall(r"[a-z0-9]+", " ".join(str(v) for v in entry.values()).lower()))
+        return all(any(w.startswith(tok) for w in words) for tok in self._search_tokens)
+
+    def _get_indexed_count(self) -> int:
+        """현재 탐색기 폴더에서 캡션(=인덱스)이 저장된 파일 수 — 검색 커버리지 상태 표시용."""
+        with self._caption_lock:
+            self._ensure_caption_cache(self._folder)
+            caps = self._captions
+        return sum(1 for f in self._files if not f.get("isDir") and caps.get(f.get("name")))
+
+    indexedCount = Property(int, _get_indexed_count, notify=captionChanged)
 
     # ---------- 캡션(Florence-2) 영속화: 폴더당 .filmrawsterycaptions.json ----------
     # 좋아요와 동일 패턴({파일명: {상세도키: 문장}}, 변경 즉시 저장=크래시 안전). 생성은
