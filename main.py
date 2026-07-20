@@ -647,6 +647,7 @@ class Controller(QObject):
     aiNrChanged = Signal()       # AI 디노이즈(NAFNet) 사용 여부/상태 문구 갱신 알림
     captionChanged = Signal()    # 캡션 텍스트/생성 상태 갱신 알림(Florence-2)
     searchChanged = Signal()     # 탐색기 캡션 검색어 변경 알림(explorerFiles 재평가)
+    indexChanged = Signal()      # 폴더 배치 인덱싱 busy/진행/상태 갱신
     updateChanged = Signal()     # 새 버전 발견 알림(updateVersion/updateUrl 갱신)
     _renderReady = Signal(object)  # (내부) 워커 스레드 -> 메인 스레드 결과 전달
     _fullDecoded = Signal(bool)  # (내부) 풀해상도 디코드 워커 -> 메인 스레드
@@ -662,6 +663,7 @@ class Controller(QObject):
     _aiNrInitSig = Signal(bool)      # (내부) ORT 세션 초기화(GPU 점유) 오버레이 ON/OFF — 세션 전역
     _updateSig = Signal(object)      # (내부) 업데이트 확인 워커 -> 메인 (새 버전 태그, 릴리스 URL)
     _folderScanSig = Signal(object)  # (내부) 폴더 스캔 워커 -> 메인 (seq, folder, items, likes, edited, force)
+    _indexProgressSig = Signal(object)  # (내부) 폴더 배치 인덱싱 워커 -> 메인 (seq, done, total, status)
 
     def __init__(self, provider: RawProvider, curve_provider: "CurveProvider",
                  stamp_provider: "StampProvider" = None,
@@ -764,6 +766,11 @@ class Controller(QObject):
         self._captions_folder = ""
         self._search = ""            # 탐색기 캡션 검색어(소문자)
         self._search_tokens = []     # 토큰화된 검색어(접두 일치용)
+        self._index_seq = 0          # 폴더 배치 인덱싱 순번(취소=증가)
+        self._index_busy = False
+        self._index_done = 0
+        self._index_total = 0
+        self._index_status = ""
         self._caption_lock = threading.Lock()   # 워커(생성)↔메인(표시/편집) 동시 접근 보호
         self._caption_busy = False
         self._caption_status = ""
@@ -796,6 +803,7 @@ class Controller(QObject):
         self._aiNrInitSig.connect(self._on_ai_nr_init)
         self._updateSig.connect(self._on_update_found)
         self._folderScanSig.connect(self._on_folder_scanned)
+        self._indexProgressSig.connect(self._on_index_progress)
         self._scan_seq = 0            # 폴더 스캔 순번(빠른 탐색 시 오래된 결과 폐기)
         self._skip_rescan_once = False  # 우리 자신의 사이드카 저장으로 인한 watcher 재스캔 1회 무시
         # 현재 폴더 자동 감시: 디렉터리 변화 -> 디바운스 -> 재스캔(변경분 있을 때만 갱신)
@@ -918,13 +926,179 @@ class Controller(QObject):
         return all(any(w.startswith(tok) for w in words) for tok in self._search_tokens)
 
     def _get_indexed_count(self) -> int:
-        """현재 탐색기 폴더에서 캡션(=인덱스)이 저장된 파일 수 — 검색 커버리지 상태 표시용."""
+        """현재 폴더에서 캡션(=검색 인덱스)이 하나라도 저장된 파일 수. captionChanged 로 갱신되며,
+        배치 중에는 QML 라벨이 indexDone(indexChanged) 을 함께 참조해 실시간 재평가."""
         with self._caption_lock:
             self._ensure_caption_cache(self._folder)
             caps = self._captions
         return sum(1 for f in self._files if not f.get("isDir") and caps.get(f.get("name")))
 
     indexedCount = Property(int, _get_indexed_count, notify=captionChanged)
+
+    def _get_photo_count(self) -> int:
+        return sum(1 for f in self._files if not f.get("isDir"))
+
+    photoCount = Property(int, _get_photo_count, notify=folderChanged)
+
+    # ---------- 폴더 배치 인덱싱(백그라운드 캡션 생성 → 검색 커버리지) ----------
+    # caption-worker 모델을 단일 데몬 큐로 확장: 파일 리스트 직접 순회, 임베드 프리뷰(full RAW
+    # 디코드 0)로 GPU 캡션, 파일마다 사이드카 저장(체크포인트=재개). 이미 있는 레벨 캡션은 skip.
+    # throttle: 파일 사이 pace + 조작 중(_ui_busy) hold. 취소=seq 증가. 메인 이미지 파이프라인을
+    # 건드리지 않아 인덱싱 중에도 편집/브라우징 가능(비블로킹).
+    def _caption_input_rgb(self, path: str):
+        """RAW 임베드 JPEG → EXIF 회전 → 768² RGB numpy(캡션 입력). full RAW 디코드 없음.
+        실패 시 예외. (_caption_worker 의 디코드와 동일 — 배치가 재사용)."""
+        import numpy as np
+        import caption as cap
+        jpeg = embedded_preview_jpeg(path)
+        if not jpeg:
+            raise RuntimeError("no embedded preview")
+        buf = QBuffer()
+        buf.setData(jpeg)
+        buf.open(QBuffer.OpenModeFlag.ReadOnly)
+        reader = QImageReader(buf, b"jpeg")
+        reader.setAutoTransform(True)
+        img = reader.read()
+        buf.close()
+        if img.isNull():
+            raise RuntimeError("preview decode failed")
+        e = cap.INPUT_EDGE
+        img = img.scaled(e, e, Qt.AspectRatioMode.IgnoreAspectRatio,
+                         Qt.TransformationMode.SmoothTransformation)
+        img = img.convertToFormat(QImage.Format.Format_RGB888)
+        return np.frombuffer(img.constBits(), np.uint8).reshape(
+            e, img.bytesPerLine())[:, : e * 3].reshape(e, e, 3).copy()
+
+    @Slot("QVariantList", bool)
+    def startFolderIndex(self, paths, quiet: bool = False) -> None:  # noqa: N802 (QML 슬롯)
+        """paths 를 현재 상세도 캡션으로 배치 인덱싱(이미 있으면 skip=재개). quiet=저부하(pace↑).
+        데몬 스레드 — UI 비블로킹. 모델 미보유 시 다운로드(배치=명시 실행이라 허용)."""
+        if self._index_busy or not paths:
+            return
+        plist = [str(p) for p in paths]
+        self._index_seq += 1
+        seq = self._index_seq
+        self._index_busy = True
+        self._index_done = 0
+        self._index_total = len(plist)
+        self._index_status = "Starting…"
+        self.indexChanged.emit()
+        pace = 0.4 if quiet else 0.08   # 파일 사이 양보(발열/UI). quiet=조용·시원(느림)
+        threading.Thread(target=self._index_worker,
+                         args=(seq, plist, int(self._caption_level), pace), daemon=True).start()
+
+    @Slot()
+    def cancelFolderIndex(self) -> None:  # noqa: N802 (QML 슬롯)
+        """진행 중 인덱싱 취소 — seq 증가로 워커가 다음 파일 경계에서 중단, busy 즉시 해제."""
+        if not self._index_busy:
+            return
+        self._index_seq += 1        # 워커 루프가 seq 불일치로 중단(다음 경계)
+        self._index_busy = False
+        self._index_status = "Cancelled"
+        self._skip_rescan_once = False
+        self._scan_folder(self._folder, force=False)   # 취소 시점까지 추가된 파일 반영
+        self.indexChanged.emit()
+
+    def _index_worker(self, seq, paths, level, pace) -> None:
+        import time
+        import caption as cap
+        tasks = ("<CAPTION>", "<DETAILED_CAPTION>", "<MORE_DETAILED_CAPTION>")
+        task = tasks[max(0, min(2, level))]
+        key = self._CAPTION_KEYS[max(0, min(2, level))]
+        total = len(paths)
+        done = 0
+        try:
+            if not cap.is_ready():   # 모델 다운로드(배치=명시 실행) — 진행률 표시
+                cap.ensure_model(lambda v: self._indexProgressSig.emit(
+                    (seq, 0, total, f"Downloading model… {int(v * 100)}%")))
+                self._caption_model_ready = True
+            # 재개 효율: 이미 이 레벨 캡션이 있는 파일은 미리 제외 → 스킵에 pace/추론 0.
+            # (dict 조회만이라 수백 개도 즉시. 예: 300/500 완료분 재개 시 대기 없이 200만 처리.)
+            todo = []
+            for path in paths:
+                p = Path(path)
+                with self._caption_lock:
+                    self._ensure_caption_cache(str(p.parent))
+                    if not bool((self._captions.get(p.name) or {}).get(key)):
+                        todo.append(path)
+            done = total - len(todo)                       # 이미 완료분(진행률 시작점)
+            self._indexProgressSig.emit((seq, done, total, "Indexing…"))
+            for path in todo:
+                if seq != self._index_seq:
+                    break                                  # 취소
+                # 이미지 로드/익스포트/조작 중엔 일시정지 — 배치 CPU 추론이 인터랙티브
+                # 작업과 겹쳐 UI 가 버벅이는 것 방지(CPU 오버구독 완화).
+                while ((self._ui_busy or self._busy or self._exporting)
+                       and seq == self._index_seq):
+                    time.sleep(0.1)
+                p = Path(path)
+                folder = str(p.parent)
+                try:
+                    # cpu=True: 배치는 CPU 전용 세션 — GPU 는 프리뷰/편집 전용으로 두어
+                    # DirectML VRAM 경합(동시 이미지 로드 시) 네이티브 크래시를 원천 차단.
+                    text = cap.generate(self._caption_input_rgb(path), task, cpu=True).strip()
+                    if text:
+                        with self._caption_lock:
+                            self._ensure_caption_cache(folder)
+                            entry = dict(self._captions.get(p.name) or {})
+                            entry[key] = text
+                            self._captions[p.name] = entry
+                            self._save_captions(folder, self._captions)  # 파일마다=체크포인트
+                        if folder == self._folder:
+                            self._skip_rescan_once = True   # 사이드카 쓰기로 watcher 재스캔 방지
+                except Exception as exc:
+                    print(f"[index] {p.name} 실패(건너뜀): {exc}")
+                done += 1
+                self._indexProgressSig.emit((seq, done, total, "Indexing…"))
+                if pace > 0 and seq == self._index_seq:
+                    time.sleep(pace)                       # 파일 사이 양보(발열/UI)
+        except Exception as exc:
+            print(f"[index] 중단: {exc}")
+        finally:
+            if seq == self._index_seq:                     # 정상 완료(취소면 seq 바뀜 → cancel 이 해제)
+                self._index_busy = False
+                self._index_status = f"Indexed {done}/{total}"
+                # 배치 중 우리 사이드카 저장이 _skip_rescan_once 로 watcher 재스캔을 억제했으므로,
+                # 완료 시 강제 재스캔 → 배치 도중 폴더에 추가된 파일을 목록/카운트에 반영.
+                self._skip_rescan_once = False
+                self._scan_folder(self._folder, force=False)
+                self.indexChanged.emit()
+                self.captionChanged.emit()                 # indexedCount/캡션바 갱신
+
+    @Slot(object)
+    def _on_index_progress(self, payload) -> None:
+        seq, done, total, status = payload
+        if seq != self._index_seq:
+            return                                          # 취소된 이전 실행 → 폐기
+        self._index_done = done
+        self._index_total = total
+        self._index_status = status
+        self.indexChanged.emit()
+
+    def _get_index_busy(self) -> bool:
+        return self._index_busy
+
+    indexBusy = Property(bool, _get_index_busy, notify=indexChanged)
+
+    def _get_index_status(self) -> str:
+        return self._index_status
+
+    indexStatus = Property(str, _get_index_status, notify=indexChanged)
+
+    def _get_index_progress(self) -> float:
+        return (self._index_done / self._index_total) if self._index_total else 0.0
+
+    indexProgress = Property(float, _get_index_progress, notify=indexChanged)
+
+    def _get_index_done(self) -> int:
+        return self._index_done
+
+    indexDone = Property(int, _get_index_done, notify=indexChanged)
+
+    def _get_index_total(self) -> int:
+        return self._index_total
+
+    indexTotal = Property(int, _get_index_total, notify=indexChanged)
 
     # ---------- 캡션(Florence-2) 영속화: 폴더당 .filmrawsterycaptions.json ----------
     # 좋아요와 동일 패턴({파일명: {상세도키: 문장}}, 변경 즉시 저장=크래시 안전). 생성은

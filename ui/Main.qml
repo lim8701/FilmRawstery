@@ -1157,17 +1157,31 @@ ApplicationWindow {
 
     // 탐색기에서 해당 경로 항목을 선택(하이라이트)하고 보이도록 스크롤. 없으면(필터 등) 무시.
     // 포커스도 리스트로 → 이어서 방향키 탐색 가능(위로가기/프리뷰 닫기 직후 흐름).
-    function selectInExplorer(path) {
+    function selectInExplorer(path, focus) {
         if (!path) return
         var files = win.explorerFiles
         for (var i = 0; i < files.length; i++) {
             if (files[i].path === path) {
                 fileListView.currentIndex = i
                 fileListView.positionViewAtIndex(i, ListView.Center)
-                fileListView.forceActiveFocus()
+                if (focus === undefined || focus)   // 검색 복원 등에선 focus=false(검색창 포커스 유지)
+                    fileListView.forceActiveFocus()
                 return
             }
         }
+    }
+
+    // 검색어 변경(입력/삭제) 처리: 모델(explorerFiles) 재평가로 currentIndex 가 다른 항목을
+    // 가리켜 선택이 풀리는 것을 방지. 변경 전 선택 항목 경로를 확보 → 재평가 후 그 항목을 다시
+    // 선택+가운데 스크롤(선택/페이징 유지). 검색창 포커스는 뺏지 않아 타이핑이 끊기지 않는다.
+    function applySearch(text) {
+        var sel = ""
+        if (fileListView.currentIndex >= 0 && win.explorerFiles[fileListView.currentIndex])
+            sel = win.explorerFiles[fileListView.currentIndex].path
+        if (!sel) sel = controller.imagePath
+        controller.setSearchQuery(text)
+        if (sel)
+            Qt.callLater(function() { win.selectInExplorer(sel, false) })   // 모델 갱신 뒤 복원(포커스 유지)
     }
 
     // 탐색기에서 우클릭한 파일을 프리뷰 창으로 연다.
@@ -1478,19 +1492,93 @@ ApplicationWindow {
                     TextInput {
                         id: searchInput
                         anchors.fill: parent
-                        anchors.leftMargin: 8; anchors.rightMargin: 8
+                        anchors.leftMargin: 8; anchors.rightMargin: 26   // ✕ 버튼 공간 확보
                         verticalAlignment: TextInput.AlignVCenter
                         color: "#e6e6e6"; font.pixelSize: 12
                         clip: true; selectByMouse: true
                         onTextChanged: searchDebounce.restart()
                         onActiveFocusChanged: win._typing = activeFocus   // 타이핑 중 단축키(L/B/C) 충돌 방지
-                        Keys.onEscapePressed: { text = ""; controller.setSearchQuery("") }
-                        Timer { id: searchDebounce; interval: 180; onTriggered: controller.setSearchQuery(searchInput.text) }
+                        Keys.onEscapePressed: text = ""                    // 비우면 onTextChanged→debounce→applySearch
+                        Timer { id: searchDebounce; interval: 180; onTriggered: win.applySearch(searchInput.text) }
                         Text {   // placeholder
                             anchors.verticalCenter: parent.verticalCenter
                             visible: searchInput.text === "" && !searchInput.activeFocus
-                            text: "Search captions (" + controller.indexedCount + " indexed)"
+                            text: "Search captions"
                             color: "#777"; font.pixelSize: 12
+                        }
+                    }
+                    // ✕ 텍스트 삭제 (내용 있을 때만) — 비우면 onTextChanged→debounce→applySearch(선택/스크롤 복원)
+                    Rectangle {
+                        anchors.right: parent.right; anchors.rightMargin: 5
+                        anchors.verticalCenter: parent.verticalCenter
+                        width: 18; height: 18; radius: 9
+                        visible: searchInput.text !== ""
+                        color: clrHover.hovered ? "#3a3f4b" : "transparent"
+                        Text { anchors.centerIn: parent; text: "✕"; color: "#aaa"; font.pixelSize: 10 }
+                        HoverHandler { id: clrHover }
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: { searchInput.text = ""; searchInput.forceActiveFocus() }
+                        }
+                    }
+                }
+
+                // 폴더 배치 인덱싱 — 한 행: [⚙ 시작 / ✕ 취소] [진행·커버리지 바] [N/M 카운트].
+                // 인덱스 상태(N/M)는 여기 한 곳에만(중복 없음). 현재 표시목록(좋아요/검색 필터
+                // 반영)을 백그라운드 캡션 생성, 이미 인덱싱된 사진은 skip(재개), UI 비블로킹.
+                RowLayout {
+                    id: idxRow
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 22
+                    spacing: 6
+                    visible: controller.currentFolder !== ""
+                    function targetPaths() {
+                        var out = []
+                        for (var i = 0; i < win.explorerFiles.length; i++)
+                            if (!win.explorerFiles[i].isDir) out.push(win.explorerFiles[i].path)
+                        return out
+                    }
+                    // 진행/커버리지 바 (busy=진행률, idle=커버리지 비율)
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.preferredHeight: 6
+                        radius: 3; color: "#333"
+                        Rectangle {
+                            height: parent.height; radius: 3
+                            color: controller.indexBusy ? "#8ab4f8" : "#4a5a3a"
+                            width: parent.width * (controller.indexBusy ? controller.indexProgress
+                                   : (controller.photoCount > 0 ? controller.indexedCount / controller.photoCount : 0))
+                        }
+                    }
+                    // 공유 카운트 (한 곳) — 캡션 저장/폴더 변경 + 배치 진행 시 실시간 갱신
+                    Label {
+                        text: {
+                            var _t = controller.indexDone       // indexChanged 의존(배치 중 실시간)
+                            return controller.indexedCount + "/" + controller.photoCount
+                        }
+                        color: "#aaa"; font.pixelSize: 10
+                    }
+                    // ⚙ 시작 / ✕ 취소 (오른쪽 끝, 작은 아이콘)
+                    Rectangle {
+                        Layout.preferredWidth: 20; Layout.preferredHeight: 20
+                        radius: 4
+                        color: idxHover.hovered ? "#33373f" : "transparent"
+                        border.color: controller.indexBusy ? "#ff8080" : "#555"; border.width: 1
+                        Text {
+                            anchors.centerIn: parent
+                            text: controller.indexBusy ? "✕" : "⚙"
+                            color: controller.indexBusy ? "#ff8080" : "#cfcfcf"
+                            font.pixelSize: 9
+                        }
+                        HoverHandler { id: idxHover }
+                        ToolTip.visible: idxHover.hovered
+                        ToolTip.text: controller.indexBusy ? "Cancel indexing"
+                            : "Index listed photos in the background (skips already-indexed) to enable search"
+                        MouseArea {
+                            anchors.fill: parent
+                            cursorShape: Qt.PointingHandCursor
+                            onClicked: controller.indexBusy ? controller.cancelFolderIndex()
+                                : controller.startFolderIndex(idxRow.targetPaths(), true)   // quiet(저부하)
                         }
                     }
                 }

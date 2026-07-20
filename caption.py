@@ -207,6 +207,7 @@ class _Bpe:
 
 
 _provider_label = None   # 세션 생성 후 실제 EP: "GPU" | "CPU"
+_state_cpu = None        # CPU 전용 세션(배치 인덱싱용 — GPU VRAM 경합 크래시 방지)
 
 
 def _providers(ort):
@@ -233,20 +234,24 @@ def provider_label() -> str:
     return _provider_label or "CPU"
 
 
-def _load_state():
-    """세션/토크나이저 lazy 로드(1회, ~3s). 이후 호출은 캐시 재사용.
-    파일이 사용자 디렉터리에 없으면(legacy-only 포함) ensure_model 로 먼저 확보 —
-    외부에서 generate 를 단독 호출해도 안전(파일 전부 있으면 즉시 통과)."""
-    global _state
+def _load_state(cpu: bool = False):
+    """세션/토크나이저 lazy 로드(1회). cpu=True 면 **CPU 전용 세션**(폴더 배치 인덱싱용 —
+    GPU 는 프리뷰/편집 전용으로 두어 DirectML VRAM 경합 크래시를 원천 차단). GPU/CPU 세션은
+    각각 캐시(_state / _state_cpu). 파일이 없으면 ensure_model 로 먼저 확보."""
+    global _state, _state_cpu, _provider_label
+    cur = _state_cpu if cpu else _state
+    if cur is not None:
+        return cur
     with _sess_lock:
-        if _state is not None:
-            return _state
+        cur = _state_cpu if cpu else _state
+        if cur is not None:
+            return cur
         ensure_model()
         import onnxruntime as ort
         opts = ort.SessionOptions()
         opts.log_severity_level = 3
-        prov = _providers(ort)   # GPU EP(DirectML/CoreML) 우선 → CPU 폴백. 세션들이 CPU 를
-        #                          목록에 포함하므로 GPU 초기화 실패 시 자동 폴백(별도 처리 불요).
+        # cpu=True → CPU 강제(배치). 아니면 GPU EP(DirectML/CoreML) 우선 → CPU 폴백.
+        prov = ["CPUExecutionProvider"] if cpu else _providers(ort)
 
         def sess(name):
             return ort.InferenceSession(_path(name), opts, providers=prov)
@@ -260,15 +265,20 @@ def _load_state():
         bpe = _Bpe(_path("florence2_vocab.json"), _path("florence2_merges.txt"))
         with open(_path("florence2_generation_config.json"), encoding="utf-8") as f:
             gen = json.load(f)
-        global _provider_label
-        _ep = sessions["vis"].get_providers()[0]
-        _provider_label = "GPU" if _ep in ("DmlExecutionProvider", "CoreMLExecutionProvider") else "CPU"
-        print(f"[caption] EP={_ep}")
-        _state = (sessions, bpe, gen)
-        return _state
+        st = (sessions, bpe, gen)
+        ep = sessions["vis"].get_providers()[0]
+        print(f"[caption] EP={ep}{' (cpu-forced/batch)' if cpu else ''}")
+        if cpu:
+            _state_cpu = st
+        else:
+            _state = st
+            _provider_label = ("GPU" if ep in ("DmlExecutionProvider", "CoreMLExecutionProvider")
+                               else "CPU")
+        return st
 
 
-def generate(rgb: np.ndarray, task: str = "<CAPTION>", max_new_tokens: int = 120) -> str:
+def generate(rgb: np.ndarray, task: str = "<CAPTION>", max_new_tokens: int = 120,
+             cpu: bool = False) -> str:
     """768x768x3 uint8 RGB(정방향) -> 영어 캡션 문장.
 
     호출측(main.py)이 내장 JPEG 를 EXIF 회전 반영 후 768x768 로 축소해 전달
@@ -277,7 +287,7 @@ def generate(rgb: np.ndarray, task: str = "<CAPTION>", max_new_tokens: int = 120
     if rgb.shape != (INPUT_EDGE, INPUT_EDGE, 3):
         raise ValueError(f"expected {INPUT_EDGE}x{INPUT_EDGE}x3, got {rgb.shape}")
     prompt = TASKS[task]
-    sessions, bpe, gen = _load_state()
+    sessions, bpe, gen = _load_state(cpu)
     vis, emb, enc, dec = (sessions[k] for k in ("vis", "emb", "enc", "dec"))
     bos = gen.get("bos_token_id", 0)
     eos = gen.get("eos_token_id", 2)
