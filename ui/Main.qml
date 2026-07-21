@@ -3,6 +3,7 @@ import QtQuick.Controls
 import QtQuick.Controls.Basic as B
 import QtQuick.Layouts
 import QtQuick.Dialogs
+import QtQuick.Effects
 
 ApplicationWindow {
     id: win
@@ -1204,12 +1205,32 @@ ApplicationWindow {
     property string _pendingTag: ""          // 디바운스 대기 태그
     property var tagPreviewPaths: []         // 미리보기 썸네일 경로
     property var tagStats: ({})              // 헤더 통계 {photos, indexed, tags, liked}
+    property bool _idxWasBusy: false         // 인덱싱 busy 이전 상태(완료 에지 감지용)
+    // 인덱싱이 방금 끝났고(busy true→false) 팝업이 열려 있으면 최종 태그로 1회 자동 갱신.
+    Connections {
+        target: controller
+        function onIndexChanged() {
+            if (win._idxWasBusy && !controller.indexBusy && win.showTagCloud)
+                win.refreshTagCloud()
+            win._idxWasBusy = controller.indexBusy
+        }
+    }
     function _minmax(arr) {
         var mn = 1000000, mx = 1
         for (var i = 0; i < arr.length; i++) { var c = arr[i].count; if (c < mn) mn = c; if (c > mx) mx = c }
         return [arr.length ? mn : 1, mx]
     }
     function openTagCloud() {
+        win.showTagCloud = true
+        win._loadTags(false)                           // 첫 오픈: 미리보기=최상위 단어
+    }
+    // 인덱싱 완료 시 1회 자동 갱신 — 팝업이 열려 있으면 최종 태그로 다시 채우되 보던 키워드는 유지.
+    function refreshTagCloud() {
+        if (win.showTagCloud) win._loadTags(true)
+    }
+    // 공용 로더. keepHover=true 면 현재 보던 키워드를 유지(새 데이터에도 있으면), 없으면 최상위.
+    function _loadTags(keepHover) {
+        var prev = win._hoverTag
         var kw = controller.folderKeywords(60)
         var m = win._minmax(kw); win._tagMinCount = m[0]; win._tagMaxCount = m[1]
         win.tagCloudData = kw
@@ -1217,16 +1238,34 @@ ApplicationWindow {
         var lm = win._minmax(lk); win._likedMin = lm[0]; win._likedMax = lm[1]
         win.likedTags = lk
         win.tagStats = controller.folderTagStats()     // 헤더 통계
-        // 상시 미리보기: 열 때 최상위(가장 사진 많은) 단어를 자동 미리보기 → 하단 스트립이 안 비어 있음
-        if (kw.length > 0) {
-            win._hoverTag = kw[0].word; win._pendingTag = kw[0].word
-            win.tagPreviewPaths = controller.filesWithKeyword(kw[0].word, 24)
-        } else {
-            win._hoverTag = ""; win._pendingTag = ""; win.tagPreviewPaths = []
-        }
-        win.showTagCloud = true
+        var want = ""
+        if (keepHover && prev)
+            for (var i = 0; i < kw.length; i++) if (kw[i].word === prev) { want = prev; break }
+        if (!want) want = kw.length > 0 ? kw[0].word : ""
+        win._hoverTag = want; win._pendingTag = want
+        win.refreshPreview()                           // 그리드 레이아웃 크기에 맞춰 채움
     }
     function previewTag(word) { win._pendingTag = word; tagPreviewTimer.restart() }
+    // 미리보기 그리드에 '채울 만큼'의 썸네일 수 — 보이는 열×행(완전히 들어가는 셀)만큼. 남는
+    // 여백은 유지(부분 행은 안 채움). 레이아웃 전(크기 0)이면 최소치 방어.
+    function previewLimit() {
+        var cell = 132 + 10                            // 썸네일 132 + spacing 10
+        var cols = Math.max(1, Math.floor((tcGridFlick.width + 10) / cell))
+        var rows = Math.max(1, Math.floor((tcGridFlick.height + 10) / cell))
+        return Math.max(8, cols * rows)
+    }
+    function refreshPreview() {
+        if (!win.showTagCloud) return                  // 닫혀 있으면(리사이즈 등) 무시
+        win.tagPreviewPaths = win._hoverTag ? controller.filesWithKeyword(win._hoverTag, win.previewLimit()) : []
+    }
+    // 헤더/빈상태 공용 통계 문자열 (사진·인덱싱·고유 태그·좋아요)
+    function tagStatsText() {
+        var s = win.tagStats
+        if (!s || s.photos === undefined) return ""
+        var t = s.photos + " photos  ·  " + s.indexed + " indexed  ·  " + s.tags + " tags"
+        if (s.liked > 0) t += "  ·  " + s.liked + " <font color='#ff8a8a'>♥</font>"
+        return t
+    }
 
     // 탐색기에서 우클릭한 파일을 프리뷰 창으로 연다.
     // 현재 폴더의 RAW(디렉터리 제외)만 경로 배열로 만들어 좌/우 네비 대상으로 넘긴다.
@@ -1252,22 +1291,35 @@ ApplicationWindow {
         visible: win.showTagCloud
         anchors.fill: parent
         z: 1000
-        color: "#e6121212"                                   // 경계 없는 반투명 다크 전면
+        color: "#e6121212"                                   // 블러 실패 시 폴백(평소엔 아래 블러+틴트가 덮음)
         opacity: win.showTagCloud ? 1 : 0                    // 페이드 등장(다이얼로그 팝 아님)
         Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
         focus: win.showTagCloud                              // 열릴 때 키 입력 받기 → Esc 닫기
-        onVisibleChanged: if (visible) forceActiveFocus()
+        onVisibleChanged: if (visible) { forceActiveFocus(); tcBgSource.scheduleUpdate() }   // 열 때 배경 1회 스냅샷
         Keys.onEscapePressed: win.showTagCloud = false
+
+        // 배경 프로스티드 글래스 — 열 때 1회 스냅샷(정지 배경) → 블러 + 어두운 틴트(가독성).
+        // live:false 라 per-frame 캡처 없음(발열/부하 없음). 배경이 바뀌면 다시 열 때 갱신.
+        ShaderEffectSource {
+            id: tcBgSource
+            anchors.fill: parent
+            sourceItem: mainContent
+            live: false; hideSource: false; visible: false
+        }
+        MultiEffect {
+            anchors.fill: parent
+            source: tcBgSource
+            blurEnabled: true; blur: 0.7; blurMax: 28; autoPaddingEnabled: false
+        }
+        Rectangle { anchors.fill: parent; color: "#b8101014" }   // 어두운 틴트(글자 대비 확보)
+
         MouseArea { anchors.fill: parent; onClicked: win.showTagCloud = false }   // 빈 곳 클릭=닫기
 
         // 호버 dwell 타이머 — 단어에 200ms 머물러야 미리보기 전환. 스쳐 지나가는 단어는
         // 머무르지 않아(벗어날 때 stop) 전환 안 됨 → 썸네일로 내려가는 길에 바뀌는 문제 해결.
         Timer {
             id: tagPreviewTimer; interval: 200
-            onTriggered: {
-                win._hoverTag = win._pendingTag
-                win.tagPreviewPaths = win._hoverTag ? controller.filesWithKeyword(win._hoverTag, 24) : []
-            }
+            onTriggered: { win._hoverTag = win._pendingTag; win.refreshPreview() }
         }
 
         // ✕ 닫기 (우상단에 떠 있음, 박스 없음)
@@ -1281,17 +1333,30 @@ ApplicationWindow {
                         onClicked: win.showTagCloud = false }
         }
 
-        // 빈 상태
-        Label {
+        // 빈 상태 — 캡션 0개: 헤더 그룹(타이틀+통계+안내)을 통째로 화면 정중앙 정렬(2단 프레임 없음).
+        Column {
             visible: win.tagCloudData.length === 0
-            anchors.centerIn: parent; horizontalAlignment: Text.AlignHCenter
-            text: "No indexed captions in this folder yet.\nClick the ⚙ Index button to index it first."
-            color: "#888"; font.pixelSize: 14
+            anchors.centerIn: parent
+            spacing: 3
+            Label {
+                text: "Folder tags"
+                color: "#ffffff"; font.pixelSize: 30; font.weight: Font.Bold; font.letterSpacing: 0.5
+            }
+            Label {
+                text: win.tagStatsText()
+                textFormat: Text.StyledText; color: "#8892a0"; font.pixelSize: 13
+            }
+            Label {
+                topPadding: 14
+                text: "No captions indexed in this folder yet.\nClose this and use the ⚙ Index button to index the folder first."
+                color: "#8892a0"; font.pixelSize: 14; lineHeight: 1.35
+            }
         }
 
         // 본문 = [헤더] 위에 [2단 본문] 스택. 2단 = 좌 태그 클라우드 / 우 사진 미리보기 그리드
         // (풀블리드 캔버스의 가로·세로 여백을 콘텐츠로 채워 허전함 완화).
         ColumnLayout {
+            visible: win.tagCloudData.length > 0     // 캡션 0개면 좌상단 헤더 대신 위 중앙 그룹 표시
             anchors.fill: parent
             anchors.topMargin: 30; anchors.bottomMargin: 22
             anchors.leftMargin: 44; anchors.rightMargin: 44
@@ -1307,13 +1372,7 @@ ApplicationWindow {
                     font.letterSpacing: 0.5
                 }
                 Label {   // 폴더 요약 통계 (사진·인덱싱·고유 태그·좋아요)
-                    text: {
-                        var s = win.tagStats
-                        if (!s || s.photos === undefined) return ""
-                        var t = s.photos + " photos  ·  " + s.indexed + " indexed  ·  " + s.tags + " tags"
-                        if (s.liked > 0) t += "  ·  " + s.liked + " <font color='#ff8a8a'>♥</font>"
-                        return t
-                    }
+                    text: win.tagStatsText()
                     textFormat: Text.StyledText
                     color: "#8892a0"; font.pixelSize: 13
                 }
@@ -1323,7 +1382,7 @@ ApplicationWindow {
             // 풀블리드 캔버스의 가로·세로 여백을 콘텐츠로 채우고, 호버(왼)↔미리보기(오)가 분리돼 스쳐 지나침도 없음.
             RowLayout {
                 id: tcBody
-                visible: win.tagCloudData.length > 0
+                visible: win.tagCloudData.length > 0     // 캡션 0개면 숨김(빈 프레임/구분선 안 띄움)
                 Layout.fillWidth: true; Layout.fillHeight: true
                 Layout.topMargin: 20
                 spacing: 30
@@ -1349,6 +1408,7 @@ ApplicationWindow {
 
                         // ── All tags 섹션 (전체 키워드 — ♥ 그룹과 대칭되는 섹션 제목) ──
                         Column {
+                            visible: win.tagCloudData.length > 0
                             width: parent.width
                             spacing: 8
                             Label { text: "All tags"; color: "#8fb4e8"; font.pixelSize: 12; font.bold: true }
@@ -1376,7 +1436,9 @@ ApplicationWindow {
                                         HoverHandler {
                                             id: wHover
                                             // 진입=dwell 시작, 이탈=대기 전환 취소(스쳐 지나가면 안 바뀜, 기존 미리보기 유지)
-                                            onHoveredChanged: { if (hovered) win.previewTag(modelData.word); else tagPreviewTimer.stop() }
+                                            // leave 는 '떠나는 단어가 아직 대기 대상일 때'만 취소 — 다른 단어가
+                                            // 이미 대기 중(enter 가 먼저 온 경우)이면 그 타이머를 죽이지 않음(드래그 시 안 바뀌던 버그).
+                                            onHoveredChanged: { if (hovered) win.previewTag(modelData.word); else if (win._pendingTag === modelData.word) tagPreviewTimer.stop() }
                                         }
                                         ToolTip.visible: wHover.hovered
                                         ToolTip.text: modelData.count + " photos"
@@ -1421,7 +1483,9 @@ ApplicationWindow {
                                         Behavior on color { ColorAnimation { duration: 110 } }
                                         HoverHandler {
                                             id: lHover
-                                            onHoveredChanged: { if (hovered) win.previewTag(modelData.word); else tagPreviewTimer.stop() }
+                                            // leave 는 '떠나는 단어가 아직 대기 대상일 때'만 취소 — 다른 단어가
+                                            // 이미 대기 중(enter 가 먼저 온 경우)이면 그 타이머를 죽이지 않음(드래그 시 안 바뀌던 버그).
+                                            onHoveredChanged: { if (hovered) win.previewTag(modelData.word); else if (win._pendingTag === modelData.word) tagPreviewTimer.stop() }
                                         }
                                         ToolTip.visible: lHover.hovered
                                         ToolTip.text: modelData.count + " liked"
@@ -1448,18 +1512,24 @@ ApplicationWindow {
                     Layout.fillWidth: true; Layout.fillHeight: true
                     spacing: 12
                     Label {   // 미리보기 제목 (열 때 최상위 단어 자동)
+                        visible: win.tagCloudData.length > 0
                         Layout.fillWidth: true
                         text: win._hoverTag
                             ? ("“" + win._hoverTag + "”  ·  " + win.tagPreviewPaths.length
-                               + (win.tagPreviewPaths.length >= 24 ? "+ photos" : " photos"))
+                               + (win.tagPreviewPaths.length >= win.previewLimit() ? "+ photos" : " photos"))
                             : "Hover a tag to preview its photos"
                         color: win._hoverTag ? "#cfe0ff" : "#5f6b7a"
                         font.pixelSize: 14; font.bold: win._hoverTag.length > 0
                     }
                     Flickable {
+                        id: tcGridFlick
+                        visible: win.tagCloudData.length > 0
                         Layout.fillWidth: true; Layout.fillHeight: true
                         contentWidth: width; contentHeight: gridFlow.height
                         clip: true; boundsBehavior: Flickable.StopAtBounds
+                        // 크기 확정/창 리사이즈 시 채울 만큼 다시 로드(동적 개수)
+                        onWidthChanged: win.refreshPreview()
+                        onHeightChanged: win.refreshPreview()
                         Flow {
                             id: gridFlow
                             width: parent.width; spacing: 10
@@ -1596,6 +1666,7 @@ ApplicationWindow {
     // 커서/전달에 간섭 없음. 필드는 objectName: "stampField" 로 파이썬에서 찾는다.
 
     RowLayout {
+        id: mainContent                          // 태그 클라우드 오버레이 배경 블러의 소스
         anchors.fill: parent
         spacing: 0
 
