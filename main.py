@@ -1123,9 +1123,12 @@ class Controller(QObject):
                             entry = dict(self._captions.get(p.name) or {})
                             entry[key] = text
                             self._captions[p.name] = entry
-                            self._save_captions(folder, self._captions)  # 파일마다=체크포인트
+                            snapshot = dict(self._captions)   # 락 안에선 스냅샷만
                         if folder == self._folder:
-                            self._skip_rescan_once = True   # 사이드카 쓰기로 watcher 재스캔 방지
+                            self._skip_rescan_once = True   # 디스크 쓰기 전 설정(watcher 재스캔 방지)
+                        # 쓰기는 락 밖에서 — GUI 스레드(indexedCount/matchesSearch 등)가 같은 락에
+                        # 디스크 I/O 동안 막히지 않게. 파일마다 저장=체크포인트(재개).
+                        self._save_captions(folder, snapshot)
                 except Exception as exc:
                     print(f"[index] {p.name} 실패(건너뜀): {exc}")
                 done += 1

@@ -1289,8 +1289,8 @@ ApplicationWindow {
             color: "#888"; font.pixelSize: 14
         }
 
-        // 본문 = 세로 스택([헤더][중앙 정렬 태그 블록][하단 미리보기 스트립]).
-        // 태그 블록을 헤더와 스트립 사이 공간에 수직 중앙 정렬 → 중간에 어색한 공백이 안 생김.
+        // 본문 = [헤더] 위에 [2단 본문] 스택. 2단 = 좌 태그 클라우드 / 우 사진 미리보기 그리드
+        // (풀블리드 캔버스의 가로·세로 여백을 콘텐츠로 채워 허전함 완화).
         ColumnLayout {
             anchors.fill: parent
             anchors.topMargin: 30; anchors.bottomMargin: 22

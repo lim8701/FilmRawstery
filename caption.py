@@ -270,8 +270,12 @@ def _load_state(cpu: bool = False):
         print(f"[caption] EP={ep}{' (cpu-forced/batch)' if cpu else ''}")
         if cpu:
             _state_cpu = st
+            if _provider_label is None:   # GPU 세션이 아직 없어도 가용 EP로 라벨 추정(표시 정확도)
+                avail = set(ort.get_available_providers())
+                _provider_label = ("GPU" if ("DmlExecutionProvider" in avail
+                                              or "CoreMLExecutionProvider" in avail) else "CPU")
         else:
-            _state = st
+            _state = st                   # 실제 GPU 세션 = 권위 있는 라벨(추정값 덮어씀)
             _provider_label = ("GPU" if ep in ("DmlExecutionProvider", "CoreMLExecutionProvider")
                                else "CPU")
         return st
