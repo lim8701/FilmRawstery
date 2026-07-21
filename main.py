@@ -773,6 +773,7 @@ class Controller(QObject):
         self._index_done = 0
         self._index_total = 0
         self._index_status = ""
+        self._index_folder = ""      # 현재 배치가 인덱싱 중인 폴더(진행 표시를 이 폴더에만 연동)
         self._caption_lock = threading.Lock()   # 워커(생성)↔메인(표시/편집) 동시 접근 보호
         self._caption_busy = False
         self._caption_status = ""
@@ -1062,6 +1063,7 @@ class Controller(QObject):
         self._index_done = 0
         self._index_total = len(plist)
         self._index_status = "Starting…"
+        self._index_folder = self._folder     # 이 배치가 속한 폴더(진행 표시 연동용)
         self.indexChanged.emit()
         pace = 0.4 if quiet else 0.08   # 파일 사이 양보(발열/UI). quiet=조용·시원(느림)
         threading.Thread(target=self._index_worker,
@@ -1182,6 +1184,11 @@ class Controller(QObject):
         return self._index_total
 
     indexTotal = Property(int, _get_index_total, notify=indexChanged)
+
+    def _get_index_folder(self) -> str:
+        return self._index_folder
+
+    indexFolder = Property(str, _get_index_folder, notify=indexChanged)
 
     # ---------- 캡션(Florence-2) 영속화: 폴더당 .filmrawsterycaptions.json ----------
     # 좋아요와 동일 패턴({파일명: {상세도키: 문장}}, 변경 즉시 저장=크래시 안전). 생성은

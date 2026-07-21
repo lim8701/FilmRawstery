@@ -1896,6 +1896,15 @@ ApplicationWindow {
                     Layout.preferredHeight: 22
                     spacing: 6
                     visible: controller.currentFolder !== ""
+                    // 진행 표시는 '지금 보는 폴더가 곧 인덱싱 중인 폴더'일 때만. 다른 폴더로 옮기면
+                    // 이 폴더의 커버리지만 보이고(어긋남 방지), 배치는 원래 폴더에서 계속 돎.
+                    readonly property bool indexingHere: controller.indexBusy
+                        && controller.indexFolder === controller.currentFolder
+                    function folderName(p) {
+                        if (!p) return "another folder"
+                        var parts = p.replace(/\\/g, "/").split("/").filter(function (s) { return s.length > 0 })
+                        return parts.length ? parts[parts.length - 1] : p
+                    }
                     // 인덱싱 대상: 항상 폴더 전체(검색/필터로 좁히지 않음 — 일관 동작).
                     //   ⚠️검색 필터의 보이는 목록은 '이미 인덱싱된 매칭 파일'뿐이라 그걸 대상으로
                     //   삼으면 전부 스킵되어 아무것도 안 됨. 그래서 controller.fileList(전체) 사용.
@@ -1917,8 +1926,9 @@ ApplicationWindow {
                         radius: 3; color: "#333"
                         Rectangle {
                             height: parent.height; radius: 3
-                            color: controller.indexBusy ? "#8ab4f8" : "#4a5a3a"
-                            width: parent.width * (controller.indexBusy ? controller.indexProgress
+                            // 이 폴더를 인덱싱 중이면 진행률(파랑), 아니면 이 폴더의 커버리지 비율(초록).
+                            color: idxRow.indexingHere ? "#8ab4f8" : "#4a5a3a"
+                            width: parent.width * (idxRow.indexingHere ? controller.indexProgress
                                    : (controller.photoCount > 0 ? controller.indexedCount / controller.photoCount : 0))
                         }
                     }
@@ -1930,27 +1940,36 @@ ApplicationWindow {
                         }
                         color: "#aaa"; font.pixelSize: 10
                     }
-                    // ⚙ 시작 / ✕ 취소 (오른쪽 끝, 작은 아이콘)
+                    // ⚙ 시작 / ✕ 취소(이 폴더) / ⋯ 다른 폴더 인덱싱 중(정보만) (오른쪽 끝, 작은 아이콘)
                     Rectangle {
                         Layout.preferredWidth: 20; Layout.preferredHeight: 20
                         radius: 4
                         color: idxHover.hovered ? "#33373f" : "transparent"
-                        border.color: controller.indexBusy ? "#ff8080" : "#555"; border.width: 1
+                        border.color: idxRow.indexingHere ? "#ff8080" : "#555"; border.width: 1
                         Text {
                             anchors.centerIn: parent
-                            text: controller.indexBusy ? "✕" : "⚙"
-                            color: controller.indexBusy ? "#ff8080" : "#cfcfcf"
-                            font.pixelSize: 9
+                            // 이 폴더 인덱싱 중=✕, 다른 폴더 인덱싱 중=⋯(정보), 유휴=⚙
+                            text: idxRow.indexingHere ? "✕" : (controller.indexBusy ? "⋯" : "⚙")
+                            color: idxRow.indexingHere ? "#ff8080" : (controller.indexBusy ? "#888" : "#cfcfcf")
+                            font.pixelSize: idxRow.indexingHere ? 9 : (controller.indexBusy ? 12 : 9)
                         }
                         HoverHandler { id: idxHover }
                         ToolTip.visible: idxHover.hovered
-                        ToolTip.text: controller.indexBusy ? "Cancel indexing"
-                            : "Index listed photos in the background (skips already-indexed) to enable search"
+                        ToolTip.text: idxRow.indexingHere ? "Cancel indexing"
+                            : (controller.indexBusy
+                               ? ("Indexing “" + idxRow.folderName(controller.indexFolder) + "” in the background  ·  "
+                                  + controller.indexDone + "/" + controller.indexTotal)
+                               : "Index listed photos in the background (skips already-indexed) to enable search")
                         MouseArea {
                             anchors.fill: parent
-                            cursorShape: Qt.PointingHandCursor
-                            onClicked: controller.indexBusy ? controller.cancelFolderIndex()
-                                : controller.startFolderIndex(idxRow.targetPaths(), true)   // quiet(저부하)
+                            // 다른 폴더 인덱싱 중이면 정보만(클릭 불가) — 그 폴더로 가서 ✕로 관리.
+                            cursorShape: (idxRow.indexingHere || !controller.indexBusy)
+                                ? Qt.PointingHandCursor : Qt.ArrowCursor
+                            onClicked: {
+                                if (idxRow.indexingHere) controller.cancelFolderIndex()
+                                else if (!controller.indexBusy) controller.startFolderIndex(idxRow.targetPaths(), true)
+                                // else: 다른 폴더 인덱싱 중 → 아무 동작 안 함(정보 표시만)
+                            }
                         }
                     }
                     // 🏷 폴더 태그 (단어 클릭 = 검색 필터). 단축키 H.
