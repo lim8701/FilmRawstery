@@ -767,6 +767,7 @@ class Controller(QObject):
         self._search = ""            # 탐색기 캡션 검색어(소문자)
         self._search_tokens = []     # 토큰화된 검색어(접두 일치용)
         self._kw_index = {}          # 워드클라우드 역인덱스 {내용어: [사진경로...]} — ☁ 열 때 구축
+        self._kw_index_liked = {}    # 좋아요 사진만의 역인덱스(♥ 그룹용) — 같은 패스로 구축
         self._index_seq = 0          # 폴더 배치 인덱싱 순번(취소=증가)
         self._index_busy = False
         self._index_done = 0
@@ -950,17 +951,24 @@ class Controller(QObject):
         with self._caption_lock:
             self._ensure_caption_cache(self._folder)
             caps = dict(self._captions)          # 스냅샷(락 밖에서 집계)
+        likes = self._likes if self._likes_folder == self._folder else set()
         idx = {}
+        idx_liked = {}
         for f in self._files:
             if f.get("isDir"):
                 continue
-            entry = caps.get(f.get("name"))
+            name = f.get("name")
+            entry = caps.get(name)
             if not entry:
                 continue
             path = f.get("path")
+            is_liked = name in likes
             for w in set(hashtags.keywords(" ".join(str(v) for v in entry.values()))):
                 idx.setdefault(w, []).append(path)
+                if is_liked:
+                    idx_liked.setdefault(w, []).append(path)
         self._kw_index = idx
+        self._kw_index_liked = idx_liked
         return idx
 
     @Slot(int, result="QVariantList")
@@ -970,6 +978,15 @@ class Controller(QObject):
         idx = self._build_kw_index()
         ranked = sorted(idx.items(), key=lambda kv: len(kv[1]), reverse=True)[:max(1, int(top))]
         return [{"word": w, "count": len(paths)} for w, paths in ranked]
+
+    @Slot(int, result="QVariantList")
+    def likedKeywords(self, top: int = 40):  # noqa: N802 (QML 슬롯)
+        """좋아요된 사진들의 내용어 빈도 상위 top개 → [{word, count}]. ♥ 그룹 표시용(전체 클라우드와
+        동일 규칙, 데이터만 좋아요로 한정). folderKeywords 가 만든 liked 서브인덱스 사용(없으면 구축)."""
+        if not self._kw_index:
+            self._build_kw_index()
+        ranked = sorted(self._kw_index_liked.items(), key=lambda kv: len(kv[1]), reverse=True)[:max(1, int(top))]
+        return [{"word": w, "count": len(p)} for w, p in ranked]
 
     @Slot(str, int, result="QVariantList")
     def filesWithKeyword(self, word: str, limit: int = 8):  # noqa: N802 (QML 슬롯)
@@ -982,6 +999,26 @@ class Controller(QObject):
         if paths is None:
             paths = self._build_kw_index().get(word, [])
         return paths[:max(1, int(limit))]
+
+    @Slot(result="QVariantMap")
+    def folderTagStats(self):  # noqa: N802 (QML 슬롯)
+        """워드클라우드 헤더 통계 → {photos, indexed, tags, liked}. photos=폴더 사진 수,
+        indexed=캡션 저장된 사진 수, tags=고유 내용어 수(역인덱스 크기), liked=좋아요 사진 수.
+        ☁ 열 때 folderKeywords 가 이미 역인덱스를 구축하므로 그대로 재사용(없으면 1회 구축)."""
+        idx = self._kw_index if self._kw_index else self._build_kw_index()
+        with self._caption_lock:
+            self._ensure_caption_cache(self._folder)
+            caps = self._captions
+        photos = 0
+        indexed = 0
+        for f in self._files:
+            if f.get("isDir"):
+                continue
+            photos += 1
+            if caps.get(f.get("name")):
+                indexed += 1
+        liked = len(self._likes) if self._likes_folder == self._folder else 0
+        return {"photos": photos, "indexed": indexed, "tags": len(idx), "liked": liked}
 
     # ---------- 폴더 배치 인덱싱(백그라운드 캡션 생성 → 검색 커버리지) ----------
     # caption-worker 모델을 단일 데몬 큐로 확장: 파일 리스트 직접 순회, 임베드 프리뷰(full RAW
