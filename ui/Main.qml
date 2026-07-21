@@ -1339,7 +1339,7 @@ ApplicationWindow {
             anchors.centerIn: parent
             spacing: 3
             Label {
-                text: "Folder tags"
+                text: "Photo tags"
                 color: "#ffffff"; font.pixelSize: 30; font.weight: Font.Bold; font.letterSpacing: 0.5
             }
             Label {
@@ -1367,7 +1367,7 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 spacing: 3
                 Label {
-                    text: "Folder tags"
+                    text: "Photo tags"
                     color: "#ffffff"; font.pixelSize: 30; font.weight: Font.Bold
                     font.letterSpacing: 0.5
                 }
@@ -1953,16 +1953,16 @@ ApplicationWindow {
                                 : controller.startFolderIndex(idxRow.targetPaths(), true)   // quiet(저부하)
                         }
                     }
-                    // ☁ 폴더 태그 워드 클라우드 (단어 클릭 = 검색 필터)
+                    // 🏷 폴더 태그 (단어 클릭 = 검색 필터). 단축키 H.
                     Rectangle {
                         Layout.preferredWidth: 20; Layout.preferredHeight: 20
                         radius: 4
                         color: cloudHover.hovered ? "#33373f" : "transparent"
                         border.color: "#555"; border.width: 1
-                        Text { anchors.centerIn: parent; text: "☁"; color: "#cfcfcf"; font.pixelSize: 11 }
+                        Text { anchors.centerIn: parent; text: "🏷"; color: "#cfcfcf"; font.pixelSize: 12 }
                         HoverHandler { id: cloudHover }
                         ToolTip.visible: cloudHover.hovered
-                        ToolTip.text: "Folder tag cloud — click a word to filter"
+                        ToolTip.text: "Photo tags (H) — click a word to filter"
                         MouseArea {
                             anchors.fill: parent; cursorShape: Qt.PointingHandCursor
                             onClicked: win.openTagCloud()
