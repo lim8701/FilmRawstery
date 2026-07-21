@@ -1210,7 +1210,10 @@ ApplicationWindow {
     Connections {
         target: controller
         function onIndexChanged() {
-            if (win._idxWasBusy && !controller.indexBusy && win.showTagCloud)
+            // 방금 끝났고(busy true→false) + 팝업 열림 + 끝난 폴더가 지금 보는 폴더일 때만 갱신
+            // (다른 폴더가 끝났으면 현재 폴더 태그는 그대로라 재구성이 낭비).
+            if (win._idxWasBusy && !controller.indexBusy && win.showTagCloud
+                    && controller.indexFolder === controller.currentFolder)
                 win.refreshTagCloud()
             win._idxWasBusy = controller.indexBusy
         }

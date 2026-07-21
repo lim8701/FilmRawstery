@@ -51,23 +51,46 @@
 ## UI
 - **검색창**: 파일 목록 위. 입력 시 필터(디바운스 180ms). 우측 **✕**로 삭제. Esc로 비움.
   텍스트 변경 시 선택 항목을 다시 선택+가운데 스크롤로 **선택/페이징 유지**(포커스는 검색창 유지).
-- **인덱싱 한 행**: `[진행·커버리지 바][214/561][⚙/✕]`. 바=배치 중 진행률/유휴 시 커버리지 비율.
+- **인덱싱 한 행**: `[진행·커버리지 바][214/561][⚙/✕][🏷]`. 바=배치 중 진행률/유휴 시 커버리지 비율.
   카운트 N/M은 **한 곳에만**(중복 없음), 캡션 저장·배치 진행 시 실시간 갱신. 버튼 ⚙ 시작/✕ 취소.
+  진행 표시는 **'지금 보는 폴더 == 인덱싱 중인 폴더'일 때만** — 다른 폴더로 옮기면 그 폴더의 커버리지만
+  보이고(어긋남 방지) 배치는 원래 폴더에서 계속, 버튼은 `⋯`(정보) 로 바뀜. 🏷=Photo tags(단축키 H).
+
+## 워드클라우드 — Photo tags (`H` / 🏷 버튼)
+폴더 캡션의 내용어 빈도를 몰입형 풀블리드 오버레이로 시각화 + 단어 클릭 필터. 신규 모델/의존성 0
+(사이드카 캡션 + `hashtags.keywords` 재활용).
+- **집계**: `folderKeywords`/`likedKeywords`/`filesWithKeyword`/`folderTagStats` — 열 때 역인덱스
+  `{내용어: [경로]}` 1회 구축(≈62ms/999장) 후 공유(호버 조회 O(1)). count=그 단어가 나온 사진 수.
+- **2단 레이아웃**: 좌=태그 클라우드(빈도→크기·굵기, 단일계열 blue 시퀀셜 + ♥ liked 서브그룹 red),
+  우=상시 사진 미리보기 그리드. 헤더=폴더 통계(photos·indexed·tags·liked).
+- **호버 dwell(200ms)**: 단어에 머물러야 미리보기 전환. leave 취소는 '떠나는 단어가 아직 대기 대상일
+  때만' → 드래그(enter/leave 순서 꼬임)로 안 바뀌던 문제 해결.
+- **미리보기 개수 동적**: 그리드에 완전히 들어가는 열×행만큼 로드(리사이즈 시 재계산).
+- **클릭**: 단어/썸네일 클릭 = 그 키워드로 검색 필터(썸네일은 그 사진까지 선택, 로드는 안 함) 후 닫힘.
+- **배경 글래스**: 열 때 `ShaderEffectSource(live:false)` 로 배경 1회 스냅샷 → `MultiEffect` 블러 +
+  어두운 틴트(가독성). per-frame 캡처 없음(발열 없음). 실패 시 어두운 스크림으로 degrade(`QtQuick.Effects`).
+- **빈 상태**: 캡션 0개면 2단 프레임 없이 헤더 그룹(타이틀+통계+안내)을 화면 정중앙 정렬.
+- **완료 시 자동 갱신**: 팝업이 열려 있고 그 폴더 인덱싱이 끝나면 최종 태그로 1회 재구성(보던 키워드 유지).
 
 ## 상세도(레벨)와 검색 커버리지
 - 인덱싱은 **현재 선택된 상세도 하나만** 추론(기본 Short). paragraph는 그 레벨로 조회/인덱싱해야 채워짐.
 - 검색은 저장된 **모든 상세도**를 합쳐 대조 → 특정 사진을 paragraph로 조회하면 그 사진은 이후
   paragraph 단어로도 검색됨(사진별 누적).
 
-## 커밋 (feat/folder-index, origin 반영)
+## 커밋 (dev 병합 완료 — v1.5.0 릴리즈 대상)
 ```
-4bca9d4  Show up to 15 caption hashtags
-45389f0  Match search against caption content words (hashtag basis) instead of full text
-f91dff4  Index whole folder regardless of list filter; prioritize liked when liked-only
-19ea00a  Add background folder caption indexing (CPU) with resume, search, and coverage status
 319f44d  Accelerate Florence-2 captioning on GPU (DirectML/CoreML) and add caption-based folder search
+19ea00a  Add background folder caption indexing (CPU) with resume, search, and coverage status
+f91dff4  Index whole folder regardless of list filter; prioritize liked when liked-only
+45389f0  Match search against caption content words (hashtag basis) instead of full text
+4bca9d4  Show up to 15 caption hashtags
+98f0b3f  Add folder tag word cloud with hover thumbnail preview and click-to-filter
+547ba61  Redesign tag cloud as two-column view with liked group, stats, and persistent preview
+9280306  Address pre-release review: move batch caption save off the caption lock
+b4684f5  Refine tag cloud: dynamic preview, centered empty state, frosted background, auto-refresh, dwell fix
+64c1b38  Rename tag cloud to "Photo tags" with a tag icon and shortcut hint
+4e0bd42  Bind indexing progress to its folder so navigating away isn't misleading
 ```
-**dev 병합은 추가 확인 후 진행 예정.**
 
 ## 검증
 - 헤드리스: QML 경고 0, 검색 매칭(접두·AND·내용어) 정확, 배치 재개(완료분 skip·generate 0회), CPU 세션

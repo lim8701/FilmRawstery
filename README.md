@@ -65,6 +65,18 @@ Any Fujifilm body works out of the box (everything is driven by per-file metadat
   <img src="docs/screenshot3.png" alt="Film Rawstery — AI caption: on-device Florence-2 description bar under the preview, with detail-level selector (Short / Detailed / Paragraph)" width="100%">
 </p>
 
+### Folder search & Photo tags
+Turns the on-device captions into a way to **browse a whole folder by content**:
+- **Caption search** — a search box over the file explorer filters the folder by caption **keywords** (the content words behind the captions — hashtag-style, with stopwords / numbers / very short tokens dropped). Terms are prefix-matched and AND-combined.
+- **Background indexing** — one click on **⚙ Index** captions the whole folder in the background (**CPU-only**, so it never contends with the GPU preview/edit and can't crash it), **resumable** (already-captioned photos are skipped), with a live coverage bar. Browsing and editing stay responsive throughout, and progress stays tied to the folder it started on if you navigate away.
+- **Photo tags** (`H`, or the 🏷 button) — an immersive, frosted-glass **tag view** of the folder: each keyword's size scales with how many photos carry it (a single-hue sequential ramp), with a separate **♥ In liked photos** group. Hover a tag to preview its photos in a grid on the right; **click a tag** (or any preview thumbnail) to filter the explorer to it. A header line summarizes the folder — photos · indexed · unique tags · liked.
+
+Captions are stored once as their raw text, so the search and tag rules are derived at query time — changing them needs no re-indexing.
+
+<p align="center">
+  <img src="docs/screenshot5.png" alt="Film Rawstery — Photo tags: frosted-glass tag view of a folder, keyword sizes scaled by how many photos carry each tag, with a live photo preview grid; click a tag to filter the folder" width="100%">
+</p>
+
 ### Film Simulations
 Fujifilm looks as 3D LUTs: Provia, Velvia, Astia, Classic Chrome, Classic Negative, Nostalgic Neg, PRO Neg. Hi/Std, Eterna, Reala Ace, Bleach Bypass — with adjustable strength. The list is driven by the `.cube` files present in `luts/`, so any known LUT you drop in (e.g. B&W ACROS / Monochrome / Sepia) appears automatically, and missing ones are hidden. See [`luts/README.md`](luts/README.md) for the key filenames and where to get the B&W LUTs.
 
