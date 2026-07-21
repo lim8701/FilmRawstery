@@ -766,6 +766,7 @@ class Controller(QObject):
         self._captions_folder = ""
         self._search = ""            # 탐색기 캡션 검색어(소문자)
         self._search_tokens = []     # 토큰화된 검색어(접두 일치용)
+        self._kw_index = {}          # 워드클라우드 역인덱스 {내용어: [사진경로...]} — ☁ 열 때 구축
         self._index_seq = 0          # 폴더 배치 인덱싱 순번(취소=증가)
         self._index_busy = False
         self._index_done = 0
@@ -940,6 +941,47 @@ class Controller(QObject):
         return sum(1 for f in self._files if not f.get("isDir"))
 
     photoCount = Property(int, _get_photo_count, notify=folderChanged)
+
+    def _build_kw_index(self) -> dict:
+        """현재 폴더의 역인덱스 {내용어: [사진경로...]} 구축 후 self._kw_index 에 캐시.
+        ☁ 열 때 1회 패스로 만들어(≈62ms/999장) folderKeywords·filesWithKeyword 가 공유 →
+        호버 조회가 O(1)(희소 단어도 즉시). 캡션당 단어는 set 으로 중복 제거(count=사진 수)."""
+        import hashtags
+        with self._caption_lock:
+            self._ensure_caption_cache(self._folder)
+            caps = dict(self._captions)          # 스냅샷(락 밖에서 집계)
+        idx = {}
+        for f in self._files:
+            if f.get("isDir"):
+                continue
+            entry = caps.get(f.get("name"))
+            if not entry:
+                continue
+            path = f.get("path")
+            for w in set(hashtags.keywords(" ".join(str(v) for v in entry.values()))):
+                idx.setdefault(w, []).append(path)
+        self._kw_index = idx
+        return idx
+
+    @Slot(int, result="QVariantList")
+    def folderKeywords(self, top: int = 60):  # noqa: N802 (QML 슬롯)
+        """현재 폴더 내용어 빈도 상위 top개 → [{word, count}] (count=그 단어가 나온 사진 수).
+        워드 클라우드용 — 역인덱스를 재구축(현재 폴더 반영)하고 그 크기로 순위 산출."""
+        idx = self._build_kw_index()
+        ranked = sorted(idx.items(), key=lambda kv: len(kv[1]), reverse=True)[:max(1, int(top))]
+        return [{"word": w, "count": len(paths)} for w, paths in ranked]
+
+    @Slot(str, int, result="QVariantList")
+    def filesWithKeyword(self, word: str, limit: int = 8):  # noqa: N802 (QML 슬롯)
+        """word 를 포함한 사진 경로(최대 limit개) — 워드클라우드 호버 미리보기용. 역인덱스 O(1) 조회
+        (folderKeywords 가 ☁ 열 때 이미 구축). 방어적으로 미구축이면 1회 구축."""
+        word = (word or "").strip().lower()
+        if not word:
+            return []
+        paths = self._kw_index.get(word)
+        if paths is None:
+            paths = self._build_kw_index().get(word, [])
+        return paths[:max(1, int(limit))]
 
     # ---------- 폴더 배치 인덱싱(백그라운드 캡션 생성 → 검색 커버리지) ----------
     # caption-worker 모델을 단일 데몬 큐로 확장: 파일 리스트 직접 순회, 임베드 프리뷰(full RAW

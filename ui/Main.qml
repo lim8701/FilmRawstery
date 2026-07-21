@@ -754,6 +754,14 @@ ApplicationWindow {
             Qt.callLater(function() { win.selectInExplorer(sel) })   // 목록 바인딩 갱신 뒤 스크롤
     }
     Shortcut { sequence: "L"; enabled: !win._typing; onActivated: win.toggleLikedOnly() }
+    // H = 폴더 태그 워드 클라우드 토글(열기/닫기). 폴더가 있어야 열림.
+    Shortcut {
+        sequence: "H"; enabled: !win._typing
+        onActivated: {
+            if (win.showTagCloud) win.showTagCloud = false
+            else if (controller.currentFolder !== "") win.openTagCloud()
+        }
+    }
     // 필터 적용된 표시 목록: 좋아요만 보기면 폴더(탐색용) + 좋아요된 RAW 만.
     //  - controller.fileList(1회만 마샬링)·likeRevision·showLikedOnly 변경 시 자동 재평가
     property var explorerFiles: {
@@ -1184,6 +1192,26 @@ ApplicationWindow {
             Qt.callLater(function() { win.selectInExplorer(sel, false) })   // 모델 갱신 뒤 복원(포커스 유지)
     }
 
+    // 폴더 태그 워드 클라우드 — 열 때 현재 폴더 키워드 빈도를 집계해 담고, 폰트 스케일용 min/max 계산.
+    property bool showTagCloud: false
+    property var tagCloudData: []
+    property int _tagMinCount: 1
+    property int _tagMaxCount: 1
+    property string _hoverTag: ""            // 호버 미리보기 대상 태그
+    property string _pendingTag: ""          // 디바운스 대기 태그
+    property var tagPreviewPaths: []         // 미리보기 썸네일 경로
+    function openTagCloud() {
+        var kw = controller.folderKeywords(60)
+        var mn = 1000000, mx = 1
+        for (var i = 0; i < kw.length; i++) { var c = kw[i].count; if (c < mn) mn = c; if (c > mx) mx = c }
+        win._tagMinCount = kw.length ? mn : 1
+        win._tagMaxCount = mx
+        win.tagCloudData = kw
+        win._hoverTag = ""; win._pendingTag = ""; win.tagPreviewPaths = []   // 미리보기 초기화
+        win.showTagCloud = true
+    }
+    function previewTag(word) { win._pendingTag = word; tagPreviewTimer.restart() }
+
     // 탐색기에서 우클릭한 파일을 프리뷰 창으로 연다.
     // 현재 폴더의 RAW(디렉터리 제외)만 경로 배열로 만들어 좌/우 네비 대상으로 넘긴다.
     function openPreview(path) {
@@ -1200,6 +1228,168 @@ ApplicationWindow {
         }
         if (list.length > 0)
             previewWin.open(list, start)
+    }
+
+    // ─── 폴더 태그 워드 클라우드 (몰입형 풀블리드 — 경계 없는 반투명 전면, 단어 클릭 = 검색 필터) ───
+    Rectangle {
+        id: tagCloudOverlay
+        visible: win.showTagCloud
+        anchors.fill: parent
+        z: 1000
+        color: "#e6121212"                                   // 경계 없는 반투명 다크 전면
+        opacity: win.showTagCloud ? 1 : 0                    // 페이드 등장(다이얼로그 팝 아님)
+        Behavior on opacity { NumberAnimation { duration: 160; easing.type: Easing.OutCubic } }
+        focus: win.showTagCloud                              // 열릴 때 키 입력 받기 → Esc 닫기
+        onVisibleChanged: if (visible) forceActiveFocus()
+        Keys.onEscapePressed: win.showTagCloud = false
+        MouseArea { anchors.fill: parent; onClicked: win.showTagCloud = false }   // 빈 곳 클릭=닫기
+
+        // 호버 dwell 타이머 — 단어에 200ms 머물러야 미리보기 전환. 스쳐 지나가는 단어는
+        // 머무르지 않아(벗어날 때 stop) 전환 안 됨 → 썸네일로 내려가는 길에 바뀌는 문제 해결.
+        Timer {
+            id: tagPreviewTimer; interval: 200
+            onTriggered: {
+                win._hoverTag = win._pendingTag
+                win.tagPreviewPaths = win._hoverTag ? controller.filesWithKeyword(win._hoverTag, 8) : []
+            }
+        }
+
+        // 하단 호버 미리보기 스트립 — 단어에 마우스 올리면 그 주제 사진 썸네일(클릭=그 사진 열기)
+        Item {
+            visible: win.tagCloudData.length > 0
+            anchors.left: parent.left; anchors.right: parent.right; anchors.bottom: parent.bottom
+            anchors.leftMargin: 40; anchors.rightMargin: 40; anchors.bottomMargin: 22
+            height: 116
+            Label {   // 호버 전 힌트
+                visible: win.tagPreviewPaths.length === 0
+                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                text: "Hover a word to preview its photos"
+                color: "#5f6b7a"; font.pixelSize: 12
+            }
+            Column {
+                visible: win.tagPreviewPaths.length > 0
+                anchors.fill: parent
+                spacing: 8
+                Label {
+                    text: "“" + win._hoverTag + "”  ·  "
+                          + win.tagPreviewPaths.length + (win.tagPreviewPaths.length >= 8 ? "+ photos" : " photos")
+                    color: "#cfe0ff"; font.pixelSize: 12
+                }
+                Row {
+                    spacing: 8
+                    Repeater {
+                        model: win.tagPreviewPaths
+                        delegate: Rectangle {
+                            width: 92; height: 92; radius: 6; color: "#222"; clip: true
+                            border.color: thumbHover.hovered ? "#8ab4f8" : "transparent"; border.width: 1
+                            Image {
+                                anchors.fill: parent; anchors.margins: 1
+                                source: "image://thumb/" + encodeURIComponent(modelData)
+                                sourceSize.width: 160; fillMode: Image.PreserveAspectCrop
+                                asynchronous: true; cache: true
+                            }
+                            HoverHandler { id: thumbHover }
+                            MouseArea {
+                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                onClicked: {   // 로드하지 않음: 그 키워드로 필터 + 그 사진까지 선택(하이라이트/스크롤)
+                                    var p = modelData
+                                    searchInput.text = win._hoverTag
+                                    controller.setSearchQuery(win._hoverTag)
+                                    Qt.callLater(function() { win.selectInExplorer(p) })
+                                    win.showTagCloud = false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 헤더 (상단에 떠 있음, 박스 없음)
+        Label {
+            id: tcTitle
+            anchors.top: parent.top; anchors.left: parent.left
+            anchors.topMargin: 28; anchors.leftMargin: 40
+            text: "Folder tags"; color: "#f0f0f0"; font.pixelSize: 20; font.bold: true
+        }
+        Label {
+            anchors.left: tcTitle.left; anchors.top: tcTitle.bottom; anchors.topMargin: 2
+            text: win.tagCloudData.length + " words · click a word to filter"
+            color: "#8892a0"; font.pixelSize: 12
+        }
+        Text {
+            anchors.top: parent.top; anchors.right: parent.right
+            anchors.topMargin: 26; anchors.rightMargin: 34
+            text: "✕"; color: tcX.hovered ? "#f0f0f0" : "#8892a0"; font.pixelSize: 22
+            HoverHandler { id: tcX }
+            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                        onClicked: win.showTagCloud = false }
+        }
+
+        // 빈 상태
+        Label {
+            visible: win.tagCloudData.length === 0
+            anchors.centerIn: parent; horizontalAlignment: Text.AlignHCenter
+            text: "No indexed captions in this folder yet.\nClick the ⚙ Index button to index it first."
+            color: "#888"; font.pixelSize: 14
+        }
+
+        // 클라우드 (헤더 아래, 넓은 좌우 여백 → 호버 확대에도 안 잘림). 살짝 늦은 페이드+라이즈.
+        Flickable {
+            id: tcFlick
+            visible: win.tagCloudData.length > 0
+            anchors.fill: parent
+            anchors.topMargin: 96; anchors.bottomMargin: 150
+            anchors.leftMargin: 40; anchors.rightMargin: 40
+            contentWidth: width; contentHeight: tcFlow.height
+            clip: true; boundsBehavior: Flickable.StopAtBounds
+            opacity: win.showTagCloud ? 1 : 0
+            transform: Translate {
+                y: win.showTagCloud ? 0 : 16
+                Behavior on y { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+            }
+            Behavior on opacity { NumberAnimation { duration: 240; easing.type: Easing.OutCubic } }
+            Flow {
+                id: tcFlow
+                x: 10; width: tcFlick.width - 20               // 안쪽 여백 → 호버 확대 시 잘림 방지
+                spacing: 18
+                Repeater {
+                    model: win.tagCloudData
+                    delegate: Text {
+                        // 빈도 정규화 t(로그) — 크기·굵기·색을 일관 강조(시퀀셜).
+                        property real t: {
+                            var mn = win._tagMinCount, mx = win._tagMaxCount
+                            return (mx <= mn) ? 0.5
+                                : (Math.log(modelData.count) - Math.log(mn)) / (Math.log(mx) - Math.log(mn))
+                        }
+                        text: modelData.word
+                        font.pixelSize: Math.round(14 + t * 28)      // 14~42px
+                        font.weight: 400 + Math.round(t * 300)        // 400~700(빈도로 굵기)
+                        // 시퀀셜: muted grey-blue(희소) → accent blue(빈번). 호버=밝게.
+                        color: wHover.hovered ? "#cfe0ff"
+                            : Qt.rgba(0.55 + t * 0.11, 0.58 + t * 0.20, 0.63 + t * 0.37, 1)
+                        scale: wHover.hovered ? 1.12 : 1.0
+                        Behavior on scale { NumberAnimation { duration: 110; easing.type: Easing.OutCubic } }
+                        Behavior on color { ColorAnimation { duration: 110 } }
+                        HoverHandler {
+                            id: wHover
+                            // 진입=dwell 시작, 이탈=대기 전환 취소(스쳐 지나가면 안 바뀜, 기존 미리보기 유지)
+                            onHoveredChanged: { if (hovered) win.previewTag(modelData.word); else tagPreviewTimer.stop() }
+                        }
+                        ToolTip.visible: wHover.hovered
+                        ToolTip.text: modelData.count + " photos"
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: {
+                                searchInput.text = modelData.word   // 검색창 동기화(✕로 해제)
+                                win.applySearch(modelData.word)     // 탐색기 필터(선택/스크롤 유지)
+                                win.showTagCloud = false
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // 폴더가 바뀌면 좌측 리스트 선택 하이라이트 초기화(잔상 방지).
@@ -1588,6 +1778,21 @@ ApplicationWindow {
                             cursorShape: Qt.PointingHandCursor
                             onClicked: controller.indexBusy ? controller.cancelFolderIndex()
                                 : controller.startFolderIndex(idxRow.targetPaths(), true)   // quiet(저부하)
+                        }
+                    }
+                    // ☁ 폴더 태그 워드 클라우드 (단어 클릭 = 검색 필터)
+                    Rectangle {
+                        Layout.preferredWidth: 20; Layout.preferredHeight: 20
+                        radius: 4
+                        color: cloudHover.hovered ? "#33373f" : "transparent"
+                        border.color: "#555"; border.width: 1
+                        Text { anchors.centerIn: parent; text: "☁"; color: "#cfcfcf"; font.pixelSize: 11 }
+                        HoverHandler { id: cloudHover }
+                        ToolTip.visible: cloudHover.hovered
+                        ToolTip.text: "Folder tag cloud — click a word to filter"
+                        MouseArea {
+                            anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                            onClicked: win.openTagCloud()
                         }
                     }
                 }
