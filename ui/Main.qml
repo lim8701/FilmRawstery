@@ -11390,12 +11390,6 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                             magMirror.faceTrack[win.wallTypeface] * 80 * spMirror.ms
                                         lineHeight: spMirror.headStep; lineHeightMode: Text.FixedHeight
                                     }
-                                    Rectangle {   // 헤드라인 밑줄 바
-                                        x: spMirror.clX; y: spMirror.headEnd + 26 * spMirror.ms
-                                        width: 120 * spMirror.ms
-                                        height: Math.max(1, 3 * spMirror.ms)
-                                        color: "#16161a"
-                                    }
                                     // 사진별 본문 — 재는 Text 둘(안 보임, 안 자름) + 보이는 Text 둘
                                     // (합성의 break 와 같은 자리에서 폴리오 위로 자른다).
                                     Text {

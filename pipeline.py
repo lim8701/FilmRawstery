@@ -2046,6 +2046,8 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
         # ── 지면 머리: 키커 + 헤드라인. ★제목은 **맨 위, 텍스트 지면 전체 폭**이다
         #   (사용자 결정 2026-09 — 칼럼 중간에 두면 어느 사진에 걸린 제목인지 애매해진다).
         #   두 칼럼은 이 블록 **아래**(col_top)에서 시작한다.
+        # ⚠️헤드라인 밑줄 바는 **의도적으로 없다** — 길이가 제목과 무관한 고정값이라
+        #   어색했다(사용자 결정 2026-09). 다른 지면 계열에는 그대로 있다.
         _draw_text(p, cl_x, top, str(opts.get("kicker", "")),
                    _qfont(fam_b, S(28), bold=True), accent, S(6), True)
         f_head = _qfont(fam_h, S(80), bold=True)
@@ -2053,7 +2055,6 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
         for ln in _wrap(f_head, str(opts.get("headline", "")), tw):
             _draw_text(p, cl_x, hy, ln, f_head, MAG_INK, track_frac * S(80), upper)
             hy += int(S(80) * lh)
-        p.fillRect(cl_x, hy + S(26), S(120), max(1, S(3)), QColor(*MAG_INK))
 
         # ── 리드문(이탤릭): 지면 전체를 받는 **하나뿐인** 글. 사진별 얘기는 아래 칼럼으로.
         #   ⚠️비어 있으면 한 줄도 잡지 않는다 — `_wrap` 은 빈 문자열에도 [""] 를 돌려주므로
