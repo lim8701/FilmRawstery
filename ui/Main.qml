@@ -1684,16 +1684,26 @@ ApplicationWindow {
     property var wallOffsets: [0.0, 0.0, 0.0]     // 가로 크롭 오프셋(-1 왼쪽끝..+1 오른쪽끝)
     property int wallGap: 18                      // 패널 사이 검정 갭(px, 캔버스 기준)
     property int wallResIndex: 0
-    // 레이아웃: 0=트립틱(3분할), 1=잡지 스프레드(메인 사진 풀블리드 + 타이포 칼럼)
+    // 레이아웃: 0=트립틱(3분할), 1=잡지 스프레드(메인 사진 풀블리드 + 타이포 칼럼),
+    //          2=인덱스 시트, 3=풀블리드, 4=두 페이지 스프레드(텍스트 지면 + 전면 사진 지면)
     property int wallLayout: 0
-    readonly property var wallLayoutKeys: ["triptych", "magazine", "index", "fullbleed"]
+    readonly property var wallLayoutKeys: ["triptych", "magazine", "index", "fullbleed",
+                                           "spread"]
     // 레이아웃의 '성격' — 개별 인덱스를 여기저기 흩어 적으면 레이아웃을 늘릴 때마다 샌다.
-    //   editorial : 종이/글자가 들어가는 지면 계열(매거진·인덱스·풀블리드)
-    //   hasMain   : 가운데 슬롯이 메인 사진인 계열(매거진·풀블리드)
+    //   editorial : 종이/글자가 들어가는 지면 계열(매거진·인덱스·풀블리드·스프레드)
+    //   hasMain   : 가운데 슬롯이 메인 사진인 계열(매거진·풀블리드·스프레드)
     //   needs     : export 에 필요한 사진 장수
     readonly property bool wallEditorial: win.wallLayout >= 1
     readonly property bool wallHasMain: win.wallLayout === 1 || win.wallLayout === 3
-    // ⚠️네 레이아웃 모두 사진 3장이 필요하다 — 풀블리드도 우하단에 나머지 두 장을 쓴다.
+                                        || win.wallLayout === 4
+    // 오프셋 슬라이더가 **실제로 쓰이는** 칸 — 판정 기준은 하나, '합성이 그 슬롯의 offsets 를
+    // 읽는가' 다. 안 읽는 칸에 슬라이더를 남기면 '슬라이더가 안 먹는다'가 된다(과거 사례).
+    //   트립틱·인덱스·스프레드 : 세 칸 모두 cover 크롭
+    //   잡지·풀블리드          : 메인(슬롯 1)만 — 작은 판은 크롭 0% 라 움직일 여지가 없다
+    function wallOffsetLive(slot) {
+        return !win.wallHasMain || slot === 1 || win.wallLayout === 4
+    }
+    // ⚠️다섯 레이아웃 모두 사진 3장이 필요하다 — 풀블리드도 우하단에 나머지 두 장을 쓴다.
     //   (한 장만 쓰는 안은 시안 단계에서 기각됐다)
     property int wallTypeface: 0                  // 0=Serif, 1=Sans, 2=Serif(KR), 3=Sans(KR)
     readonly property var wallTypefaceKeys: ["serif", "sans", "serif_ko", "sans_ko"]
@@ -1701,13 +1711,19 @@ ApplicationWindow {
     // 화면에서 보이는 좌→우 슬롯 순서(compose_magazine 과 동일 규칙). 트립틱은 슬롯 순서가
     // 곧 좌→우이고, 잡지는 메인 사진(가운데 슬롯)이 좌/우 끝에 놓이므로 순서가 달라진다.
     // 패널의 슬롯 카드도 이 순서로 나열해 번호(Frame 0N)와 위치가 어긋나지 않게 한다.
-    readonly property var wallSlotOrder: win.wallLayout !== 1 ? [0, 1, 2]
+    // ⚠️스프레드(4)만 **좌→우가 아니라 메인=01 고정**이다(compose_spread 와 짝) — 사진 지면이
+    //   어느 쪽에 있든 주인공이 01 이어야 읽힌다는 시안 결정.
+    readonly property var wallSlotOrder: win.wallLayout === 4 ? [1, 0, 2]
+                                         : win.wallLayout !== 1 ? [0, 1, 2]
                                          : (win.wallMainSide === 0 ? [1, 0, 2] : [0, 2, 1])
     function wallFrameNo(slot) { return win.wallSlotOrder.indexOf(slot) + 1 }
     // 잡지 레이아웃 텍스트(사용자 입력) — controller 가 QSettings 에 영구 저장
     property string wallKicker: ""
     property string wallHeadline: ""
     property string wallDeck: ""
+    // 스프레드의 **사진별 본문** — 그 사진이 있는 칼럼에 인쇄된다(compose_spread `notes`).
+    // 슬롯 1(메인)은 지면에 본문 자리가 없어 칸도 안 보여 준다.
+    property var wallNotes: ["", "", ""]
     property string wallPlace: ""
     property string wallDate: ""                  // 비우면 메인 사진 EXIF 촬영월로 자동
     property var wallTitles: ["", "", ""]
@@ -1731,6 +1747,10 @@ ApplicationWindow {
         var a = win.wallTitles.slice(); a[i] = v; win.wallTitles = a
         controller.setWallpaperText("title" + i, v)
     }
+    function wallSetNote(i, v) {
+        var a = win.wallNotes.slice(); a[i] = v; win.wallNotes = a
+        controller.setWallpaperText("note" + i, v)
+    }
     // 마지막 작업 상태 복원(패널이 켜진 경우에만 — .env 플래그 off 면 불필요):
     // 텍스트 + 슬롯 사진/오프셋 + 레이아웃 옵션. 사라진 파일은 빈 슬롯으로 복원된다
     // (controller.wallpaperSlotPath 가 존재 확인).
@@ -1742,6 +1762,9 @@ ApplicationWindow {
         win.wallKicker = controller.wallpaperText("kicker") || "Photo Essay"
         win.wallHeadline = controller.wallpaperText("headline")
         win.wallDeck = controller.wallpaperText("deck")
+        win.wallNotes = [controller.wallpaperText("note0"),
+                         controller.wallpaperText("note1"),
+                         controller.wallpaperText("note2")]
         win.wallPlace = controller.wallpaperText("place")
         win.wallDate = controller.wallpaperText("date")
         win.wallTitles = [controller.wallpaperText("title0"),
@@ -1756,7 +1779,7 @@ ApplicationWindow {
         }
         win.wallOffsets = [num("off0", 0, -1, 1), num("off1", 0, -1, 1),
                            num("off2", 0, -1, 1)]
-        win.wallLayout = num("layout", 0, 0, 3)
+        win.wallLayout = num("layout", 0, 0, 4)
         win.wallTypeface = num("typeface", 0, 0, 3)
         win.wallMainSide = num("mainSide", 1, 0, 1)
         win.wallResIndex = num("resIndex", 0, 0, 6)
@@ -1815,7 +1838,8 @@ ApplicationWindow {
             "kicker": win.wallKicker, "headline": win.wallHeadline, "deck": win.wallDeck,
             "place": win.wallPlace, "date": win.wallDate,
             "dual": win.wallDualAspect ? 1 : 0,
-            "title0": win.wallTitles[0], "title1": win.wallTitles[1], "title2": win.wallTitles[2]
+            "title0": win.wallTitles[0], "title1": win.wallTitles[1], "title2": win.wallTitles[2],
+            "note0": win.wallNotes[0], "note1": win.wallNotes[1], "note2": win.wallNotes[2]
         }
     }
     // 맵 → 패널 상태 반영 + 같은 값을 '마지막 상태'로도 저장(재시작 시 그대로 복원)
@@ -1825,7 +1849,7 @@ ApplicationWindow {
             return isNaN(v) ? dflt : Math.max(lo, Math.min(hi, v))
         }
         function str(k) { return m[k] === undefined ? "" : String(m[k]) }
-        win.wallLayout = num("layout", win.wallLayout, 0, 3)
+        win.wallLayout = num("layout", win.wallLayout, 0, 4)
         win.wallTypeface = num("typeface", win.wallTypeface, 0, 3)
         win.wallMainSide = num("mainSide", win.wallMainSide, 0, 1)
         win.wallResIndex = num("resIndex", win.wallResIndex, 0, 6)
@@ -1834,8 +1858,10 @@ ApplicationWindow {
         win.wallOffsets = [num("off0", 0, -1, 1), num("off1", 0, -1, 1), num("off2", 0, -1, 1)]
         win.wallSlots = [str("slot0"), str("slot1"), str("slot2")]
         win.wallKicker = str("kicker"); win.wallHeadline = str("headline")
-        win.wallDeck = str("deck"); win.wallPlace = str("place"); win.wallDate = str("date")
+        win.wallDeck = str("deck")
+        win.wallPlace = str("place"); win.wallDate = str("date")
         win.wallTitles = [str("title0"), str("title1"), str("title2")]
+        win.wallNotes = [str("note0"), str("note1"), str("note2")]
         var cur = win.wallCurrentState()
         for (var k in cur) win.wallSave(k, cur[k])
     }
@@ -1854,6 +1880,7 @@ ApplicationWindow {
         win.wallSave("slot" + slot, "")
         win.wallSave("off" + slot, 0)
         win.wallSetTitle(slot, "")
+        win.wallSetNote(slot, "")            // 지운 사진의 글이 다음 사진에 붙지 않게
     }
     // 드래그 중(onMoved)엔 값만 갱신하고, 저장은 릴리스 때 1회(wallSaveOffset).
     function wallSetOffset(slot, v) {
@@ -1897,7 +1924,8 @@ ApplicationWindow {
                 "mainSide": win.wallMainSide === 0 ? "left" : "right",
                 "safeAspects": win.wallSafeAspects,
                 "kicker": win.wallKicker, "headline": win.wallHeadline,
-                "deck": win.wallDeck, "place": win.wallPlace, "date": win.wallDate,
+                "deck": win.wallDeck, "notes": win.wallNotes,
+                "place": win.wallPlace, "date": win.wallDate,
                 "titles": win.wallTitles, "paths": win.wallSlots })
             return
         }
@@ -10613,7 +10641,9 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                       ? "Magazine spread: the center slot becomes the full-bleed main photo; the other two appear as small frames in the text column."
                                       : win.wallLayout === 2
                                       ? "Index sheet: all three frames get equal square crops on paper, numbered and captioned. Each slot's offset slider positions its crop."
-                                      : "Full bleed: the center slot fills the screen and the type sits on it; the other two appear small in the bottom-right corner."
+                                      : win.wallLayout === 3
+                                      ? "Full bleed: the center slot fills the screen and the type sits on it; the other two appear small in the bottom-right corner."
+                                      : "Two-page spread: the center slot fills one whole page; the other two sit on the facing page at the same size, next to the lead, headline and body copy. All three are cropped to fit — each offset slider places its crop, and 0 is dead centre."
                                 color: "#888"; font.pixelSize: 11
                             }
 
@@ -10621,7 +10651,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                 id: wallLayoutCombo
                                 Layout.fillWidth: true
                                 model: ["Triptych (3-up)", "Magazine spread",
-                                        "Index sheet", "Full bleed"]
+                                        "Index sheet", "Full bleed", "Two-page spread"]
                                 currentIndex: win.wallLayout
                                 onActivated: { win.wallLayout = currentIndex; win.wallSave("layout", currentIndex) }
                                 // ⚠️사용자 조작 시 currentIndex 바인딩이 끊기므로 프리셋 적용을
@@ -10816,7 +10846,12 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         readonly property bool mag: win.wallLayout === 1
                                         readonly property bool idx: win.wallLayout === 2
                                         readonly property bool fb: win.wallLayout === 3
+                                        readonly property bool sp: win.wallLayout === 4
                                         readonly property bool isMain: index === 1
+                                        // 스프레드는 세 칸이 전부 텍스트 흐름에서 나오므로
+                                        // 미러가 계산한 사각형을 그대로 받는다(아래 spMirror).
+                                        readonly property var spRect: sp ? spMirror.rectFor(index)
+                                                                         : null
                                         // ★풀블리드의 메인은 캔버스 전체라, Repeater 가 나중에
                                         //   그리는 index 1 이 먼저 그린 index 0(왼쪽 작은 판)을
                                         //   덮는다 — 프리뷰에 오른쪽 한 장만 보였다.
@@ -10828,8 +10863,10 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         // 텍스트 흐름 파생값(합성 avail_h 와 동일 수식). 합성처럼
                                         // 남은 높이가 S(120) 이하면 아예 그리지 않는다.
                                         readonly property real smallH: Math.max(1, magMirror.smallH)
-                                        visible: !mag || isMain || magMirror.smallsVisible
-                                        x: idx ? idxMirror.x0
+                                        visible: sp ? (index === 1 || spMirror.smallsVisible)
+                                                 : (!mag || isMain || magMirror.smallsVisible)
+                                        x: sp ? spRect.x
+                                           : idx ? idxMirror.x0
                                                  + index * (idxMirror.side + idxMirror.gap)
                                            : fb ? (isMain ? 0
                                                           : wallPreview.fbX0 + (index === 0 ? 0
@@ -10838,14 +10875,17 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                                   : (isMain ? wallPreview.mainX
                                                             : wallPreview.colL + wallPreview.mOut
                                                               + (index === 0 ? 0 : wallPreview.smallW + wallPreview.smallGap))
-                                        y: idx ? idxMirror.bandTop
+                                        y: sp ? spRect.y
+                                           : idx ? idxMirror.bandTop
                                            : fb ? (isMain ? 0 : wallPreview.fbY)
                                            : (!mag || isMain ? 0 : magMirror.smallsY)
-                                        width: idx ? idxMirror.side
+                                        width: sp ? spRect.w
+                                               : idx ? idxMirror.side
                                                : fb ? (isMain ? wallPreview.width : wallPreview.fbTw)
                                                : !mag ? wallPreview.cellW
                                                       : (isMain ? wallPreview.mainW : wallPreview.smallW)
-                                        height: idx ? idxMirror.side
+                                        height: sp ? spRect.h
+                                                : idx ? idxMirror.side
                                                 : fb ? (isMain ? wallPreview.height : wallPreview.fbTh)
                                                 : (!mag || isMain ? wallPreview.height : smallH)
                                         clip: true
@@ -11170,6 +11210,281 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     }
                                 }
 
+                                // ---- 두 페이지 스프레드 미러 — compose_spread 의 좌표·크기를
+                                // ms = safeRect.h/2160 로 스케일해 **같은 자리**에 그린다.
+                                // ⚠️상수(150/86/96/46/70/16/60/18/22/56/58/38/120/102/108 와
+                                //   비율 0.72·1.38)는 pipeline.compose_spread 와 짝 — 한쪽을
+                                //   바꾸면 같이 바꿀 것.
+                                // ★사진 세 칸의 자리·크기도 여기서 나온다(합성과 같은 식) —
+                                //   두 칼럼 사진은 **각 칼럼 글 높이를 빼서 역산**하므로 텍스트
+                                //   흐름 없이는 정확할 수 없다. 셀 Repeater 가 `rectFor(index)`
+                                //   로 받아 간다.
+                                // 남는 근사: QML 워드랩이 QPainter 폭 계산과 미세하게 다를 수 있고
+                                //   (줄 수가 갈리는 경계 문장), 작은 판 캡션이 넘칠 때 합성은
+                                //   단어 경계에서 자르고 프리뷰는 '…' 로 줄인다.
+                                Item {
+                                    id: spMirror
+                                    visible: win.wallLayout === 4
+                                    anchors.fill: parent
+                                    readonly property real ms: wallPreview.safeRect.h / 2160
+                                    readonly property real sx0: wallPreview.safeRect.x
+                                    readonly property real sy0: wallPreview.safeRect.y
+                                    readonly property real sx1: sx0 + wallPreview.safeRect.w
+                                    readonly property real sy1: sy0 + wallPreview.safeRect.h
+                                    readonly property string famH: magMirror.famH
+                                    readonly property string famB: magMirror.famB
+                                    readonly property color accent: magMirror.accent
+                                    readonly property bool up: magMirror.up
+                                    readonly property real lhf: magMirror.lhf
+                                    // 리드문 이탤릭은 라틴 서체에서만(합성의 `ital` 과 같은 규칙)
+                                    readonly property bool ital: win.wallTypeface < 2
+                                    function fpx(v) { return Math.max(1, Math.round(v * ms)) }
+                                    function uc(t) { return up ? t.toUpperCase() : t }
+
+                                    // ── 두 지면: 사진 지면(메인 풀블리드) + 텍스트 지면 2칼럼
+                                    readonly property bool mainLeft: win.wallMainSide === 0
+                                    readonly property real mainW: wallPreview.width * 0.5
+                                    readonly property real mainX: mainLeft ? 0
+                                                                           : wallPreview.width - mainW
+                                    readonly property real tx0: mainLeft ? Math.max(sx0, mainW) + 150 * ms
+                                                                         : sx0 + 150 * ms
+                                    readonly property real tx1: mainLeft ? sx1 - 150 * ms
+                                                                         : Math.min(sx1, mainX) - 150 * ms
+                                    readonly property real tw: Math.max(300 * ms, tx1 - tx0)
+                                    readonly property real top0: sy0 + 150 * ms
+                                    readonly property real bottom0: sy1 - 150 * ms
+                                    // 두 칼럼은 같은 폭(합성과 동일) — 작은 판 02·03 이 같은
+                                    // 크기여야 하고, 각자 칼럼을 꽉 채우므로 가로 가운데가 된다.
+                                    readonly property real clW: (tw - 60 * ms) / 2
+                                    readonly property real crW: clW
+                                    readonly property real clX: tx0
+                                    readonly property real crX: tx0 + clW + 60 * ms
+
+                                    // 지면 머리: 헤드라인이 **맨 위, 지면 전체 폭**이고 두 칼럼은
+                                    // 그 아래(colTop)에서 시작한다(합성과 동일).
+                                    readonly property real headStep: 80 * ms * lhf
+                                    readonly property real headN: Math.max(1, mSpHead.lineCount)
+                                    readonly property real headEnd: top0 + 86 * ms + headN * headStep
+                                    // 리드문: 지면 전체를 받는 하나뿐인 글(합성은 3줄에서 자른다).
+                                    // ⚠️비어 있으면 한 줄도 안 잡는다 — 합성과 같은 규칙.
+                                    readonly property real deckN: win.wallDeck.trim() === "" ? 0
+                                        : Math.max(1, mSpDeck.lineCount)
+                                    readonly property real colTop: headEnd + 96 * ms
+                                        + deckN * 46 * ms + (deckN > 0 ? 70 * ms : 16 * ms)
+                                    // 사진별 본문 — ⚠️줄 수는 **자르기 전 전체 줄 수**여야 한다
+                                    //   (합성이 그 길이로 사진 높이를 역산한다) → 재는 Text 를
+                                    //   따로 두고, 보이는 Text 만 폴리오 위에서 자른다.
+                                    readonly property real noteNL: win.wallNotes[2].trim() === "" ? 0
+                                        : Math.max(1, mSpNoteLN.lineCount)
+                                    readonly property real noteNR: win.wallNotes[0].trim() === "" ? 0
+                                        : Math.max(1, mSpNoteRN.lineCount)
+                                    // ★사진 크기는 **글 분량과 무관하게 고정**이고, 넘치는 글은
+                                    //   '…' 로 잘린다(합성과 동일). 줄 예산은 두 칼럼이 같다.
+                                    readonly property real ph: Math.min(clW * 1.38,
+                                                                        (bottom0 - colTop) - 76 * ms)
+                                    readonly property int maxLines: Math.max(0, Math.floor(
+                                        ((bottom0 - colTop) - ph - 76 * ms) / (38 * ms)))
+                                    // 글 덩어리 = 캡션 줄 + 문단 + 사진과의 간격(합성과 동일)
+                                    readonly property real textHL: 58 * ms + 18 * ms
+                                        + 38 * ms * Math.min(noteNL, maxLines)
+                                    readonly property real textHR: 58 * ms + 18 * ms
+                                        + 38 * ms * Math.min(noteNR, maxLines)
+                                    // ★엇갈림은 사진을 미는 게 아니라 **글의 자리를 좌우 반대로**
+                                    //   둬서 만든다 — 오른 칼럼은 사진→글(위 정렬), 왼 칼럼은
+                                    //   글→사진(바닥 정렬). 두 판의 크기·비율은 그대로 같다.
+                                    readonly property real yCapR: colTop + ph + 18 * ms
+                                    readonly property real yNoteR: yCapR + 58 * ms
+                                    readonly property real p3Y: bottom0 - ph
+                                    readonly property real yCapL: p3Y - textHL
+                                    readonly property real yNoteL: yCapL + 58 * ms
+                                    readonly property bool smallsVisible: ph > 160 * ms
+                                    // 폴리오 날짜: 비우면 합성이 메인 사진 촬영월로 채운다.
+                                    readonly property string folioDate: win.wallDate.trim() !== ""
+                                                                        ? win.wallDate : win.wallShots[1][1]
+                                    readonly property bool hasFolio: win.wallPlace.trim() !== ""
+                                                                     || folioDate.trim() !== ""
+
+                                    function rectFor(i) {
+                                        if (i === 1) return { x: mainX, y: 0, w: mainW,
+                                                              h: wallPreview.height }
+                                        if (i === 0) return { x: crX, y: colTop, w: crW, h: ph }
+                                        return { x: clX, y: p3Y, w: clW, h: ph }
+                                    }
+                                    // 작은 판 캡션 문자열(제목 · 촬영정보) — 합성 small_cap 미러.
+                                    // ★번호는 스프레드에서 **고정**이다(메인 01 · 위 02 · 아래 03)
+                                    //   — 좌→우로 매기는 잡지 레이아웃과 규칙이 다르다.
+                                    function capText(title, shot) {
+                                        var a = String(title).trim(), b = String(shot).trim()
+                                        return (a !== "" && b !== "") ? a + "   ·   " + b
+                                                                      : (a !== "" ? a : b)
+                                    }
+
+                                    Text {   // 키커
+                                        x: spMirror.clX; y: spMirror.top0
+                                        text: win.wallKicker.toUpperCase()
+                                        color: spMirror.accent; font.bold: true
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(28)
+                                        font.letterSpacing: 6 * spMirror.ms
+                                    }
+                                    Text {   // 리드문 — 지면 전체 폭의 0.72(합성은 3줄에서 자른다)
+                                        id: mSpDeck
+                                        x: spMirror.clX
+                                        y: spMirror.headEnd + 96 * spMirror.ms
+                                        width: spMirror.tw * 0.72; wrapMode: Text.WordWrap
+                                        maximumLineCount: 3
+                                        text: win.wallDeck
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.italic: spMirror.ital
+                                        font.pixelSize: spMirror.fpx(34)
+                                        lineHeight: 46 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Text {   // 오른 칼럼 사진 캡션: 번호
+                                        visible: spMirror.smallsVisible
+                                        x: spMirror.crX; y: spMirror.yCapR
+                                        text: "02"
+                                        color: spMirror.accent; font.bold: true
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(22)
+                                        font.letterSpacing: 3 * spMirror.ms
+                                    }
+                                    Text {   // 오른 칼럼 사진 캡션: 제목 · 촬영정보
+                                        visible: spMirror.smallsVisible
+                                        x: spMirror.crX + 56 * spMirror.ms; y: spMirror.yCapR
+                                        width: spMirror.crW - 56 * spMirror.ms
+                                        elide: Text.ElideRight
+                                        text: spMirror.capText(win.wallTitles[0], win.wallShots[0][0])
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(23)
+                                    }
+                                    Text {   // 왼 칼럼 사진 캡션: 번호
+                                        visible: spMirror.smallsVisible
+                                        x: spMirror.clX; y: spMirror.yCapL
+                                        text: "03"
+                                        color: spMirror.accent; font.bold: true
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(22)
+                                        font.letterSpacing: 3 * spMirror.ms
+                                    }
+                                    Text {   // 왼 칼럼 사진 캡션: 제목 · 촬영정보
+                                        visible: spMirror.smallsVisible
+                                        x: spMirror.clX + 56 * spMirror.ms; y: spMirror.yCapL
+                                        width: spMirror.clW - 56 * spMirror.ms
+                                        elide: Text.ElideRight
+                                        text: spMirror.capText(win.wallTitles[2], win.wallShots[2][0])
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(23)
+                                    }
+                                    Text {   // 헤드라인
+                                        id: mSpHead
+                                        x: spMirror.clX; y: spMirror.top0 + 86 * spMirror.ms
+                                        width: spMirror.tw; wrapMode: Text.WordWrap
+                                        text: spMirror.uc(win.wallHeadline)
+                                        color: "#16161a"; font.bold: true
+                                        font.family: spMirror.famH
+                                        font.pixelSize: spMirror.fpx(80)
+                                        font.letterSpacing:
+                                            magMirror.faceTrack[win.wallTypeface] * 80 * spMirror.ms
+                                        lineHeight: spMirror.headStep; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Rectangle {   // 헤드라인 밑줄 바
+                                        x: spMirror.clX; y: spMirror.headEnd + 26 * spMirror.ms
+                                        width: 120 * spMirror.ms
+                                        height: Math.max(1, 3 * spMirror.ms)
+                                        color: "#16161a"
+                                    }
+                                    // 사진별 본문 — 재는 Text 둘(안 보임, 안 자름) + 보이는 Text 둘
+                                    // (합성의 break 와 같은 자리에서 폴리오 위로 자른다).
+                                    Text {
+                                        id: mSpNoteLN
+                                        visible: false
+                                        width: spMirror.clW; wrapMode: Text.WordWrap
+                                        text: win.wallNotes[2]
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(26)
+                                        lineHeight: 38 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Text {
+                                        id: mSpNoteRN
+                                        visible: false
+                                        width: spMirror.crW; wrapMode: Text.WordWrap
+                                        text: win.wallNotes[0]
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(26)
+                                        lineHeight: 38 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Text {   // 왼 칼럼 본문(프레임 03 의 글)
+                                        visible: spMirror.smallsVisible && spMirror.maxLines > 0
+                                        x: spMirror.clX; y: spMirror.yNoteL
+                                        width: spMirror.clW; wrapMode: Text.WordWrap
+                                        maximumLineCount: Math.max(1, spMirror.maxLines)
+                                        elide: Text.ElideRight
+                                        text: win.wallNotes[2]
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(26)
+                                        lineHeight: 38 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Text {   // 오른 칼럼 본문(프레임 02 의 글)
+                                        visible: spMirror.smallsVisible && spMirror.maxLines > 0
+                                        x: spMirror.crX; y: spMirror.yNoteR
+                                        width: spMirror.crW; wrapMode: Text.WordWrap
+                                        maximumLineCount: Math.max(1, spMirror.maxLines)
+                                        elide: Text.ElideRight
+                                        text: win.wallNotes[0]
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(26)
+                                        lineHeight: 38 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                    }
+                                    Rectangle {   // 폴리오 괘선(_mag_folio — 장소·날짜가 다 비면 없다)
+                                        visible: spMirror.hasFolio
+                                        x: spMirror.tx0; y: spMirror.sy1 - 120 * spMirror.ms
+                                        width: spMirror.tw; height: 1; color: "#cdcbc5"
+                                    }
+                                    Text {
+                                        visible: win.wallPlace.trim() !== ""
+                                        x: spMirror.tx0; y: spMirror.sy1 - 102 * spMirror.ms
+                                        text: spMirror.uc(win.wallPlace)
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(27)
+                                        font.letterSpacing: 4 * spMirror.ms
+                                    }
+                                    Text {
+                                        id: mSpDate
+                                        visible: spMirror.folioDate.trim() !== ""
+                                        x: spMirror.tx0 + spMirror.tw - mSpDate.paintedWidth
+                                        y: spMirror.sy1 - 102 * spMirror.ms
+                                        text: spMirror.uc(spMirror.folioDate)
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(27)
+                                        font.letterSpacing: 4 * spMirror.ms
+                                    }
+                                    Text {   // 사진 지면 캡션(흰 글씨, 바깥쪽 아래 모서리) — 메인은 01
+                                        id: mSpCap
+                                        readonly property string capText: {
+                                            var bits = ["01"]
+                                            if (win.wallTitles[1] !== "") bits.push(win.wallTitles[1])
+                                            if (win.wallShots[1][0] !== "") bits.push(win.wallShots[1][0])
+                                            return bits.join("   ·   ")
+                                        }
+                                        x: spMirror.mainLeft
+                                           ? spMirror.sx0 + 110 * spMirror.ms
+                                           : Math.min(wallPreview.width, spMirror.sx1)
+                                             - 110 * spMirror.ms - mSpCap.paintedWidth
+                                        y: spMirror.sy1 - 108 * spMirror.ms
+                                        text: capText
+                                        color: "white"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(26)
+                                    }
+                                }
+
                                 Item {
                                     id: magMirror
                                     visible: win.wallLayout === 1
@@ -11480,7 +11795,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                             Layout.fillWidth: true
                                             // ⚠️풀블리드 제외 — `compose_fullbleed` 는 `titles` 를
                                             //   아예 읽지 않는다(입력해도 출력물에 안 나온다).
-                                            visible: (win.wallLayout === 1 || win.wallLayout === 2)
+                                            visible: win.wallLayout !== 0 && win.wallLayout !== 3
                                                      && wallCard.slotPath !== ""
                                             placeholderText: "Frame title (printed in the index)"
                                             text: win.wallTitles[wallCard.slot]
@@ -11495,11 +11810,39 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                             }
                                         }
 
+                                        // 이 사진의 본문 — 그 사진이 있는 칼럼에 인쇄된다.
+                                        // ⚠️스프레드 전용이고 **메인 슬롯은 제외**다(지면에 본문
+                                        //   자리가 없다 — 읽히지 않는 칸은 두지 않는다).
+                                        ScrollView {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 70
+                                            visible: win.wallLayout === 4 && wallCard.slot !== 1
+                                                     && wallCard.slotPath !== ""
+                                            TextArea {
+                                                id: wallNoteField
+                                                placeholderText: "Frame text (printed under this photo)"
+                                                text: win.wallNotes[wallCard.slot]
+                                                font.pixelSize: 12
+                                                wrapMode: TextArea.Wrap
+                                                onTextChanged: {
+                                                    if (text === win.wallNotes[wallCard.slot]) return
+                                                    win.wallSetNote(wallCard.slot, text)
+                                                }
+                                                Connections {
+                                                    target: win
+                                                    function onWallNotesChanged() {
+                                                        var v = win.wallNotes[wallCard.slot]
+                                                        if (wallNoteField.text !== v) wallNoteField.text = v
+                                                    }
+                                                }
+                                            }
+                                        }
+
                                         RowLayout {
                                             Layout.fillWidth: true
                                             // 오프셋은 cover 크롭에만 의미 있음 — 잡지의 작은 판은 크롭 0%
                                             visible: wallCard.slotPath !== ""
-                                                     && (!win.wallHasMain || wallCard.slot === 1)
+                                                     && win.wallOffsetLive(wallCard.slot)
                                             Label {
                                                 // 잡지 메인 사진는 세로 사진이면 위아래가 잘린다 → 축을 알려줌
                                                 text: (win.wallHasMain && wallCard.slot === 1)
@@ -11597,6 +11940,9 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         }
                                     }
                                 }
+                                // ⚠️스프레드의 본문은 지면 하나에 하나가 아니라 **사진마다
+                                //   하나**다 — 입력칸도 위가 아니라 각 슬롯 카드에 있다
+                                //   (어느 사진의 글인지 칸만 보고 알 수 있어야 한다).
                                 RowLayout {
                                     Layout.fillWidth: true
                                     spacing: 8
@@ -11653,9 +11999,9 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     ComboBox {
                                         id: wallMainCombo
                                         Layout.fillWidth: true
-                                        // 매거진 전용 — 인덱스는 메인 사진이 없고, 풀블리드는
-                                        // 메인이 화면 전체라 좌/우 개념이 없다.
-                                        visible: win.wallLayout === 1
+                                        // 매거진·스프레드 전용 — 인덱스는 메인 사진이 없고,
+                                        // 풀블리드는 메인이 화면 전체라 좌/우 개념이 없다.
+                                        visible: win.wallLayout === 1 || win.wallLayout === 4
                                         model: ["Main left", "Main right"]
                                         currentIndex: win.wallMainSide
                                         onActivated: { win.wallMainSide = currentIndex; win.wallSave("mainSide", currentIndex) }
@@ -11753,7 +12099,11 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                             Label {
                                 Layout.fillWidth: true; wrapMode: Text.WordWrap
                                 visible: win.wallEditorial
-                                text: "Photos still bleed to the edges; only the typography stays inside the area both aspect ratios show, so one file works on either monitor."
+                                // 스프레드만 다르다 — 지면(작은 판 포함)이 통째로 안전영역 안이고
+                                // 가장자리로 나가는 것은 메인 사진과 종이뿐이다.
+                                text: win.wallLayout === 4
+                                      ? "Only the main photo and the paper run to the edges; the whole text page stays inside the area both aspect ratios show, so one file works on either monitor."
+                                      : "Photos still bleed to the edges; only the typography stays inside the area both aspect ratios show, so one file works on either monitor."
                                 color: "#888"; font.pixelSize: 11
                             }
 

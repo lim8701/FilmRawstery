@@ -3006,9 +3006,9 @@ class Controller(QObject):
 
     @Slot(QUrl, "QVariantMap")
     def wallpaperCompose(self, file_url: QUrl, opts) -> None:  # noqa: N802 (QML 슬롯)
-        """opts: canvasW, canvasH, layout('triptych'|'magazine'|'index'|'fullbleed'), 그리고
-        트립틱=gap/offsets[3], 잡지=mainSide/typeface/kicker/headline/deck/titles[3]/
-        place/date/paths[3]. 3패널 합성 → 저장(스레드)."""
+        """opts: canvasW, canvasH, layout('triptych'|'magazine'|'index'|'fullbleed'|'spread'),
+        그리고 트립틱=gap/offsets[3], 지면 계열=mainSide/typeface/kicker/headline/deck/
+        titles[3]/notes[3]/place/date/paths[3]. 3패널 합성 → 저장(스레드)."""
         if self._exporting:
             return
         panels = list(self._wall_panels)
@@ -3048,22 +3048,23 @@ class Controller(QObject):
     def _do_wall_compose(self, path: str, panels, o: dict) -> None:
         try:
             import pipeline
-            # 글자가 들어가는 지면 계열 — 셋 다 같은 opts 를 먹고 QImage 를 돌려준다.
+            # 글자가 들어가는 지면 계열 — 넷 다 같은 opts 를 먹고 QImage 를 돌려준다.
             _EDITORIAL = {"magazine": pipeline.compose_magazine,
                           "index": pipeline.compose_index,
-                          "fullbleed": pipeline.compose_fullbleed}
+                          "fullbleed": pipeline.compose_fullbleed,
+                          "spread": pipeline.compose_spread}
             layout = str(o.get("layout", "triptych"))
             if layout in _EDITORIAL:
                 paths = [str(x) for x in o.get("paths", ["", "", ""])]
                 mo = dict(o)
                 if not str(mo.get("date", "")).strip():     # 비어 있으면 메인 EXIF 로 채움
                     mo["date"] = self._shot_summary(paths[1])[1] if len(paths) > 1 else ""
-                # ⚠️`shots` 는 compose_magazine 만 읽는다. `_shot_summary` 는 CR3/DNG 에서
+                # ⚠️`shots` 는 잡지·스프레드만 읽는다. `_shot_summary` 는 CR3/DNG 에서
                 #   rawpy 디코드 + QT_IMG_LOCK 까지 가므로 안 쓰는 레이아웃에서 3회를 돌면
                 #   export 스레드가 그만큼 늦고 썸네일 디코드와 락을 다툰다.
-                #   (위 날짜 폴백 1회는 셋 다 폴리오에 쓰므로 남긴다.)
+                #   (위 날짜 폴백 1회는 넷 다 폴리오에 쓰므로 남긴다.)
                 mo["shots"] = ([self._shot_summary(p)[0] for p in paths]
-                               if layout == "magazine" else ["", "", ""])
+                               if layout in ("magazine", "spread") else ["", "", ""])
                 # 메인 사진 캡션은 compose_magazine 이 조립한다(프레임 번호 규칙 단일화)
                 img = _EDITORIAL[layout](panels, int(o["canvasW"]),
                                          int(o["canvasH"]), mo)

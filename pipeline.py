@@ -1566,6 +1566,21 @@ def _wrap(font, s, max_w):
     return lines or [""]
 
 
+def _elide_lines(font, lines, max_lines, max_w):
+    """줄 수를 예산에 맞춰 자르고, **잘렸으면 마지막 줄 끝에 '…'** 를 붙인다.
+    (칸 크기를 글 분량에 맞춰 줄이는 대신 글을 자르는 쪽 — `compose_spread` 참조.)"""
+    if len(lines) <= max_lines:
+        return list(lines)
+    if max_lines <= 0:
+        return []
+    kept = list(lines[:max_lines])
+    last = kept[-1]
+    while last and _text_w(font, last + "…") > max_w:
+        last = last[:-1].rstrip()
+    kept[-1] = last + "…"
+    return kept
+
+
 def _text_w(font, s, tracking_px=0.0, upper=False):
     from PySide6.QtGui import QFontMetricsF
     if upper:
@@ -1954,8 +1969,156 @@ def compose_fullbleed(panels, canvas_w, canvas_h, opts):
     return canvas
 
 
+def compose_spread(panels, canvas_w, canvas_h, opts):
+    """두 페이지 스프레드(텍스트 지면 + 전면 사진 지면) 합성 -> QImage.
+
+    한쪽 지면은 사진 한 장이 통째로 덮고, 반대쪽은 종이 위 **같은 폭 2칼럼** 지면이다.
+      지면 머리: 키커 · 헤드라인(지면 전체 폭) · 리드문
+      두 칼럼  : 왼=프레임 03 / 오른=프레임 02 — 각 칼럼이 **사진 + 그 사진의 캡션·본문**
+      맨 아래  : 폴리오(장소 · 날짜) — `_mag_folio` 공유
+    작은 판 02·03 은 **크기가 같고**(사용자 결정) 각자 칼럼을 꽉 채운다 — 칼럼 폭이 같은
+    이유가 이것이다.
+    opts: 지면 계열 공통 + notes[3](**사진별 본문** — 그 사진이 있는 칼럼에 인쇄된다),
+          mainSide, mainFrac(기본 0.5),
+          offsets[3](**세 칸 모두** cover 크롭이라 슬라이더가 다 살아 있다. 기본값 0 = 정중앙).
+
+    ★본문은 지면 하나에 하나가 아니라 **사진마다 하나**다(2026-09 사용자 결정) — 칼럼 글이
+      그 칼럼 사진의 내용이어야 어느 사진 얘기인지 읽힌다. 지면 전체를 받는 글은 리드문
+      (`deck`) 하나뿐이고, 예전의 단일 `body` 키는 지웠다.
+
+    ★번호는 위치와 무관하게 **메인=01 · 위 작은 판=02 · 아래 작은 판=03 고정**이다 —
+      좌→우로 매기는 `compose_magazine` 과 규칙이 다르다(시안에서 사용자가 고른 배치 그대로).
+    ⚠️가운데 접지(책 접힘 그림자·페이지 경계선)는 **의도적으로 없다**(2026-09 사용자 결정 —
+      배경화면으로 깔면 화면 정중앙에 선이 생긴다). 재제안 금지.
+    """
+    from PySide6.QtGui import QColor, QPainter
+
+    sx0, sy0, sx1, sy1, s = _mag_safe_box(canvas_w, canvas_h, opts.get("safeAspects"))
+    S = lambda v: int(round(v * s))                                     # noqa: E731
+    fam_h, fam_b, accent, track_frac, upper, lh = _mag_face(opts)
+    # 리드문 이탤릭은 라틴 서체에서만 — 한글은 Qt 가 기울여 흉내 낸 글자라 조악하다.
+    ital = not str(opts.get("typeface", "serif")).endswith("_ko")
+
+    main_left = str(opts.get("mainSide", "right")) == "left"
+    main_w = max(1, int(round(canvas_w * float(opts.get("mainFrac", 0.5)))))
+    main_x = 0 if main_left else canvas_w - main_w
+
+    # 텍스트 지면 = 사진면의 반대쪽. 바깥/안쪽 여백은 안전영역 기준.
+    if main_left:
+        tx0, tx1 = max(sx0, main_w) + S(150), sx1 - S(150)
+    else:
+        tx0, tx1 = sx0 + S(150), min(sx1, main_x) - S(150)
+    tw = max(S(300), tx1 - tx0)
+    top, bottom = sy0 + S(150), sy1 - S(150)
+    gap_c = S(60)
+    # ★두 칼럼은 **같은 폭**이다 — 프레임 02·03 을 같은 크기로 두라는 사용자 결정(2026-09)의
+    #   결과다. 폭이 다르면 같은 크기로 만드는 순간 넓은 칼럼 쪽 사진이 칼럼 안에서 떠서
+    #   헤드라인·본문의 왼쪽 선과 어긋난다.
+    # ⚠️나머지 1px 은 두 칼럼 어느 쪽에도 주지 않는다 — 주면 두 사진의 폭이 1px 달라진다.
+    cl_w = cr_w = (tw - gap_c) // 2                  # 왼=프레임 03 / 오른=프레임 02
+    cl_x, cr_x = tx0, tx0 + cl_w + gap_c
+
+    titles = (list(opts.get("titles", [])) + ["", "", ""])[:3]
+    shots = (list(opts.get("shots", [])) + ["", "", ""])[:3]
+
+    canvas = QImage(canvas_w, canvas_h, QImage.Format.Format_RGB888)
+    canvas.fill(QColor(*MAG_PAPER))
+    p = QPainter(canvas)
+    try:
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+        p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+
+        def small_cap(x, y, w, n, title, shot):
+            """작은 판 캡션: 번호(강조색) + 제목 · 촬영정보(한 줄로 잘라 쓴다)."""
+            _draw_text(p, x, y, f"0{n}", _qfont(fam_b, S(22), bold=True), accent, S(3), True)
+            bits = "   ·   ".join(t for t in (str(title).strip(), str(shot).strip()) if t)
+            if bits:
+                f = _qfont(fam_b, S(23))
+                _draw_text(p, x + S(56), y, _wrap(f, bits, w - S(56))[0], f, MAG_GRAY)
+
+        # ── 사진 지면: 메인 한 장이 통째로(cover 크롭).
+        # 크롭 위치는 슬롯 1 의 오프셋이 정하고 **기본값 0 이 정중앙**이다 — 잠깐 정중앙으로
+        # 고정했다가 슬라이더를 되살렸다(2026-09 사용자 요청). 지면을 꽉 채우는 판이라
+        # 어디를 남길지는 사진마다 다르다.
+        p.drawImage(main_x, 0, _mag_cover(panels[1], main_w, canvas_h, _mag_off(opts, 1)))
+
+        # ── 지면 머리: 키커 + 헤드라인. ★제목은 **맨 위, 텍스트 지면 전체 폭**이다
+        #   (사용자 결정 2026-09 — 칼럼 중간에 두면 어느 사진에 걸린 제목인지 애매해진다).
+        #   두 칼럼은 이 블록 **아래**(col_top)에서 시작한다.
+        _draw_text(p, cl_x, top, str(opts.get("kicker", "")),
+                   _qfont(fam_b, S(28), bold=True), accent, S(6), True)
+        f_head = _qfont(fam_h, S(80), bold=True)
+        hy = top + S(86)
+        for ln in _wrap(f_head, str(opts.get("headline", "")), tw):
+            _draw_text(p, cl_x, hy, ln, f_head, MAG_INK, track_frac * S(80), upper)
+            hy += int(S(80) * lh)
+        p.fillRect(cl_x, hy + S(26), S(120), max(1, S(3)), QColor(*MAG_INK))
+
+        # ── 리드문(이탤릭): 지면 전체를 받는 **하나뿐인** 글. 사진별 얘기는 아래 칼럼으로.
+        #   ⚠️비어 있으면 한 줄도 잡지 않는다 — `_wrap` 은 빈 문자열에도 [""] 를 돌려주므로
+        #     그대로 돌면 칼럼이 빈 줄 하나만큼 내려간다.
+        f_deck = _qfont(fam_b, S(34), italic=ital)
+        deck_txt = str(opts.get("deck", "")).strip()
+        dy = hy + S(96)
+        for ln in (_wrap(f_deck, deck_txt, int(tw * 0.72))[:3] if deck_txt else []):
+            _draw_text(p, cl_x, dy, ln, f_deck, MAG_GRAY)
+            dy += S(46)
+        col_top = dy + (S(70) if deck_txt else S(16))
+
+        # ── 두 칼럼: 각 칼럼이 **사진 + 그 사진의 캡션 + 그 사진의 본문**이다.
+        # ★좌우 글은 **완전히 같은 스타일**이다(캡션 한 줄 + 문단) — 한쪽은 리드문, 한쪽은
+        #   제목+본문이던 시안은 "좌우 스타일이 달라 어색하다"로 기각됐다(2026-09).
+        # ★위아래 엇갈림은 사진을 밀어서가 아니라 **글의 자리를 좌우 반대로** 둬서 만든다:
+        #   오른 칼럼은 사진→글(위 정렬), 왼 칼럼은 글→사진(지면 바닥에 사진을 붙인다).
+        #   그래서 두 판은 **크기도 비율도 같은 채로** 위아래로 갈린다 — 사진을 밀어 넣으면
+        #   그만큼 높이를 뺏겨 비율이 바뀐다(그 시안이 기각된 이유).
+        # ★사진 크기는 **글 분량과 무관하게 고정**이다(사용자 결정 2026-09) — 글이 길어지면
+        #   사진이 같이 줄어드는 게 아니라 **글을 '…' 로 자른다**. 두 칼럼의 줄 예산은 같다:
+        #   오른쪽은 사진 아래, 왼쪽은 사진 위로 남는 높이인데 식이 같아진다.
+        notes = (list(opts.get("notes", [])) + ["", "", ""])[:3]
+        f_note = _qfont(fam_b, S(26))
+        ph = min(int(cl_w * 1.38), (bottom - col_top) - S(76))   # 캡션 줄 자리는 남긴다
+        max_lines = max(0, ((bottom - col_top) - ph - S(76)) // S(38))
+        lines = {sl: _elide_lines(f_note,
+                                  _wrap(f_note, str(notes[sl]).strip(), cl_w)
+                                  if str(notes[sl]).strip() else [],
+                                  max_lines, cl_w) for sl in (0, 2)}
+        # 글 덩어리 높이 = 캡션 줄 + 문단 + 사진과의 간격
+        text_h = {sl: S(58) + S(38) * len(lines[sl]) + S(18) for sl in (0, 2)}
+
+        def col_text(cx, ty, no, sl):
+            """캡션 한 줄 + 문단. **두 칼럼이 이 함수 하나를 쓴다**(스타일 통일)."""
+            small_cap(cx, ty, cl_w, no, titles[sl], shots[sl])
+            cy = ty + S(58)
+            for ln in lines[sl]:                     # 예산만큼만 남아 있다(_elide_lines)
+                _draw_text(p, cx, cy, ln, f_note, MAG_GRAY)
+                cy += S(38)
+
+        if ph > S(160):
+            p.drawImage(cr_x, col_top, _mag_cover(panels[0], cl_w, ph, _mag_off(opts, 0)))
+            col_text(cr_x, col_top + ph + S(18), 2, 0)
+            ly = bottom - ph                          # 왼 칼럼은 바닥 정렬 = 엇갈림
+            col_text(cl_x, ly - text_h[2], 3, 2)
+            p.drawImage(cl_x, ly, _mag_cover(panels[2], cl_w, ph, _mag_off(opts, 2)))
+
+        # ── 폴리오(텍스트 지면 전체 폭)
+        _mag_folio(p, fam_b, S, tx0, tw, sy1, opts, MAG_GRAY, MAG_HAIR, upper)
+
+        # ── 사진 지면 캡션(흰 글씨, 바깥쪽 아래 모서리) — 메인은 항상 01
+        cap = "   ·   ".join(t for t in ("01", str(titles[1]).strip(),
+                                         str(shots[1]).strip()) if t)
+        f_cap = _qfont(fam_b, S(26))
+        cx = (sx0 + S(110)) if main_left else (min(canvas_w, sx1) - S(110)
+                                               - _text_w(f_cap, cap))
+        _draw_text(p, cx, sy1 - S(108), cap, f_cap, (255, 255, 255))
+    finally:
+        p.end()
+    return canvas
+
+
 def _mag_folio(p, fam_b, S, mx, mw, sy1, opts, gray, hair, upper):
-    """지면 하단 러닝풋: 장소(왼쪽) · 날짜(오른쪽). **인덱스 전용이다.**
+    """지면 하단 러닝풋: 장소(왼쪽) · 날짜(오른쪽). **인덱스·스프레드 전용이다.**
 
     ⚠️예전 주석은 "잡지·인덱스가 공유한다" 였지만 사실이 아니다 — `compose_magazine` 은
       자기 인라인 폴리오 블록을 그대로 갖고 있고 **상수가 다르다**(잡지 S(126)/S(104)/S(26)
