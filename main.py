@@ -1602,7 +1602,7 @@ class Controller(QObject):
         self._aiNrInitSig.connect(self._on_ai_nr_init)
         self._stampSpriteSig.connect(self._on_stamp_sprite)
         self._shotInfoSig.connect(self.wallShotsChanged)   # 워커 → GUI 스레드에서 알림
-        self._shot_cache = {}        # 경로 -> (촬영정보 1줄, 촬영월) — 배경화면 미리보기용
+        self._shot_cache = {}        # 경로 -> (촬영정보 1줄, 촬영월, 카메라) — 배경화면 미리보기용
         self._shot_pending = set()   # 워커가 읽는 중인 경로(중복 스레드 방지)
         self._updateSig.connect(self._on_update_found)
         self._folderScanSig.connect(self._on_folder_scanned)
@@ -3028,11 +3028,11 @@ class Controller(QObject):
 
     @staticmethod
     def _shot_summary(path: str) -> tuple:
-        """(촬영정보 1줄, 'September 2023' 형태 날짜) — 잡지 레이아웃 캡션용."""
+        """(촬영정보 1줄, 'September 2023' 형태 날짜, 카메라 기종) — 지면 캡션용."""
         try:
             fields, _ = read_shooting_info(path)
         except Exception:
-            return "", ""
+            return "", "", ""
         d = {f["label"]: f["value"] for f in fields}
         line = "  ·  ".join(v for v in (d.get("Focal Length"), d.get("Aperture"),
                                         d.get("Shutter"), d.get("ISO")) if v)
@@ -3043,7 +3043,7 @@ class Controller(QObject):
             month = datetime.strptime(raw[:10], "%Y-%m-%d").strftime("%B %Y")
         except Exception:
             month = raw[:7].replace("-", ". ")
-        return line, month
+        return line, month, d.get("Camera", "")
 
     def _do_wall_compose(self, path: str, panels, o: dict) -> None:
         try:
@@ -3063,8 +3063,12 @@ class Controller(QObject):
                 #   rawpy 디코드 + QT_IMG_LOCK 까지 가므로 안 쓰는 레이아웃에서 3회를 돌면
                 #   export 스레드가 그만큼 늦고 썸네일 디코드와 락을 다툰다.
                 #   (위 날짜 폴백 1회는 넷 다 폴리오에 쓰므로 남긴다.)
-                mo["shots"] = ([self._shot_summary(p)[0] for p in paths]
-                               if layout in ("magazine", "spread") else ["", "", ""])
+                if layout in ("magazine", "spread"):
+                    summ = [self._shot_summary(p) for p in paths]
+                    mo["shots"] = [x[0] for x in summ]
+                    mo["cameras"] = [x[2] for x in summ]   # 스프레드 캡션 2번째 줄
+                else:
+                    mo["shots"] = ["", "", ""]
                 # 메인 사진 캡션은 compose_magazine 이 조립한다(프레임 번호 규칙 단일화)
                 img = _EDITORIAL[layout](panels, int(o["canvasW"]),
                                          int(o["canvasH"]), mo)
@@ -3208,9 +3212,9 @@ class Controller(QObject):
 
     @Slot(str, result="QVariantList")
     def wallShotInfo(self, path: str):  # noqa: N802 (QML 슬롯)
-        """배경화면 잡지 **미리보기**용: [촬영정보 1줄, 'September 2023' 월].
+        """배경화면 지면 **미리보기**용: [촬영정보 1줄, 'September 2023' 월, 카메라 기종].
         합성(_do_wallpaper)이 쓰는 _shot_summary 와 같은 원천이라 미리보기 텍스트가
-        실제 출력과 같다. 빈 경로/실패면 ["", ""].
+        실제 출력과 같다. 빈 경로/실패면 ["", "", ""].
 
         ★⚠️**여기서 EXIF 를 읽지 않는다 — 캐시에 없으면 워커로 넘기고 빈 값을 즉시 돌려준다.**
           이 슬롯은 QML 바인딩(`win.wallShots`)이 부르므로 **GUI 스레드**다. `_shot_summary`
@@ -3220,22 +3224,22 @@ class Controller(QObject):
           완료되면 `wallShotsChanged` 로 알리고 QML 이 바인딩을 다시 굽는다(`wallShotsRev`)."""
         key = str(path or "")
         if not key:
-            return ["", ""]
+            return ["", "", ""]
         hit = self._shot_cache.get(key)
         if hit is not None:
             return list(hit)
         if key not in self._shot_pending:
             self._shot_pending.add(key)
             threading.Thread(target=self._shot_worker, args=(key,), daemon=True).start()
-        return ["", ""]
+        return ["", "", ""]
 
     def _shot_worker(self, path: str) -> None:
         """EXIF 요약을 워커에서 읽어 캐시에 넣고 QML 에 알린다(위 wallShotInfo 주석)."""
         try:
-            line, month = self._shot_summary(path)
+            summ = self._shot_summary(path)
         except Exception:
-            line, month = "", ""
-        self._shot_cache[path] = (line, month)
+            summ = ("", "", "")
+        self._shot_cache[path] = summ
         self._shot_pending.discard(path)
         self._shotInfoSig.emit()
 

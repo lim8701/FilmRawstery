@@ -1711,9 +1711,9 @@ ApplicationWindow {
     // 화면에서 보이는 좌→우 슬롯 순서(compose_magazine 과 동일 규칙). 트립틱은 슬롯 순서가
     // 곧 좌→우이고, 잡지는 메인 사진(가운데 슬롯)이 좌/우 끝에 놓이므로 순서가 달라진다.
     // 패널의 슬롯 카드도 이 순서로 나열해 번호(Frame 0N)와 위치가 어긋나지 않게 한다.
-    // ⚠️스프레드(4)만 **좌→우가 아니라 메인=01 고정**이다(compose_spread 와 짝) — 사진 지면이
-    //   어느 쪽에 있든 주인공이 01 이어야 읽힌다는 시안 결정.
-    readonly property var wallSlotOrder: win.wallLayout === 4 ? [1, 0, 2]
+    // ⚠️스프레드(4)는 **메인=01 고정 + 나머지는 왼 칼럼부터**다(compose_spread 와 짝) —
+    //   사진 지면이 어느 쪽에 있든 주인공이 01 이고, 02·03 은 읽는 순서(왼→오른 칼럼)다.
+    readonly property var wallSlotOrder: win.wallLayout === 4 ? [1, 2, 0]
                                          : win.wallLayout !== 1 ? [0, 1, 2]
                                          : (win.wallMainSide === 0 ? [1, 0, 2] : [0, 2, 1])
     function wallFrameNo(slot) { return win.wallSlotOrder.indexOf(slot) + 1 }
@@ -11280,23 +11280,24 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         : Math.max(1, mSpNoteRN.lineCount)
                                     // ★사진 크기는 **글 분량과 무관하게 고정**이고, 넘치는 글은
                                     //   '…' 로 잘린다(합성과 동일). 줄 예산은 두 칼럼이 같다.
+                                    // 캡션은 두 줄(번호+제목 / 카메라·촬영정보) — 합성 CAP_H=92
                                     readonly property real ph: Math.min(clW * 1.38,
-                                                                        (bottom0 - colTop) - 76 * ms)
+                                                                        (bottom0 - colTop) - 110 * ms)
                                     readonly property int maxLines: Math.max(0, Math.floor(
-                                        ((bottom0 - colTop) - ph - 76 * ms) / (38 * ms)))
-                                    // 글 덩어리 = 캡션 줄 + 문단 + 사진과의 간격(합성과 동일)
-                                    readonly property real textHL: 58 * ms + 18 * ms
+                                        ((bottom0 - colTop) - ph - 110 * ms) / (38 * ms)))
+                                    // 글 덩어리 = 캡션 두 줄 + 문단 + 사진과의 간격(합성과 동일)
+                                    readonly property real textHL: 92 * ms + 18 * ms
                                         + 38 * ms * Math.min(noteNL, maxLines)
-                                    readonly property real textHR: 58 * ms + 18 * ms
+                                    readonly property real textHR: 92 * ms + 18 * ms
                                         + 38 * ms * Math.min(noteNR, maxLines)
                                     // ★엇갈림은 사진을 미는 게 아니라 **글의 자리를 좌우 반대로**
                                     //   둬서 만든다 — 오른 칼럼은 사진→글(위 정렬), 왼 칼럼은
                                     //   글→사진(바닥 정렬). 두 판의 크기·비율은 그대로 같다.
                                     readonly property real yCapR: colTop + ph + 18 * ms
-                                    readonly property real yNoteR: yCapR + 58 * ms
+                                    readonly property real yNoteR: yCapR + 92 * ms
                                     readonly property real p3Y: bottom0 - ph
                                     readonly property real yCapL: p3Y - textHL
-                                    readonly property real yNoteL: yCapL + 58 * ms
+                                    readonly property real yNoteL: yCapL + 92 * ms
                                     readonly property bool smallsVisible: ph > 160 * ms
                                     // 폴리오 날짜: 비우면 합성이 메인 사진 촬영월로 채운다.
                                     readonly property string folioDate: win.wallDate.trim() !== ""
@@ -11312,7 +11313,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     }
                                     // 작은 판 캡션 문자열(제목 · 촬영정보) — 합성 small_cap 미러.
                                     // ★번호는 스프레드에서 **고정**이다(메인 01 · 위 02 · 아래 03)
-                                    //   — 좌→우로 매기는 잡지 레이아웃과 규칙이 다르다.
+                                    //   — 메인이 01, 나머지는 읽는 순서대로 왼 칼럼이 02 다.
                                     function capText(title, shot) {
                                         var a = String(title).trim(), b = String(shot).trim()
                                         return (a !== "" && b !== "") ? a + "   ·   " + b
@@ -11343,18 +11344,28 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     Text {   // 오른 칼럼 사진 캡션: 번호
                                         visible: spMirror.smallsVisible
                                         x: spMirror.crX; y: spMirror.yCapR
-                                        text: "02"
+                                        text: "03"
                                         color: spMirror.accent; font.bold: true
                                         font.family: spMirror.famB
                                         font.pixelSize: spMirror.fpx(22)
                                         font.letterSpacing: 3 * spMirror.ms
                                     }
-                                    Text {   // 오른 칼럼 사진 캡션: 제목 · 촬영정보
+                                    Text {   // 오른 칼럼 캡션 1줄: 제목
                                         visible: spMirror.smallsVisible
                                         x: spMirror.crX + 56 * spMirror.ms; y: spMirror.yCapR
                                         width: spMirror.crW - 56 * spMirror.ms
                                         elide: Text.ElideRight
-                                        text: spMirror.capText(win.wallTitles[0], win.wallShots[0][0])
+                                        text: win.wallTitles[0]
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(23)
+                                    }
+                                    Text {   // 오른 칼럼 캡션 2줄: 카메라 기종 · 촬영정보
+                                        visible: spMirror.smallsVisible
+                                        x: spMirror.crX; y: spMirror.yCapR + 34 * spMirror.ms
+                                        width: spMirror.crW
+                                        elide: Text.ElideRight
+                                        text: spMirror.capText(win.wallShots[0][2], win.wallShots[0][0])
                                         color: "#76767c"
                                         font.family: spMirror.famB
                                         font.pixelSize: spMirror.fpx(23)
@@ -11362,18 +11373,28 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     Text {   // 왼 칼럼 사진 캡션: 번호
                                         visible: spMirror.smallsVisible
                                         x: spMirror.clX; y: spMirror.yCapL
-                                        text: "03"
+                                        text: "02"
                                         color: spMirror.accent; font.bold: true
                                         font.family: spMirror.famB
                                         font.pixelSize: spMirror.fpx(22)
                                         font.letterSpacing: 3 * spMirror.ms
                                     }
-                                    Text {   // 왼 칼럼 사진 캡션: 제목 · 촬영정보
+                                    Text {   // 왼 칼럼 캡션 1줄: 제목
                                         visible: spMirror.smallsVisible
                                         x: spMirror.clX + 56 * spMirror.ms; y: spMirror.yCapL
                                         width: spMirror.clW - 56 * spMirror.ms
                                         elide: Text.ElideRight
-                                        text: spMirror.capText(win.wallTitles[2], win.wallShots[2][0])
+                                        text: win.wallTitles[2]
+                                        color: "#76767c"
+                                        font.family: spMirror.famB
+                                        font.pixelSize: spMirror.fpx(23)
+                                    }
+                                    Text {   // 왼 칼럼 캡션 2줄: 카메라 기종 · 촬영정보
+                                        visible: spMirror.smallsVisible
+                                        x: spMirror.clX; y: spMirror.yCapL + 34 * spMirror.ms
+                                        width: spMirror.clW
+                                        elide: Text.ElideRight
+                                        text: spMirror.capText(win.wallShots[2][2], win.wallShots[2][0])
                                         color: "#76767c"
                                         font.family: spMirror.famB
                                         font.pixelSize: spMirror.fpx(23)
@@ -11464,6 +11485,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         readonly property string capText: {
                                             var bits = ["01"]
                                             if (win.wallTitles[1] !== "") bits.push(win.wallTitles[1])
+                                            if (win.wallShots[1][2] !== "") bits.push(win.wallShots[1][2])
                                             if (win.wallShots[1][0] !== "") bits.push(win.wallShots[1][0])
                                             return bits.join("   ·   ")
                                         }

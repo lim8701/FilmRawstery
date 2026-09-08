@@ -1550,19 +1550,27 @@ def _draw_text(p, x, y_top, s, font, color, tracking_px=0.0, upper=False):
 
 
 def _wrap(font, s, max_w):
+    """폭에 맞춰 줄바꿈. ★사용자가 친 **줄바꿈은 그대로 지킨다** — 예전에는 `s.split()` 이
+    개행을 공백과 똑같이 뭉개서 입력칸에서 Enter 로 나눈 문단이 한 덩어리로 인쇄됐다.
+    빈 줄은 빈 줄로 남긴다(문단 사이 간격)."""
     from PySide6.QtGui import QFontMetricsF
     fm = QFontMetricsF(font)
-    lines, cur = [], ""
-    for word in s.split():
-        t = (cur + " " + word).strip()
-        if fm.horizontalAdvance(t) <= max_w:
-            cur = t
-        else:
-            if cur:
-                lines.append(cur)
-            cur = word
-    if cur:
-        lines.append(cur)
+    lines = []
+    for para in s.splitlines() or [s]:
+        if not para.strip():
+            lines.append("")                       # 사용자가 비운 줄 = 문단 사이 간격
+            continue
+        cur = ""
+        for word in para.split():
+            t = (cur + " " + word).strip()
+            if fm.horizontalAdvance(t) <= max_w:
+                cur = t
+            else:
+                if cur:
+                    lines.append(cur)
+                cur = word
+        if cur:
+            lines.append(cur)
     return lines or [""]
 
 
@@ -1979,6 +1987,7 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
     작은 판 02·03 은 **크기가 같고**(사용자 결정) 각자 칼럼을 꽉 채운다 — 칼럼 폭이 같은
     이유가 이것이다.
     opts: 지면 계열 공통 + notes[3](**사진별 본문** — 그 사진이 있는 칼럼에 인쇄된다),
+          cameras[3](사진별 카메라 기종 — 캡션 둘째 줄에서 촬영정보 앞에 붙는다),
           mainSide, mainFrac(기본 0.5),
           offsets[3](**세 칸 모두** cover 크롭이라 슬라이더가 다 살아 있다. 기본값 0 = 정중앙).
 
@@ -1986,8 +1995,8 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
       그 칼럼 사진의 내용이어야 어느 사진 얘기인지 읽힌다. 지면 전체를 받는 글은 리드문
       (`deck`) 하나뿐이고, 예전의 단일 `body` 키는 지웠다.
 
-    ★번호는 위치와 무관하게 **메인=01 · 위 작은 판=02 · 아래 작은 판=03 고정**이다 —
-      좌→우로 매기는 `compose_magazine` 과 규칙이 다르다(시안에서 사용자가 고른 배치 그대로).
+    ★번호는 **메인=01 · 왼 칼럼=02 · 오른 칼럼=03 고정**이다(사진면이 어느 쪽에 있든) —
+      메인이 주인공이라 01 이고, 나머지는 읽는 순서대로 왼쪽부터 매긴다.
     ⚠️가운데 접지(책 접힘 그림자·페이지 경계선)는 **의도적으로 없다**(2026-09 사용자 결정 —
       배경화면으로 깔면 화면 정중앙에 선이 생긴다). 재제안 금지.
     """
@@ -2029,13 +2038,19 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
         p.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
         p.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
 
-        def small_cap(x, y, w, n, title, shot):
-            """작은 판 캡션: 번호(강조색) + 제목 · 촬영정보(한 줄로 잘라 쓴다)."""
+        # 캡션은 **두 줄**이다 — 번호+제목 / 카메라 기종·촬영정보. 한 줄에 다 넣으면
+        # 칼럼 폭에서 잘려 ISO 부터 사라진다(기종을 넣으면서 실측). 높이는 `CAP_H` 고정.
+        CAP_H = S(92)
+
+        def small_cap(x, y, w, n, title, shot, camera):
+            f = _qfont(fam_b, S(23))
             _draw_text(p, x, y, f"0{n}", _qfont(fam_b, S(22), bold=True), accent, S(3), True)
-            bits = "   ·   ".join(t for t in (str(title).strip(), str(shot).strip()) if t)
-            if bits:
-                f = _qfont(fam_b, S(23))
-                _draw_text(p, x + S(56), y, _wrap(f, bits, w - S(56))[0], f, MAG_GRAY)
+            t = str(title).strip()
+            if t:
+                _draw_text(p, x + S(56), y, _wrap(f, t, w - S(56))[0], f, MAG_GRAY)
+            meta = "   ·   ".join(v for v in (str(camera).strip(), str(shot).strip()) if v)
+            if meta:
+                _draw_text(p, x, y + S(34), _wrap(f, meta, w)[0], f, MAG_GRAY)
 
         # ── 사진 지면: 메인 한 장이 통째로(cover 크롭).
         # 크롭 위치는 슬롯 1 의 오프셋이 정하고 **기본값 0 이 정중앙**이다 — 잠깐 정중앙으로
@@ -2078,29 +2093,30 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
         #   사진이 같이 줄어드는 게 아니라 **글을 '…' 로 자른다**. 두 칼럼의 줄 예산은 같다:
         #   오른쪽은 사진 아래, 왼쪽은 사진 위로 남는 높이인데 식이 같아진다.
         notes = (list(opts.get("notes", [])) + ["", "", ""])[:3]
+        cameras = (list(opts.get("cameras", [])) + ["", "", ""])[:3]
         f_note = _qfont(fam_b, S(26))
-        ph = min(int(cl_w * 1.38), (bottom - col_top) - S(76))   # 캡션 줄 자리는 남긴다
-        max_lines = max(0, ((bottom - col_top) - ph - S(76)) // S(38))
+        ph = min(int(cl_w * 1.38), (bottom - col_top) - CAP_H - S(18))  # 캡션 자리는 남긴다
+        max_lines = max(0, ((bottom - col_top) - ph - CAP_H - S(18)) // S(38))
         lines = {sl: _elide_lines(f_note,
                                   _wrap(f_note, str(notes[sl]).strip(), cl_w)
                                   if str(notes[sl]).strip() else [],
                                   max_lines, cl_w) for sl in (0, 2)}
         # 글 덩어리 높이 = 캡션 줄 + 문단 + 사진과의 간격
-        text_h = {sl: S(58) + S(38) * len(lines[sl]) + S(18) for sl in (0, 2)}
+        text_h = {sl: CAP_H + S(38) * len(lines[sl]) + S(18) for sl in (0, 2)}
 
         def col_text(cx, ty, no, sl):
             """캡션 한 줄 + 문단. **두 칼럼이 이 함수 하나를 쓴다**(스타일 통일)."""
-            small_cap(cx, ty, cl_w, no, titles[sl], shots[sl])
-            cy = ty + S(58)
+            small_cap(cx, ty, cl_w, no, titles[sl], shots[sl], cameras[sl])
+            cy = ty + CAP_H
             for ln in lines[sl]:                     # 예산만큼만 남아 있다(_elide_lines)
                 _draw_text(p, cx, cy, ln, f_note, MAG_GRAY)
                 cy += S(38)
 
         if ph > S(160):
             p.drawImage(cr_x, col_top, _mag_cover(panels[0], cl_w, ph, _mag_off(opts, 0)))
-            col_text(cr_x, col_top + ph + S(18), 2, 0)
+            col_text(cr_x, col_top + ph + S(18), 3, 0)
             ly = bottom - ph                          # 왼 칼럼은 바닥 정렬 = 엇갈림
-            col_text(cl_x, ly - text_h[2], 3, 2)
+            col_text(cl_x, ly - text_h[2], 2, 2)
             p.drawImage(cl_x, ly, _mag_cover(panels[2], cl_w, ph, _mag_off(opts, 2)))
 
         # ── 폴리오(텍스트 지면 전체 폭)
@@ -2108,6 +2124,7 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
 
         # ── 사진 지면 캡션(흰 글씨, 바깥쪽 아래 모서리) — 메인은 항상 01
         cap = "   ·   ".join(t for t in ("01", str(titles[1]).strip(),
+                                         str(cameras[1]).strip(),
                                          str(shots[1]).strip()) if t)
         f_cap = _qfont(fam_b, S(26))
         cx = (sx0 + S(110)) if main_left else (min(canvas_w, sx1) - S(110)
