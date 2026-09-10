@@ -3121,6 +3121,13 @@ class Controller(QObject):
             _rename(data)
             for pre in (data.get("presets") or {}).values():
                 _rename(pre)
+                # 사진별 본문(`note*`)이 생기기 전에 저장된 프리셋에는 그 키가 아예 없다.
+                # QML 은 **없는 키 = 지금 값 유지**로 읽으므로(프리셋 로드가 방금 쓴 글을
+                # 지우지 않게 한 규칙) 그대로 두면 예전 프리셋을 골라도 본문이 안 바뀌어
+                # 전부 같은 글처럼 보인다. 한 번만 빈 값으로 채워 프리셋별로 갈라 둔다.
+                if isinstance(pre, dict):
+                    for _k in ("note0", "note1", "note2"):
+                        pre.setdefault(_k, "")
             self._wall_prefs_cache = data
         return self._wall_prefs_cache
 
@@ -3168,10 +3175,15 @@ class Controller(QObject):
     # ---------- 배경화면 프리셋(이름 붙인 설정 묶음) ----------
     # 같은 wallpaper.json 의 "presets" 아래에 이름→설정 dict 로 저장. 사진 슬롯 경로까지
     # 포함해 구성 전체를 되살린다(불러올 때 사라진 파일은 빈 슬롯으로).
+    # ⚠️**프리셋에 담기는 키는 여기가 전부다** — 저장(`saveWallpaperPreset`)과 로드
+    #   (`loadWallpaperPreset`) 양쪽이 이 목록으로 거른다. QML 쪽 `wallCurrentState`/
+    #   `wallApplyState` 에만 키를 더하면 **조용히 걸러져 프리셋에 안 들어간다**(사진별 본문
+    #   `note*` 가 실제로 그랬다 — 어느 프리셋을 골라도 같은 글이 남아 '공유'처럼 보였다).
     _WALL_PRESET_KEYS = (
         "layout", "typeface", "mainSide", "resIndex", "gap", "dual",
         "off0", "off1", "off2", "slot0", "slot1", "slot2",
-        "kicker", "headline", "deck", "place", "date", "title0", "title1", "title2")
+        "kicker", "headline", "deck", "place", "date", "title0", "title1", "title2",
+        "note0", "note1", "note2")
 
     def _wall_presets(self) -> dict:
         pres = self._wall_prefs().get("presets")

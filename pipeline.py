@@ -2040,17 +2040,17 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
 
         # 캡션은 **두 줄**이다 — 번호+제목 / 카메라 기종·촬영정보. 한 줄에 다 넣으면
         # 칼럼 폭에서 잘려 ISO 부터 사라진다(기종을 넣으면서 실측). 높이는 `CAP_H` 고정.
-        CAP_H = S(92)
+        CAP_H = S(104)
 
         def small_cap(x, y, w, n, title, shot, camera):
-            f = _qfont(fam_b, S(23))
-            _draw_text(p, x, y, f"0{n}", _qfont(fam_b, S(22), bold=True), accent, S(3), True)
+            f = _qfont(fam_b, S(27))
+            _draw_text(p, x, y, f"0{n}", _qfont(fam_b, S(26), bold=True), accent, S(3), True)
             t = str(title).strip()
             if t:
                 _draw_text(p, x + S(56), y, _wrap(f, t, w - S(56))[0], f, MAG_GRAY)
             meta = "   ·   ".join(v for v in (str(camera).strip(), str(shot).strip()) if v)
             if meta:
-                _draw_text(p, x, y + S(34), _wrap(f, meta, w)[0], f, MAG_GRAY)
+                _draw_text(p, x, y + S(40), _wrap(f, meta, w)[0], f, MAG_GRAY)
 
         # ── 사진 지면: 메인 한 장이 통째로(cover 크롭).
         # 크롭 위치는 슬롯 1 의 오프셋이 정하고 **기본값 0 이 정중앙**이다 — 잠깐 정중앙으로
@@ -2064,7 +2064,7 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
         # ⚠️헤드라인 밑줄 바는 **의도적으로 없다** — 길이가 제목과 무관한 고정값이라
         #   어색했다(사용자 결정 2026-09). 다른 지면 계열에는 그대로 있다.
         _draw_text(p, cl_x, top, str(opts.get("kicker", "")),
-                   _qfont(fam_b, S(28), bold=True), accent, S(6), True)
+                   _qfont(fam_b, S(32), bold=True), accent, S(6), True)
         f_head = _qfont(fam_h, S(80), bold=True)
         hy = top + S(86)
         for ln in _wrap(f_head, str(opts.get("headline", "")), tw):
@@ -2074,12 +2074,12 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
         # ── 리드문(이탤릭): 지면 전체를 받는 **하나뿐인** 글. 사진별 얘기는 아래 칼럼으로.
         #   ⚠️비어 있으면 한 줄도 잡지 않는다 — `_wrap` 은 빈 문자열에도 [""] 를 돌려주므로
         #     그대로 돌면 칼럼이 빈 줄 하나만큼 내려간다.
-        f_deck = _qfont(fam_b, S(34), italic=ital)
+        f_deck = _qfont(fam_b, S(40), italic=ital)
         deck_txt = str(opts.get("deck", "")).strip()
         dy = hy + S(96)
         for ln in (_wrap(f_deck, deck_txt, int(tw * 0.72))[:3] if deck_txt else []):
             _draw_text(p, cl_x, dy, ln, f_deck, MAG_GRAY)
-            dy += S(46)
+            dy += S(54)
         col_top = dy + (S(70) if deck_txt else S(16))
 
         # ── 두 칼럼: 각 칼럼이 **사진 + 그 사진의 캡션 + 그 사진의 본문**이다.
@@ -2094,15 +2094,15 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
         #   오른쪽은 사진 아래, 왼쪽은 사진 위로 남는 높이인데 식이 같아진다.
         notes = (list(opts.get("notes", [])) + ["", "", ""])[:3]
         cameras = (list(opts.get("cameras", [])) + ["", "", ""])[:3]
-        f_note = _qfont(fam_b, S(26))
+        f_note = _qfont(fam_b, S(30))
         ph = min(int(cl_w * 1.38), (bottom - col_top) - CAP_H - S(18))  # 캡션 자리는 남긴다
-        max_lines = max(0, ((bottom - col_top) - ph - CAP_H - S(18)) // S(38))
+        max_lines = max(0, ((bottom - col_top) - ph - CAP_H - S(18)) // S(44))
         lines = {sl: _elide_lines(f_note,
                                   _wrap(f_note, str(notes[sl]).strip(), cl_w)
                                   if str(notes[sl]).strip() else [],
                                   max_lines, cl_w) for sl in (0, 2)}
         # 글 덩어리 높이 = 캡션 줄 + 문단 + 사진과의 간격
-        text_h = {sl: CAP_H + S(38) * len(lines[sl]) + S(18) for sl in (0, 2)}
+        text_h = {sl: CAP_H + S(44) * len(lines[sl]) + S(18) for sl in (0, 2)}
 
         def col_text(cx, ty, no, sl):
             """캡션 한 줄 + 문단. **두 칼럼이 이 함수 하나를 쓴다**(스타일 통일)."""
@@ -2110,7 +2110,7 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
             cy = ty + CAP_H
             for ln in lines[sl]:                     # 예산만큼만 남아 있다(_elide_lines)
                 _draw_text(p, cx, cy, ln, f_note, MAG_GRAY)
-                cy += S(38)
+                cy += S(44)
 
         if ph > S(160):
             p.drawImage(cr_x, col_top, _mag_cover(panels[0], cl_w, ph, _mag_off(opts, 0)))
@@ -2120,13 +2120,13 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
             p.drawImage(cl_x, ly, _mag_cover(panels[2], cl_w, ph, _mag_off(opts, 2)))
 
         # ── 폴리오(텍스트 지면 전체 폭)
-        _mag_folio(p, fam_b, S, tx0, tw, sy1, opts, MAG_GRAY, MAG_HAIR, upper)
+        _mag_folio(p, fam_b, S, tx0, tw, sy1, opts, MAG_GRAY, MAG_HAIR, upper, px=31)
 
         # ── 사진 지면 캡션(흰 글씨, 바깥쪽 아래 모서리) — 메인은 항상 01
         cap = "   ·   ".join(t for t in ("01", str(titles[1]).strip(),
                                          str(cameras[1]).strip(),
                                          str(shots[1]).strip()) if t)
-        f_cap = _qfont(fam_b, S(26))
+        f_cap = _qfont(fam_b, S(30))
         cx = (sx0 + S(110)) if main_left else (min(canvas_w, sx1) - S(110)
                                                - _text_w(f_cap, cap))
         _draw_text(p, cx, sy1 - S(108), cap, f_cap, (255, 255, 255))
@@ -2135,8 +2135,11 @@ def compose_spread(panels, canvas_w, canvas_h, opts):
     return canvas
 
 
-def _mag_folio(p, fam_b, S, mx, mw, sy1, opts, gray, hair, upper):
+def _mag_folio(p, fam_b, S, mx, mw, sy1, opts, gray, hair, upper, px=27):
     """지면 하단 러닝풋: 장소(왼쪽) · 날짜(오른쪽). **인덱스·스프레드 전용이다.**
+
+    `px` 는 글자 크기만 바꾼다(기본 27 = 인덱스 그대로, 스프레드는 31) — 스프레드 쪽 글자를
+    전반적으로 키우면서 폴리오만 작게 남는 것을 막으려고 열어 둔 손잡이다. 위치 상수는 공유.
 
     ⚠️예전 주석은 "잡지·인덱스가 공유한다" 였지만 사실이 아니다 — `compose_magazine` 은
       자기 인라인 폴리오 블록을 그대로 갖고 있고 **상수가 다르다**(잡지 S(126)/S(104)/S(26)
@@ -2152,7 +2155,7 @@ def _mag_folio(p, fam_b, S, mx, mw, sy1, opts, gray, hair, upper):
     date = str(opts.get("date", "")).strip()
     if not (place or date):
         return
-    f = _qfont(fam_b, S(27))
+    f = _qfont(fam_b, S(px))
     p.fillRect(mx, sy1 - S(120), mw, 1, QColor(*hair))
     y = sy1 - S(102)
     if place:

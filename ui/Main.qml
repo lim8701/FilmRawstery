@@ -1848,7 +1848,12 @@ ApplicationWindow {
             var v = parseFloat(m[k])
             return isNaN(v) ? dflt : Math.max(lo, Math.min(hi, v))
         }
-        function str(k) { return m[k] === undefined ? "" : String(m[k]) }
+        // ★⚠️**키가 없는 것과 빈 값은 다르다.** 없으면 **지금 값을 유지**하고(그 프리셋을
+        //   저장하던 시절에 없던 칸이다), 있으면 빈 값이라도 그대로 따른다(비운 것도 선택).
+        //   전에는 없는 키를 "" 로 읽어 **프리셋을 불러오는 순간 그 칸이 조용히 지워졌다** —
+        //   나중에 생긴 `note*` 가 실제로 그렇게 날아갔고, 지워진 값이 마지막 상태로 저장까지
+        //   됐다(아래 wallSave 루프). 숫자 쪽 `num` 은 원래 이 규칙이었다.
+        function str(k, cur) { return m[k] === undefined ? cur : String(m[k]) }
         win.wallLayout = num("layout", win.wallLayout, 0, 4)
         win.wallTypeface = num("typeface", win.wallTypeface, 0, 3)
         win.wallMainSide = num("mainSide", win.wallMainSide, 0, 1)
@@ -1856,12 +1861,16 @@ ApplicationWindow {
         win.wallGap = num("gap", win.wallGap, 0, 60)
         if (m["dual"] !== undefined) win.wallDualAspect = String(m["dual"]) !== "0"
         win.wallOffsets = [num("off0", 0, -1, 1), num("off1", 0, -1, 1), num("off2", 0, -1, 1)]
-        win.wallSlots = [str("slot0"), str("slot1"), str("slot2")]
-        win.wallKicker = str("kicker"); win.wallHeadline = str("headline")
-        win.wallDeck = str("deck")
-        win.wallPlace = str("place"); win.wallDate = str("date")
-        win.wallTitles = [str("title0"), str("title1"), str("title2")]
-        win.wallNotes = [str("note0"), str("note1"), str("note2")]
+        win.wallSlots = [str("slot0", win.wallSlots[0]), str("slot1", win.wallSlots[1]),
+                         str("slot2", win.wallSlots[2])]
+        win.wallKicker = str("kicker", win.wallKicker)
+        win.wallHeadline = str("headline", win.wallHeadline)
+        win.wallDeck = str("deck", win.wallDeck)
+        win.wallPlace = str("place", win.wallPlace); win.wallDate = str("date", win.wallDate)
+        win.wallTitles = [str("title0", win.wallTitles[0]), str("title1", win.wallTitles[1]),
+                          str("title2", win.wallTitles[2])]
+        win.wallNotes = [str("note0", win.wallNotes[0]), str("note1", win.wallNotes[1]),
+                         str("note2", win.wallNotes[2])]
         var cur = win.wallCurrentState()
         for (var k in cur) win.wallSave(k, cur[k])
     }
@@ -11270,7 +11279,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     readonly property real deckN: win.wallDeck.trim() === "" ? 0
                                         : Math.max(1, mSpDeck.lineCount)
                                     readonly property real colTop: headEnd + 96 * ms
-                                        + deckN * 46 * ms + (deckN > 0 ? 70 * ms : 16 * ms)
+                                        + deckN * 54 * ms + (deckN > 0 ? 70 * ms : 16 * ms)
                                     // 사진별 본문 — ⚠️줄 수는 **자르기 전 전체 줄 수**여야 한다
                                     //   (합성이 그 길이로 사진 높이를 역산한다) → 재는 Text 를
                                     //   따로 두고, 보이는 Text 만 폴리오 위에서 자른다.
@@ -11282,22 +11291,22 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                     //   '…' 로 잘린다(합성과 동일). 줄 예산은 두 칼럼이 같다.
                                     // 캡션은 두 줄(번호+제목 / 카메라·촬영정보) — 합성 CAP_H=92
                                     readonly property real ph: Math.min(clW * 1.38,
-                                                                        (bottom0 - colTop) - 110 * ms)
+                                                                        (bottom0 - colTop) - 122 * ms)
                                     readonly property int maxLines: Math.max(0, Math.floor(
-                                        ((bottom0 - colTop) - ph - 110 * ms) / (38 * ms)))
+                                        ((bottom0 - colTop) - ph - 122 * ms) / (44 * ms)))
                                     // 글 덩어리 = 캡션 두 줄 + 문단 + 사진과의 간격(합성과 동일)
-                                    readonly property real textHL: 92 * ms + 18 * ms
-                                        + 38 * ms * Math.min(noteNL, maxLines)
-                                    readonly property real textHR: 92 * ms + 18 * ms
-                                        + 38 * ms * Math.min(noteNR, maxLines)
+                                    readonly property real textHL: 104 * ms + 18 * ms
+                                        + 44 * ms * Math.min(noteNL, maxLines)
+                                    readonly property real textHR: 104 * ms + 18 * ms
+                                        + 44 * ms * Math.min(noteNR, maxLines)
                                     // ★엇갈림은 사진을 미는 게 아니라 **글의 자리를 좌우 반대로**
                                     //   둬서 만든다 — 오른 칼럼은 사진→글(위 정렬), 왼 칼럼은
                                     //   글→사진(바닥 정렬). 두 판의 크기·비율은 그대로 같다.
                                     readonly property real yCapR: colTop + ph + 18 * ms
-                                    readonly property real yNoteR: yCapR + 92 * ms
+                                    readonly property real yNoteR: yCapR + 104 * ms
                                     readonly property real p3Y: bottom0 - ph
                                     readonly property real yCapL: p3Y - textHL
-                                    readonly property real yNoteL: yCapL + 92 * ms
+                                    readonly property real yNoteL: yCapL + 104 * ms
                                     readonly property bool smallsVisible: ph > 160 * ms
                                     // 폴리오 날짜: 비우면 합성이 메인 사진 촬영월로 채운다.
                                     readonly property string folioDate: win.wallDate.trim() !== ""
@@ -11325,7 +11334,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: win.wallKicker.toUpperCase()
                                         color: spMirror.accent; font.bold: true
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(28)
+                                        font.pixelSize: spMirror.fpx(32)
                                         font.letterSpacing: 6 * spMirror.ms
                                     }
                                     Text {   // 리드문 — 지면 전체 폭의 0.72(합성은 3줄에서 자른다)
@@ -11338,8 +11347,8 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         color: "#76767c"
                                         font.family: spMirror.famB
                                         font.italic: spMirror.ital
-                                        font.pixelSize: spMirror.fpx(34)
-                                        lineHeight: 46 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                        font.pixelSize: spMirror.fpx(40)
+                                        lineHeight: 54 * spMirror.ms; lineHeightMode: Text.FixedHeight
                                     }
                                     Text {   // 오른 칼럼 사진 캡션: 번호
                                         visible: spMirror.smallsVisible
@@ -11347,7 +11356,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: "03"
                                         color: spMirror.accent; font.bold: true
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(22)
+                                        font.pixelSize: spMirror.fpx(26)
                                         font.letterSpacing: 3 * spMirror.ms
                                     }
                                     Text {   // 오른 칼럼 캡션 1줄: 제목
@@ -11358,17 +11367,17 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: win.wallTitles[0]
                                         color: "#76767c"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(23)
+                                        font.pixelSize: spMirror.fpx(27)
                                     }
                                     Text {   // 오른 칼럼 캡션 2줄: 카메라 기종 · 촬영정보
                                         visible: spMirror.smallsVisible
-                                        x: spMirror.crX; y: spMirror.yCapR + 34 * spMirror.ms
+                                        x: spMirror.crX; y: spMirror.yCapR + 40 * spMirror.ms
                                         width: spMirror.crW
                                         elide: Text.ElideRight
                                         text: spMirror.capText(win.wallShots[0][2], win.wallShots[0][0])
                                         color: "#76767c"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(23)
+                                        font.pixelSize: spMirror.fpx(27)
                                     }
                                     Text {   // 왼 칼럼 사진 캡션: 번호
                                         visible: spMirror.smallsVisible
@@ -11376,7 +11385,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: "02"
                                         color: spMirror.accent; font.bold: true
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(22)
+                                        font.pixelSize: spMirror.fpx(26)
                                         font.letterSpacing: 3 * spMirror.ms
                                     }
                                     Text {   // 왼 칼럼 캡션 1줄: 제목
@@ -11387,17 +11396,17 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: win.wallTitles[2]
                                         color: "#76767c"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(23)
+                                        font.pixelSize: spMirror.fpx(27)
                                     }
                                     Text {   // 왼 칼럼 캡션 2줄: 카메라 기종 · 촬영정보
                                         visible: spMirror.smallsVisible
-                                        x: spMirror.clX; y: spMirror.yCapL + 34 * spMirror.ms
+                                        x: spMirror.clX; y: spMirror.yCapL + 40 * spMirror.ms
                                         width: spMirror.clW
                                         elide: Text.ElideRight
                                         text: spMirror.capText(win.wallShots[2][2], win.wallShots[2][0])
                                         color: "#76767c"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(23)
+                                        font.pixelSize: spMirror.fpx(27)
                                     }
                                     Text {   // 헤드라인
                                         id: mSpHead
@@ -11419,8 +11428,8 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         width: spMirror.clW; wrapMode: Text.WordWrap
                                         text: win.wallNotes[2]
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(26)
-                                        lineHeight: 38 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                        font.pixelSize: spMirror.fpx(30)
+                                        lineHeight: 44 * spMirror.ms; lineHeightMode: Text.FixedHeight
                                     }
                                     Text {
                                         id: mSpNoteRN
@@ -11428,8 +11437,8 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         width: spMirror.crW; wrapMode: Text.WordWrap
                                         text: win.wallNotes[0]
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(26)
-                                        lineHeight: 38 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                        font.pixelSize: spMirror.fpx(30)
+                                        lineHeight: 44 * spMirror.ms; lineHeightMode: Text.FixedHeight
                                     }
                                     Text {   // 왼 칼럼 본문(프레임 03 의 글)
                                         visible: spMirror.smallsVisible && spMirror.maxLines > 0
@@ -11440,8 +11449,8 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: win.wallNotes[2]
                                         color: "#76767c"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(26)
-                                        lineHeight: 38 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                        font.pixelSize: spMirror.fpx(30)
+                                        lineHeight: 44 * spMirror.ms; lineHeightMode: Text.FixedHeight
                                     }
                                     Text {   // 오른 칼럼 본문(프레임 02 의 글)
                                         visible: spMirror.smallsVisible && spMirror.maxLines > 0
@@ -11452,8 +11461,8 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: win.wallNotes[0]
                                         color: "#76767c"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(26)
-                                        lineHeight: 38 * spMirror.ms; lineHeightMode: Text.FixedHeight
+                                        font.pixelSize: spMirror.fpx(30)
+                                        lineHeight: 44 * spMirror.ms; lineHeightMode: Text.FixedHeight
                                     }
                                     Rectangle {   // 폴리오 괘선(_mag_folio — 장소·날짜가 다 비면 없다)
                                         visible: spMirror.hasFolio
@@ -11466,7 +11475,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: spMirror.uc(win.wallPlace)
                                         color: "#76767c"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(27)
+                                        font.pixelSize: spMirror.fpx(31)
                                         font.letterSpacing: 4 * spMirror.ms
                                     }
                                     Text {
@@ -11477,7 +11486,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: spMirror.uc(spMirror.folioDate)
                                         color: "#76767c"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(27)
+                                        font.pixelSize: spMirror.fpx(31)
                                         font.letterSpacing: 4 * spMirror.ms
                                     }
                                     Text {   // 사진 지면 캡션(흰 글씨, 바깥쪽 아래 모서리) — 메인은 01
@@ -11497,7 +11506,7 @@ RAW is exposed to protect highlights, so it opens 1-2 stops darker."
                                         text: capText
                                         color: "white"
                                         font.family: spMirror.famB
-                                        font.pixelSize: spMirror.fpx(26)
+                                        font.pixelSize: spMirror.fpx(30)
                                     }
                                 }
 
